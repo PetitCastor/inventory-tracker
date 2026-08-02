@@ -1,0 +1,131 @@
+@* Styles live in a component rather than wwwroot/app.css so that a single-file
+   publish really is a single file — static web assets stay loose on disk. *@
+<style>
+    :root {
+        color-scheme: dark;
+        --bg: #0e1116;
+        --panel: #161b22;
+        --line: #262c36;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --accent: #4dabf7;
+        --high: #3fb950;
+        --medium: #d29922;
+        --low: #f85149;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
+    }
+
+    header { border-bottom: 1px solid var(--line); background: var(--panel); }
+
+    nav {
+        display: flex;
+        align-items: center;
+        gap: 1.25rem;
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 0.85rem 1.25rem;
+    }
+
+    nav a { color: var(--muted); text-decoration: none; }
+    nav a:hover, nav a.active { color: var(--text); }
+    nav .brand { font-weight: 600; color: var(--text); margin-right: 0.75rem; }
+
+    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+
+    h1 { font-size: 1.5rem; margin: 0 0 1rem; }
+    h2 { font-size: 1.05rem; margin: 2rem 0 0.6rem; }
+
+    a { color: var(--accent); }
+
+    code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9em; color: var(--muted); }
+
+    .search {
+        width: 100%;
+        padding: 0.7rem 0.9rem;
+        margin-bottom: 1.25rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--text);
+        font-size: 1rem;
+    }
+
+    .search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+    .count, .subtle, .empty { color: var(--muted); font-size: 0.9rem; }
+
+    .place { margin-bottom: 2rem; }
+
+    .place h2 {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .badge-count {
+        font-size: 0.75rem;
+        font-weight: 400;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.05rem 0.5rem;
+    }
+
+    /* Wide chains and long class names must scroll inside the table, never the page. */
+    table { width: 100%; border-collapse: collapse; display: block; overflow-x: auto; }
+
+    thead th {
+        text-align: left;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--muted);
+        font-weight: 500;
+        padding: 0.4rem 0.75rem 0.4rem 0;
+    }
+
+    tbody td { padding: 0.4rem 0.75rem 0.4rem 0; border-top: 1px solid var(--line); vertical-align: top; }
+
+    .chain { color: var(--muted); font-size: 0.9rem; }
+    .chain-big { font-size: 1.15rem; margin: 0.3rem 0 0.6rem; }
+    .when { color: var(--muted); white-space: nowrap; }
+    .unnamed { color: var(--medium); margin-left: 0.3rem; cursor: help; }
+
+    .conf {
+        font-size: 0.75rem;
+        padding: 0.1rem 0.5rem;
+        border-radius: 999px;
+        white-space: nowrap;
+        cursor: help;
+    }
+
+    .conf-high { background: rgba(63, 185, 80, 0.15); color: var(--high); }
+    .conf-medium { background: rgba(210, 153, 34, 0.15); color: var(--medium); }
+    .conf-low { background: rgba(248, 81, 73, 0.15); color: var(--low); }
+
+    .verdict {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+        margin: 1rem 0 2rem;
+    }
+
+    .verdict h2 { margin-top: 0; font-size: 0.75rem; text-transform: uppercase; color: var(--muted); }
+
+    .caveats { color: var(--medium); font-size: 0.85rem; margin: 0.75rem 0 0; padding-left: 1.1rem; }
+
+    .facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1.5rem; }
+    .facts dt { color: var(--muted); }
+    .facts dd { margin: 0; }
+</style>

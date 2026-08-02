@@ -1,0 +1,70 @@
+@page "/item/{Geid}"
+@rendermode InteractiveServer
+@inject TrackerState State
+
+<PageTitle>@_name — Star Citizen inventory</PageTitle>
+
+<p><a href="">&larr; Back to search</a></p>
+
+@if (_holding is null)
+{
+    <h1>Unknown item</h1>
+    <p>No movement history recorded for <code>@Geid</code>.</p>
+}
+else
+{
+    <h1>@_name</h1>
+    <p class="subtle"><code>@_holding.ItemClass</code> &middot; instance <code>@Geid</code></p>
+
+    <section class="verdict">
+        <h2>Believed to be</h2>
+        <p class="chain-big">@_holding.Where</p>
+        <p>
+            <span class="conf conf-@_holding.Confidence.ToString().ToLowerInvariant()">@_holding.Confidence confidence</span>
+            &middot; last moved @_holding.LastMove.ToString("yyyy-MM-dd HH:mm") UTC (@_holding.LastMoveType)
+        </p>
+
+        @* The logs never enumerate an inventory's contents, so this is always inference. *@
+        <ul class="caveats">
+            @foreach (var caveat in _holding.Caveats)
+            {
+                <li>@caveat</li>
+            }
+        </ul>
+    </section>
+
+    <h2>Movement history</h2>
+    <table>
+        <thead>
+            <tr><th>When (UTC)</th><th>Action</th><th>Into</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+        @foreach (var move in _history.Reverse())
+        {
+            <tr>
+                <td class="when">@move.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                <td>@move.MoveType</td>
+                <td class="chain">@move.TargetRaw</td>
+                <td>@(move.Result ?? "unconfirmed")</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter] public string Geid { get; set; } = "";
+
+    private ItemHolding? _holding;
+    private IReadOnlyList<MoveRecord> _history = [];
+    private string _name = "Item";
+
+    protected override void OnParametersSet()
+    {
+        var snapshot = State.Current;
+
+        _holding = snapshot.Resolver?.Resolve(Geid);
+        _history = snapshot.Resolver?.History(Geid) ?? [];
+        _name = _holding is null ? "Unknown item" : State.Names.Resolve(_holding.ItemClass).Display;
+    }
+}

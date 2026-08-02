@@ -1,0 +1,91 @@
+@page "/diagnostics"
+@rendermode InteractiveServer
+@inject TrackerState State
+@inject TrackerOptions Options
+
+<PageTitle>Diagnostics — Star Citizen inventory</PageTitle>
+
+<h1>Diagnostics</h1>
+
+<dl class="facts">
+    <dt>Log directory</dt><dd><code>@Options.LogDir</code></dd>
+    <dt>Tracked instances</dt><dd>@_holdings.Count</dd>
+    <dt>Recorded moves</dt><dd>@(State.Current.Resolver?.Moves.Count ?? 0)</dd>
+    <dt>Snapshot built</dt><dd>@State.Current.BuiltAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</dd>
+    <dt>Item catalogue</dt>
+    <dd>@(_catalogueAge is null ? "never downloaded — use the tray menu" : $"refreshed {_catalogueAge:yyyy-MM-dd}")</dd>
+</dl>
+
+<h2>Confidence spread</h2>
+<ul>
+    @foreach (var group in _holdings.GroupBy(h => h.Holding.Confidence).OrderByDescending(g => g.Key))
+    {
+        <li>@group.Key: @group.Count()</li>
+    }
+</ul>
+
+@* Each of these is a place the heuristics fell short — they explain any Low scores. *@
+<h2>Unnamed stations (@_unnamedLocations.Count)</h2>
+<p class="subtle">Location ids the log never paired with a name, so items there show only a number.</p>
+<ul>
+    @foreach (var id in _unnamedLocations)
+    {
+        <li><code>@id</code> — @_unnamedLocations.Count(x => x == id) item(s)</li>
+    }
+</ul>
+
+<h2>Unidentified containers (@_unknownContainers.Count)</h2>
+<p class="subtle">Containers we saw items go into but never saw opened, so we cannot say what or where they are.</p>
+<ul>
+    @foreach (var key in _unknownContainers)
+    {
+        <li><code>@key</code></li>
+    }
+</ul>
+
+<h2>Items with no wiki name (@_unnamedItems.Count)</h2>
+<ul>
+    @foreach (var cls in _unnamedItems)
+    {
+        <li><code>@cls</code></li>
+    }
+</ul>
+
+@code {
+    private IReadOnlyList<NamedHolding> _holdings = [];
+    private List<string> _unnamedLocations = [];
+    private List<string> _unknownContainers = [];
+    private List<string> _unnamedItems = [];
+    private DateTimeOffset? _catalogueAge;
+
+    protected override void OnInitialized()
+    {
+        _holdings = State.Current.Holdings;
+        _catalogueAge = State.Names.LastRefresh();
+
+        // A link labelled "location <id>" or "container <id>" is the resolver's way of
+        // saying it had nothing better than the raw id.
+        _unnamedLocations = _holdings
+            .SelectMany(h => h.Holding.Chain)
+            .Where(l => l.Kind == InventoryKind.Location && l.Label.StartsWith("location ", StringComparison.Ordinal))
+            .Select(l => l.Key)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+
+        _unknownContainers = _holdings
+            .SelectMany(h => h.Holding.Chain)
+            .Where(l => l.Kind == InventoryKind.Container && l.Label.StartsWith("container ", StringComparison.Ordinal))
+            .Select(l => l.Key)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+
+        _unnamedItems = _holdings
+            .Where(h => h.Name.Match == NameMatch.None)
+            .Select(h => h.ClassName)
+            .Distinct()
+            .OrderBy(x => x)
+            .ToList();
+    }
+}
