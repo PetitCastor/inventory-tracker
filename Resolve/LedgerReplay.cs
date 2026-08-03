@@ -51,6 +51,10 @@ public sealed class LedgerReplay
     private readonly Dictionary<Holding, Dictionary<string, Slot>> _contents = [];
     private readonly Dictionary<string, Holding> _instanceAt = [];
 
+    /// <summary>Entities that have already absorbed one inferred anonymous unit, so the
+    /// same guess is never collapsed into an entity twice.</summary>
+    private readonly HashSet<string> _reconciled = [];
+
     /// <summary>Where each named entity ended up. Containers are entities too, so this is
     /// also how a backpack's own position is found when building a chain.</summary>
     public IReadOnlyDictionary<string, Holding> InstanceAt => _instanceAt;
@@ -190,7 +194,21 @@ public sealed class LedgerReplay
             // First sighting of this entity. If an unnamed unit of the same class is already
             // sitting where this one is arriving, the two are almost certainly the same
             // thing being described twice — an item dragged in by class and stored by name.
-            SpendAnonymous(target, itemClass);
+            if (SpendAnonymous(target, itemClass)) _reconciled.Add(geid);
+        }
+
+        // A named entity coming to rest where we had earlier only *guessed* an anonymous
+        // same-class arrival (an inferred loose unit, credited because a class-level move's
+        // source could not account for it) is almost certainly that guess made concrete —
+        // the game named the item by class going in and by entity settling down. Collapse
+        // the two so the guess does not linger as a phantom once the named item moves on.
+        // Bounded to one inferred unit per entity, and to inferred units only, so genuinely
+        // counted stacks (ammo, drinks) are never touched. This catches the case the target
+        // dedupe above misses: the entity was first seen somewhere else and only later
+        // passed through the holding holding the guess.
+        if (!_reconciled.Contains(geid) && SpendAnonymous(target, itemClass, inferredOnly: true))
+        {
+            _reconciled.Add(geid);
         }
 
         SlotFor(target, itemClass, create: true)!.Named.Add(
@@ -203,12 +221,14 @@ public sealed class LedgerReplay
     /// to be something already counted there without a name. Scoped to the one holding on
     /// purpose: spending a unit from somewhere else would quietly empty an unrelated place.
     /// </summary>
-    private void SpendAnonymous(Holding where, string itemClass)
+    private bool SpendAnonymous(Holding where, string itemClass, bool inferredOnly = false)
     {
-        if (SlotFor(where, itemClass, create: false) is not { } slot) return;
-        if (slot.Loose is not { Quantity: > 0 } loose) return;
+        if (SlotFor(where, itemClass, create: false) is not { } slot) return false;
+        if (slot.Loose is not { Quantity: > 0 } loose) return false;
+        if (inferredOnly && !loose.Inferred) return false;
 
         slot.Loose = loose.Quantity > 1 ? loose with { Quantity = loose.Quantity - 1 } : null;
+        return true;
     }
 
     private void AddAnonymous(

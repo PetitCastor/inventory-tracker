@@ -39,6 +39,12 @@ public sealed class HoldingResolver
     private readonly HashSet<string> _wornContainers;
 
     private readonly Dictionary<string, List<MoveRecord>> _byGeid;
+
+    /// <summary>Per item class, the lifespan (first and last move) of every named entity of
+    /// that class. Used to spot a stored instance that a later, never-overlapping entity of
+    /// the same class superseded — the fingerprint of a relog re-issuing the geid.</summary>
+    private readonly Dictionary<string, List<(string Geid, DateTimeOffset First, DateTimeOffset Last)>> _classSpans;
+
     private readonly LedgerReplay _ledger;
 
     /// <summary>All known location ids and their raw internal names.</summary>
@@ -67,6 +73,11 @@ public sealed class HoldingResolver
             .Where(m => m.ItemGeid is not null)
             .GroupBy(m => m.ItemGeid!)
             .ToDictionary(g => g.Key, g => g.OrderBy(m => m.Timestamp).ToList());
+
+        _classSpans = _byGeid.Values
+            .Select(h => (Geid: h[^1].ItemGeid!, Class: h[^1].ItemClass, First: h[0].Timestamp, Last: h[^1].Timestamp))
+            .GroupBy(x => x.Class)
+            .ToDictionary(g => g.Key, g => g.Select(x => (x.Geid, x.First, x.Last)).ToList());
 
         _ledger = LedgerReplay.Run(moves, worn);
     }
@@ -127,6 +138,22 @@ public sealed class HoldingResolver
     private string ClassOf(string geid) =>
         _byGeid.TryGetValue(geid, out var h) && h.Count > 0 ? h[^1].ItemClass : "";
 
+    /// <summary>
+    /// True when another entity of the same class first appeared strictly after this one's
+    /// last move — a later identity that never coexisted with it. Two items held at once
+    /// overlap in time and are left alone; only a clean hand-off (this one goes quiet, a new
+    /// geid takes over) reads as the same physical item relogged under a fresh id.
+    /// </summary>
+    private bool SupersededByRelog(string geid, string itemClass)
+    {
+        if (!_classSpans.TryGetValue(itemClass, out var spans)) return false;
+
+        var mine = spans.FirstOrDefault(s => s.Geid == geid);
+        if (mine.Geid is null) return false;
+
+        return spans.Any(other => other.Geid != geid && other.First > mine.Last);
+    }
+
     /// <summary>Full movement history for one instance, oldest first — the audit view.</summary>
     public IReadOnlyList<MoveRecord> History(string geid) =>
         _byGeid.TryGetValue(geid, out var h) ? h : [];
@@ -161,6 +188,20 @@ public sealed class HoldingResolver
         {
             score *= 0.8;
             caveats.Add($"last seen {age.TotalDays:F0} days ago");
+        }
+
+        // A named item parked at a station, whose class then turns up under a different entity
+        // that only ever existed after this one went quiet, is almost certainly the same
+        // physical item picked back up: the game re-issues an entity id every session, so the
+        // pickup was logged under a new geid that can never be tied back to this row. Its
+        // stored position is therefore stale — knock it well down rather than assert it.
+        if (geid is not null && where.Kind == InventoryKind.Location && SupersededByRelog(geid, itemClass))
+        {
+            score *= 0.35;
+            caveats.Add(
+                "the same kind of item was carried later under a different identity that never "
+                + "overlapped this one — entities are re-issued each session, so this was most "
+                + "likely picked back up and this location is stale");
         }
 
         // Which of several identical items this is says nothing about whether one of them
