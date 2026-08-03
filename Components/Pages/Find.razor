@@ -41,7 +41,12 @@ else
                 {
                     <tr>
                         <td>
-                            <a href="@($"item/{item.Holding.Geid}")">@item.Display</a>
+                            @if (item.Holding.Quantity > 1)
+                            {
+                                <span class="qty">@item.Holding.Quantity&times;</span>
+                                <text> </text>
+                            }
+                            @item.Display
                             @if (item.Name.Match == NameMatch.None)
                             {
                                 <span class="unnamed" title="Not found in the wiki catalogue">?</span>

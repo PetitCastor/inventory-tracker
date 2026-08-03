@@ -57,11 +57,88 @@ public sealed record MoveRequested(
     string ItemClass,
     string Caller) : InventoryEvent(Timestamp);
 
+/// <summary>
+/// A single <c>&lt;Add Inventory Management Move&gt;</c> that carries a bracketed list of
+/// classes — <c>ItemClass[[a] [b] [c] ]</c> — instead of one class.
+/// <para>
+/// These are the only record of a multi-select drag. The paired Queued line degenerates to
+/// <c>Source[NULL] ... Item[NONE]</c> and so says nothing, which is why the batch has to be
+/// reconstructed from here. Unlike Type[Store], the inventories on this line are oriented
+/// correctly, so a batch is only trusted for the non-Store types it is actually observed on.
+/// </para>
+/// </summary>
+public sealed record MoveBatchRequested(
+    DateTimeOffset Timestamp,
+    int RequestNo,
+    string MoveType,
+    InventoryRef Source,
+    InventoryRef Target,
+    IReadOnlyList<string> ItemClasses,
+    string Caller) : InventoryEvent(Timestamp);
+
 /// <summary>Outcome for a request, from either of the two "complete" events.</summary>
 public sealed record MoveCompleted(
     DateTimeOffset Timestamp,
     int RequestNo,
     string Result) : InventoryEvent(Timestamp);
+
+/// <summary>
+/// <c>&lt;UnstowPendingEntities&gt; Unstow Request[N] ... finalized spawn of
+/// '&lt;class&gt;_&lt;geid&gt;' [&lt;geid&gt;]</c>.
+/// <para>
+/// Shares its request number with the class-level move that triggered it, which is the only
+/// way to learn <i>which</i> instance an equip actually took. Measured over the 4.9 corpus
+/// this resolves 532 of 540 Type[Interaction] moves.
+/// </para>
+/// </summary>
+public sealed record EntitySpawned(
+    DateTimeOffset Timestamp,
+    int RequestNo,
+    string Geid,
+    string ClassName) : InventoryEvent(Timestamp);
+
+/// <summary>
+/// <c>&lt;OnInventoryStoreItem&gt; Entity[&lt;class&gt;_&lt;geid&gt; - Class(...)] Inventory[ref]</c> —
+/// an instance-level arrival, independent of the request/completion handshake.
+/// </summary>
+public sealed record ItemStored(
+    DateTimeOffset Timestamp,
+    string Geid,
+    string ClassName,
+    InventoryRef Target) : InventoryEvent(Timestamp);
+
+/// <summary>
+/// <c>&lt;AttachmentReceived&gt; Player[..] Attachment[&lt;class&gt;_&lt;geid&gt;, &lt;class&gt;, &lt;geid&gt;] Status[..] Port[..]</c>.
+/// <para>
+/// The closest the log comes to a snapshot: an authoritative enumeration of the ports worn
+/// on the player's body, re-emitted on every spawn. It proves an item is <i>not</i> at a
+/// station, which no move line can.
+/// </para>
+/// </summary>
+public sealed record AttachmentSeen(
+    DateTimeOffset Timestamp,
+    string Geid,
+    string ClassName,
+    string Port) : InventoryEvent(Timestamp);
+
+/// <summary>
+/// <c>&lt;Calculate Route&gt; ... Projected Start Location is &lt;name&gt; for route to destination ...</c> —
+/// the player-facing name of wherever the player is standing, and the only place the game
+/// ever writes one. The internal <see cref="LocationNamed"/> string is a legacy asset name
+/// ("RR_JP_NyxCastra") and does not match it ("Stanton Gateway").
+/// </summary>
+public sealed record PlaceNamed(
+    DateTimeOffset Timestamp,
+    string DisplayName) : InventoryEvent(Timestamp);
+
+/// <summary>
+/// A streamed object-container path, e.g.
+/// <c>Data/objectcontainers/pu/loc/mod/nyx/station/ser/reststop_ext/rs_ext_nyx-castra_jp1.socpak</c>.
+/// The segment after <c>loc/mod/</c> or <c>loc/flagship/</c> is the host solar system.
+/// </summary>
+public sealed record PlaceAssetSeen(
+    DateTimeOffset Timestamp,
+    string System) : InventoryEvent(Timestamp);
 
 /// <summary>
 /// <c>&lt;Inventory Token Flow&gt; ... on Inventory[&lt;class&gt;_&lt;geid&gt;, &lt;geid&gt;]</c> —

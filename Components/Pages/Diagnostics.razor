@@ -28,9 +28,9 @@
 <h2>Unnamed stations (@_unnamedLocations.Count)</h2>
 <p class="subtle">Location ids the log never paired with a name, so items there show only a number.</p>
 <ul>
-    @foreach (var id in _unnamedLocations)
+    @foreach (var (id, count) in _unnamedLocations)
     {
-        <li><code>@id</code> — @_unnamedLocations.Count(x => x == id) item(s)</li>
+        <li><code>@id</code> — @count item(s)</li>
     }
 </ul>
 
@@ -53,7 +53,7 @@
 
 @code {
     private IReadOnlyList<NamedHolding> _holdings = [];
-    private List<string> _unnamedLocations = [];
+    private List<(string Id, int Count)> _unnamedLocations = [];
     private List<string> _unknownContainers = [];
     private List<string> _unnamedItems = [];
     private DateTimeOffset? _catalogueAge;
@@ -66,11 +66,11 @@
         // A link labelled "location <id>" or "container <id>" is the resolver's way of
         // saying it had nothing better than the raw id.
         _unnamedLocations = _holdings
-            .SelectMany(h => h.Holding.Chain)
-            .Where(l => l.Kind == InventoryKind.Location && l.Label.StartsWith("location ", StringComparison.Ordinal))
-            .Select(l => l.Key)
-            .Distinct()
-            .OrderBy(x => x)
+            .Where(h => h.Holding.Root is { Kind: InventoryKind.Location } root
+                && root.Label.StartsWith("location ", StringComparison.Ordinal))
+            .GroupBy(h => h.Holding.Root!.Key)
+            .Select(g => (Id: g.Key, Count: g.Sum(h => h.Holding.Quantity)))
+            .OrderByDescending(x => x.Count)
             .ToList();
 
         _unknownContainers = _holdings

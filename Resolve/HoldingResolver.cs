@@ -1,16 +1,21 @@
+using System.Globalization;
 using LogParser.Data;
 using LogParser.Model;
+using LogParser.Naming;
 using Microsoft.Data.Sqlite;
 
 namespace LogParser.Resolve;
 
 /// <summary>
-/// Infers where each item instance currently is by replaying its move history.
+/// Turns the recorded move history into "what is sitting where", by replaying it.
 /// <para>
 /// There is no snapshot event in the logs — nothing ever enumerates an inventory's
-/// contents — so every answer here is an inference from the last recorded move, and
-/// each one carries a score and an explicit list of caveats rather than being stated
-/// as fact.
+/// contents — so every answer here is inference from a stream of deltas over an unknown
+/// starting state. That has hard limits worth stating plainly: an item bought, looted or
+/// claimed without a recorded move is invisible, and anything the server changes on its own
+/// (a death, an insurance claim, a wipe, another player emptying a shared container) is
+/// never logged at all. What this produces is a well-evidenced lower bound, not a manifest,
+/// and every row carries a score and its caveats rather than being stated as fact.
 /// </para>
 /// </summary>
 public sealed class HoldingResolver
@@ -28,151 +33,177 @@ public sealed class HoldingResolver
     private readonly Dictionary<string, string> _locationNames;
     private readonly Dictionary<string, ContainerInfo> _containers;
 
-    /// <summary>Instance-level moves per geid, oldest first.</summary>
-    private readonly Dictionary<string, List<MoveRecord>> _byGeid;
+    /// <summary>Geids of containers ever seen worn on the body (backpack, legs, chest,
+    /// undersuit). These are apparel that travels with the player, so they aggregate an item's
+    /// moves but are never shown as a container — the chain skips straight through them.</summary>
+    private readonly HashSet<string> _wornContainers;
 
-    /// <summary>Class-level moves per class, oldest first. Used to detect ambiguity.</summary>
-    private readonly Dictionary<string, List<MoveRecord>> _classMovesByClass;
+    private readonly Dictionary<string, List<MoveRecord>> _byGeid;
+    private readonly LedgerReplay _ledger;
+
+    /// <summary>All known location ids and their raw internal names.</summary>
+    public IReadOnlyDictionary<string, string> LocationNames => _locationNames;
+
+    /// <summary>Systems and place names as a player would recognise them.</summary>
+    public PlaceCatalog Places { get; }
+
+    public IReadOnlyList<MoveRecord> Moves => _moves;
 
     private HoldingResolver(
         List<MoveRecord> moves,
+        List<LedgerReplay.WornSighting> worn,
         Dictionary<string, string> locationNames,
-        Dictionary<string, ContainerInfo> containers)
+        Dictionary<string, ContainerInfo> containers,
+        HashSet<string> wornContainers,
+        PlaceCatalog places)
     {
         _moves = moves;
         _locationNames = locationNames;
         _containers = containers;
+        _wornContainers = wornContainers;
+        Places = places;
 
         _byGeid = moves
             .Where(m => m.ItemGeid is not null)
             .GroupBy(m => m.ItemGeid!)
             .ToDictionary(g => g.Key, g => g.OrderBy(m => m.Timestamp).ToList());
 
-        _classMovesByClass = moves
-            .Where(m => m.ItemGeid is null)
-            .GroupBy(m => m.ItemClass)
-            .ToDictionary(g => g.Key, g => g.OrderBy(m => m.Timestamp).ToList());
+        _ledger = LedgerReplay.Run(moves, worn);
     }
 
     /// <summary>The whole move history is only a few thousand rows, so resolve in memory.</summary>
     public static HoldingResolver Load(TrackerDb db)
     {
         using var cn = db.Open();
-        return new HoldingResolver(LoadMoves(cn), LoadLocationNames(cn), LoadContainers(cn));
+        return new HoldingResolver(
+            LoadMoves(cn), LoadWorn(cn), LoadLocationNames(cn), LoadContainers(cn),
+            LoadWornContainers(cn), PlaceCatalog.Load(db));
     }
 
-    public IReadOnlyList<MoveRecord> Moves => _moves;
-
     /// <summary>
-    /// Every item instance we have ever seen named, with its inferred placement.
-    /// <para>
-    /// Resolution runs twice: the first pass places everything, and the second uses those
-    /// placements to judge ambiguity. A class-level departure only casts real doubt on an
-    /// item if few identical items were sitting there — one bottle leaving a crate of
-    /// twelve barely implicates any particular bottle.
-    /// </para>
+    /// Everything the ledger believes is currently held, one row per (place, item class):
+    /// named entities individually, and unnamed units as a count.
     /// </summary>
     public IReadOnlyList<ItemHolding> ResolveAll()
     {
-        var placed = _byGeid.Keys
-            .Select(g => Resolve(g))
-            .OfType<ItemHolding>()
-            .ToList();
+        var rows = new List<ItemHolding>();
 
-        var occupancy = placed
-            .Where(h => h.Root is not null)
-            .GroupBy(h => (h.ItemClass, h.Chain[0].Kind, h.Chain[0].Key))
-            .ToDictionary(g => g.Key, g => g.Count());
-
-        return placed
-            .Select(h => ApplyAmbiguity(h, occupancy))
-            .OrderByDescending(h => h.LastMove)
-            .ToList();
-    }
-
-    private ItemHolding ApplyAmbiguity(
-        ItemHolding holding,
-        Dictionary<(string, InventoryKind, string), int> occupancy)
-    {
-        if (holding.Chain.Count == 0) return holding;
-
-        var here = holding.Chain[0];
-        var departures = CountDepartures(holding.ItemClass, here, holding.LastMove);
-        if (departures == 0) return holding;
-
-        var siblings = occupancy.GetValueOrDefault((holding.ItemClass, here.Kind, here.Key), 1);
-        var chanceItLeft = Math.Min(1.0, (double)departures / siblings);
-
-        var caveats = holding.Caveats.ToList();
-        caveats.Add(siblings > 1
-            ? $"{departures} of {siblings} '{holding.ItemClass}' here were moved out afterwards, and the log does not say which"
-            : $"a '{holding.ItemClass}' was moved out of here afterwards");
-
-        return holding with
+        foreach (var where in _ledger.Occupied)
         {
-            Score = holding.Score * (1 - 0.5 * chanceItLeft),
-            Caveats = caveats,
-        };
+            foreach (var (itemClass, named, loose) in _ledger.Contents(where))
+            {
+                foreach (var instance in named)
+                {
+                    rows.Add(Build(
+                        where, itemClass, instance.Geid, quantity: 1, instance.Since, instance.ArrivedBy,
+                        instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous));
+                }
+
+                if (loose is { Quantity: > 0 })
+                {
+                    rows.Add(Build(
+                        where, itemClass, geid: null, loose.Quantity, loose.Since, loose.ArrivedBy,
+                        loose.Confirmed, loose.Inferred, ambiguous: true));
+                }
+            }
+        }
+
+        return rows.OrderByDescending(h => h.LastMove).ToList();
     }
 
+    /// <summary>Where one named entity ended up, or null if it was never seen.</summary>
     public ItemHolding? Resolve(string geid)
     {
-        if (!_byGeid.TryGetValue(geid, out var history) || history.Count == 0) return null;
+        if (!_ledger.InstanceAt.TryGetValue(geid, out var where)) return null;
 
-        var last = history[^1];
+        var instance = _ledger.NamedIn(where, ClassOf(geid)).FirstOrDefault(i => i.Geid == geid);
+        if (instance is null) return null;
+
+        return Build(
+            where, instance.ItemClass, geid, quantity: 1, instance.Since, instance.ArrivedBy,
+            instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous);
+    }
+
+    private string ClassOf(string geid) =>
+        _byGeid.TryGetValue(geid, out var h) && h.Count > 0 ? h[^1].ItemClass : "";
+
+    /// <summary>Full movement history for one instance, oldest first — the audit view.</summary>
+    public IReadOnlyList<MoveRecord> History(string geid) =>
+        _byGeid.TryGetValue(geid, out var h) ? h : [];
+
+    private ItemHolding Build(
+        Holding where, string itemClass, string? geid, int quantity, DateTimeOffset since,
+        string arrivedBy, bool confirmed, bool inferred, bool ambiguous)
+    {
         var caveats = new List<string>();
         var score = 1.0;
 
-        if (!last.Succeeded)
+        if (!confirmed)
         {
             score *= 0.5;
-            caveats.Add("the game never confirmed this move succeeded");
+            caveats.Add("the game never confirmed the move that put it here");
         }
 
-        if (last.MoveType == "Drop")
+        if (inferred)
+        {
+            score *= 0.8;
+            caveats.Add("we saw this arrive but never saw where it came from, so it may have been counted twice");
+        }
+
+        if (arrivedBy == "Drop")
         {
             score *= 0.3;
             caveats.Add("dropped as a loose world entity — these despawn");
         }
 
-        var age = DateTimeOffset.UtcNow - last.Timestamp;
+        var age = DateTimeOffset.UtcNow - since;
         if (age > StaleAfter)
         {
             score *= 0.8;
             caveats.Add($"last seen {age.TotalDays:F0} days ago");
         }
 
-        var chain = BuildChain(last, geid, caveats, ref score);
+        // Which of several identical items this is says nothing about whether one of them
+        // is here, so it is reported without touching the score.
+        if (ambiguous && geid is not null)
+        {
+            caveats.Add("the log did not name which of several identical items was moved, so this instance may be one of its twins");
+        }
+
+        var chain = BuildChain(where, geid, caveats, ref score);
 
         return new ItemHolding(
-            geid, last.ItemClass, chain, last.Timestamp, last.MoveType, score, caveats);
+            geid, itemClass, quantity, chain, since, arrivedBy, score, ambiguous, caveats);
     }
 
-    /// <summary>Full movement history for one instance, oldest first — the audit view.</summary>
-    public IReadOnlyList<MoveRecord> History(string geid) =>
-        _byGeid.TryGetValue(geid, out var h) ? h : [];
-
     /// <summary>
-    /// Walks from the item's destination outward: an item is in a backpack, and the
-    /// backpack is itself an item whose own last move says which station it is at.
+    /// Walks from where the item sits outward: an item is in a backpack, and the backpack is
+    /// itself an entity whose own last move says which station it is at.
     /// </summary>
     private List<HoldingLink> BuildChain(
-        MoveRecord last, string itemGeid, List<string> caveats, ref double score)
+        Holding start, string? itemGeid, List<string> caveats, ref double score)
     {
         var chain = new List<HoldingLink>();
-        var seen = new HashSet<string> { itemGeid };
+        var seen = new HashSet<string>();
+        if (itemGeid is not null) seen.Add(itemGeid);
 
-        var kind = last.TargetKind;
-        var key = last.TargetKey;
+        var kind = start.Kind;
+        var key = start.Key;
 
         for (var depth = 0; depth < MaxChainDepth; depth++)
         {
             switch (kind)
             {
                 case InventoryKind.Location:
-                    if (_locationNames.TryGetValue(key, out var name))
+                {
+                    var place = Places.ByLocationId(key);
+                    if (place is not null)
                     {
-                        chain.Add(new HoldingLink(kind, key, name));
+                        chain.Add(new HoldingLink(kind, key, place.Name));
+                    }
+                    else if (_locationNames.TryGetValue(key, out var raw))
+                    {
+                        chain.Add(new HoldingLink(kind, key, raw));
                     }
                     else
                     {
@@ -181,6 +212,7 @@ public sealed class HoldingResolver
                         chain.Add(new HoldingLink(kind, key, $"location {key}"));
                     }
                     return chain;
+                }
 
                 case InventoryKind.Equipped:
                     chain.Add(new HoldingLink(kind, "", "equipped on your character"));
@@ -194,7 +226,15 @@ public sealed class HoldingResolver
                 {
                     var info = _containers.GetValueOrDefault(key);
                     var label = info?.ClassName ?? $"container {key}";
-                    chain.Add(new HoldingLink(kind, key, label));
+
+                    // Worn apparel (backpack, chest, legs, arms, undersuit) is not a place — it
+                    // travels with the player. Its contents aggregate an item's moves, but it
+                    // is never shown as a container: emit no link and walk straight through it
+                    // to wherever the apparel itself ended up. It is recognised by class name —
+                    // the reliable signal, since apparel is used for nested storage far more
+                    // often than it is seen worn — with an attachment sighting as a backstop.
+                    var worn = IsApparel(info?.ClassName) || _wornContainers.Contains(key);
+                    if (!worn) chain.Add(new HoldingLink(kind, key, label));
 
                     // A container that contains itself would loop forever.
                     if (!seen.Add(key))
@@ -203,14 +243,16 @@ public sealed class HoldingResolver
                         return chain;
                     }
 
-                    // Every extra hop is another inference stacked on the last one.
-                    if (depth > 0) score *= 0.9;
+                    // Every extra hop is another inference stacked on the last one. A skipped
+                    // worn hop is not a shown inference, and an attachment sighting is
+                    // authoritative, so it costs nothing.
+                    if (depth > 0 && !worn) score *= 0.9;
 
-                    // The container is an item too, so its own last move places it.
-                    if (_byGeid.TryGetValue(key, out var h) && h.Count > 0)
+                    // The container is an entity too, so the ledger knows where it went.
+                    if (_ledger.InstanceAt.TryGetValue(key, out var holdingTheContainer))
                     {
-                        kind = h[^1].TargetKind;
-                        key = h[^1].TargetKey;
+                        kind = holdingTheContainer.Kind;
+                        key = holdingTheContainer.Key;
                         continue;
                     }
 
@@ -224,6 +266,16 @@ public sealed class HoldingResolver
                         kind = InventoryKind.Location;
                         key = seenAt;
                         continue;
+                    }
+
+                    // A worn container we never pinned leaves the item with no place at all,
+                    // rather than the bare backpack it used to show. Say so instead of dropping
+                    // it silently.
+                    if (worn)
+                    {
+                        score *= 0.6;
+                        caveats.Add("worn apparel whose current location was never recorded");
+                        return chain;
                     }
 
                     score *= 0.6;
@@ -240,26 +292,11 @@ public sealed class HoldingResolver
         return chain;
     }
 
-    /// <summary>
-    /// How many class-level moves took an item of this class out of <paramref name="holding"/>
-    /// after <paramref name="after"/>. Those moves never name a geid, so we cannot tell
-    /// whether the item that left was this one.
-    /// </summary>
-    private int CountDepartures(string itemClass, HoldingLink holding, DateTimeOffset after)
-    {
-        if (!_classMovesByClass.TryGetValue(itemClass, out var moves)) return 0;
-
-        return moves.Count(m =>
-            m.Timestamp > after &&
-            m.SourceKind == holding.Kind &&
-            m.SourceKey == holding.Key);
-    }
-
     private static List<MoveRecord> LoadMoves(SqliteConnection cn)
     {
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
-            SELECT id, ts, move_type, item_class, item_geid,
+            SELECT id, ts, move_type, item_class, item_geid, amount,
                    src_kind, src_key, tgt_kind, tgt_key, tgt_raw, result
             FROM move
             ORDER BY ts, id
@@ -271,19 +308,79 @@ public sealed class HoldingResolver
         {
             rows.Add(new MoveRecord(
                 r.GetInt64(0),
-                DateTimeOffset.Parse(r.GetString(1)),
+                DateTimeOffset.Parse(r.GetString(1), CultureInfo.InvariantCulture),
                 r.GetString(2),
                 r.GetString(3),
                 r.IsDBNull(4) ? null : r.GetString(4),
-                ParseKind(r.GetString(5)),
-                r.GetString(6),
-                ParseKind(r.GetString(7)),
-                r.GetString(8),
+                r.GetInt32(5),
+                ParseKind(r.GetString(6)),
+                r.GetString(7),
+                ParseKind(r.GetString(8)),
                 r.GetString(9),
-                r.IsDBNull(10) ? null : r.GetString(10)));
+                r.GetString(10),
+                r.IsDBNull(11) ? null : r.GetString(11)));
         }
         return rows;
     }
+
+    /// <summary>
+    /// How much of the newest spawn counts as one enumeration. Attachment lines are emitted
+    /// in a burst as the character streams in.
+    /// </summary>
+    private static readonly TimeSpan WornBurst = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The ports worn at the most recent spawn.
+    /// <para>
+    /// Each spawn enumerates the whole body, so an older sighting is not just stale — it is
+    /// contradicted by a later enumeration that left the item out. Those are dropped rather
+    /// than believed, which leaves the item wherever its moves last put it instead of
+    /// claiming it is still being worn months later.
+    /// </para>
+    /// </summary>
+    private static List<LedgerReplay.WornSighting> LoadWorn(SqliteConnection cn)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT geid, class_name, last_seen FROM attachment";
+
+        var all = new List<LedgerReplay.WornSighting>();
+        using (var r = cmd.ExecuteReader())
+        {
+            while (r.Read())
+            {
+                all.Add(new LedgerReplay.WornSighting(
+                    DateTimeOffset.Parse(r.GetString(2), CultureInfo.InvariantCulture),
+                    r.GetString(0),
+                    r.GetString(1)));
+            }
+        }
+
+        if (all.Count == 0) return all;
+
+        var newest = all.Max(w => w.Timestamp);
+        return all.Where(w => newest - w.Timestamp <= WornBurst).ToList();
+    }
+
+    /// <summary>
+    /// Whether a container class is body-worn apparel — a backpack or an armour slot (core for
+    /// the chest, legs, arms) or the undersuit. These carry storage but are worn on the
+    /// character, so they aggregate an item's moves without ever being shown as a place. The
+    /// world's own containers (freight elevators, lootable crates, carryable inventory boxes)
+    /// match none of these and keep their chain hop.
+    /// </summary>
+    private static bool IsApparel(string? className)
+    {
+        if (className is null) return false;
+
+        foreach (var mark in ApparelMarks)
+        {
+            if (className.Contains(mark, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    private static readonly string[] ApparelMarks =
+        ["backpack", "undersuit", "_core_", "_legs_", "_arms_"];
 
     private static InventoryKind ParseKind(string s) =>
         Enum.TryParse<InventoryKind>(s, out var k) ? k : InventoryKind.Unknown;
@@ -311,8 +408,25 @@ public sealed class HoldingResolver
             map[r.GetString(0)] = new ContainerInfo(
                 r.GetString(1),
                 r.IsDBNull(2) ? null : r.GetString(2),
-                r.IsDBNull(3) ? null : DateTimeOffset.Parse(r.GetString(3)));
+                r.IsDBNull(3) ? null : DateTimeOffset.Parse(r.GetString(3), CultureInfo.InvariantCulture));
         }
         return map;
+    }
+
+    /// <summary>
+    /// Every container geid ever enumerated on the player's body. Unlike <see cref="LoadWorn"/>
+    /// this is the full history, not the recent burst: a backpack worn last week and stored
+    /// today is still apparel and must never be shown as a container. Membership in the
+    /// attachment table is the signal — world crates and freight elevators never appear there.
+    /// </summary>
+    private static HashSet<string> LoadWornContainers(SqliteConnection cn)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT geid FROM attachment WHERE port IS NOT NULL";
+
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) set.Add(r.GetString(0));
+        return set;
     }
 }

@@ -44,7 +44,7 @@ public sealed class TrackerDb
     /// logs are the source of truth — so a mismatch is resolved by rebuilding rather
     /// than by writing migrations.
     /// </summary>
-    private const int SchemaVersion = 4;
+    private const int SchemaVersion = 5;
 
     public void Initialize()
     {
@@ -92,6 +92,8 @@ public sealed class TrackerDb
             DELETE FROM session;
             DELETE FROM location_name;
             DELETE FROM container_class;
+            DELETE FROM attachment;
+            DELETE FROM place_evidence;
             """);
     }
 
@@ -131,6 +133,9 @@ public sealed class TrackerDb
             -- Class-level moves say "one of these moved", not which one.
             item_geid   TEXT,
             amount      INTEGER NOT NULL DEFAULT 1,
+            -- Position within a multi-select drag, whose several classes all share one
+            -- log line and therefore one byte offset. 0 for an ordinary single move.
+            item_ix     INTEGER NOT NULL DEFAULT 0,
             src_raw     TEXT,
             src_kind    TEXT,
             src_key     TEXT,
@@ -139,7 +144,7 @@ public sealed class TrackerDb
             tgt_key     TEXT,
             caller      TEXT,
             result      TEXT,
-            UNIQUE(session_id, line_offset)
+            UNIQUE(session_id, line_offset, item_ix)
         );
 
         CREATE INDEX IF NOT EXISTS ix_move_geid  ON move(item_geid, ts);
@@ -164,6 +169,32 @@ public sealed class TrackerDb
             last_loc_ts    TEXT
         );
 
+        -- Ports worn on the player's body, from <AttachmentReceived>. Re-emitted on every
+        -- spawn, so only the newest sighting per entity is kept. This is the only
+        -- authoritative enumeration the game ever logs, and the only positive proof that
+        -- an item is on the player rather than sitting at a station.
+        CREATE TABLE IF NOT EXISTS attachment (
+            geid       TEXT PRIMARY KEY,
+            class_name TEXT NOT NULL,
+            port       TEXT,
+            last_seen  TEXT NOT NULL
+        );
+
+        -- Corroboration for what a location id actually is. The internal string the game
+        -- pairs with the id ("RR_JP_NyxCastra") is a legacy asset name that matches neither
+        -- the place's real name ("Stanton Gateway") nor its system (Nyx), so both are voted
+        -- on from sightings gathered while the player was standing there.
+        --   kind = 'name'   -> <Calculate Route> "Projected Start Location is X"
+        --   kind = 'system' -> the system segment of a streamed object-container path
+        CREATE TABLE IF NOT EXISTS place_evidence (
+            location_id TEXT    NOT NULL,
+            kind        TEXT    NOT NULL,
+            value       TEXT    NOT NULL,
+            hits        INTEGER NOT NULL DEFAULT 0,
+            last_seen   TEXT,
+            PRIMARY KEY (location_id, kind, value)
+        );
+
         CREATE TABLE IF NOT EXISTS wiki_item (
             class_name   TEXT PRIMARY KEY,
             uuid         TEXT,
@@ -185,13 +216,17 @@ public sealed class TrackerDb
         );
         """;
 
+    /// <summary>
+    /// Everything derived from the logs, dropped and rebuilt on a schema mismatch. The wiki
+    /// catalogue is deliberately not in here: it costs ~62 network requests to refill and is
+    /// not derived from anything a schema change would invalidate.
+    /// </summary>
     private const string DropAll = """
         DROP TABLE IF EXISTS move;
         DROP TABLE IF EXISTS session;
         DROP TABLE IF EXISTS location_name;
         DROP TABLE IF EXISTS container_class;
-        DROP TABLE IF EXISTS wiki_item;
-        DROP TABLE IF EXISTS wiki_item_fts;
-        DROP TABLE IF EXISTS meta;
+        DROP TABLE IF EXISTS attachment;
+        DROP TABLE IF EXISTS place_evidence;
         """;
 }

@@ -67,6 +67,10 @@ internal static class Cli
         Console.WriteLine($"Container IDs seen : {stats.ContainersIdentified:N0}");
         Console.WriteLine($"Location bindings  : {stats.LocationsNamed:N0}");
         Console.WriteLine($"Location conflicts : {stats.LocationConflicts:N0}");
+        Console.WriteLine($"Batch moves fanned : {stats.BatchMovesExpanded:N0}");
+        Console.WriteLine($"Geids recovered    : {stats.GeidsRecovered:N0}");
+        Console.WriteLine($"Worn sightings     : {stats.AttachmentsSeen:N0}");
+        Console.WriteLine($"Place evidence     : {stats.PlaceEvidence:N0}");
         Console.WriteLine($"Elapsed            : {elapsed.TotalSeconds:F1}s");
         Console.WriteLine();
 
@@ -146,8 +150,8 @@ internal static class Cli
 
         Console.WriteLine();
         Console.WriteLine(filter is null
-            ? $"-- holdings ({resolved.Count} tracked instances) --"
-            : $"-- holdings matching '{filter}' ({resolved.Count}) --");
+            ? $"-- holdings ({resolved.Sum(h => h.Quantity)} units in {resolved.Count} lines) --"
+            : $"-- holdings matching '{filter}' ({resolved.Sum(h => h.Quantity)} units) --");
 
         // Group by the root's identity, not its label: several distinct SCU boxes share
         // the class name "Carryable_TBO_InventoryContainer_2SCU" and are different places.
@@ -212,6 +216,11 @@ internal static class Cli
             """);
         Console.WriteLine($"Containers in use : {containersUsed:N0} ({containersKnown:N0} identified)");
 
+        Console.WriteLine($"Distinct instances: {Scalar(cn, "SELECT COUNT(DISTINCT item_geid) FROM move WHERE item_geid IS NOT NULL"):N0}");
+        Console.WriteLine($"  named moves     : {Scalar(cn, "SELECT COUNT(*) FROM move WHERE item_geid IS NOT NULL"):N0}");
+        Console.WriteLine($"  class-only moves: {Scalar(cn, "SELECT COUNT(*) FROM move WHERE item_geid IS NULL"):N0}");
+        Console.WriteLine($"Worn entities     : {Scalar(cn, "SELECT COUNT(*) FROM attachment"):N0}");
+
         Console.WriteLine();
         Console.WriteLine("-- moves by type --");
         foreach (var (type, count) in Rows(cn,
@@ -221,11 +230,13 @@ internal static class Cli
         }
 
         Console.WriteLine();
-        Console.WriteLine("-- locations --");
-        foreach (var (id, name) in Rows(cn,
-            "SELECT location_id, name FROM location_name ORDER BY name, location_id"))
+        Console.WriteLine("-- places --");
+        foreach (var place in PlaceCatalog.Load(db).Places)
         {
-            Console.WriteLine($"  {id,-12} => {name}");
+            var flags = (place.NameVerified ? "" : " [name unverified]") +
+                        (place.SystemVerified ? "" : " [system inferred]");
+            Console.WriteLine($"  {place.System,-14} {place.Name,-38} {string.Join(",", place.AliasIds)}{flags}");
+            if (place.RawName is { } raw && raw != place.Name) Console.WriteLine($"  {"",-14} logged internally as {raw}");
         }
     }
 

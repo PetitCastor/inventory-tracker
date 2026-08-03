@@ -60,7 +60,30 @@
 
     .search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
+    .picker { display: flex; gap: 0.75rem; margin-bottom: 1.25rem; }
+
+    .picker select {
+        padding: 0.6rem 0.8rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--text);
+        font-size: 1rem;
+    }
+
+    .picker select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
     .count, .subtle, .empty { color: var(--muted); font-size: 0.9rem; }
+
+    /* The standing reminder that every figure here is inference, not a manifest. */
+    .caveat-standing {
+        border-left: 2px solid var(--line);
+        padding-left: 0.75rem;
+        margin: 0.75rem 0 1.5rem;
+        max-width: 60ch;
+    }
+
+    .qty { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
     .place { margin-bottom: 2rem; }
 
