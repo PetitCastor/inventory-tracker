@@ -82,7 +82,7 @@ public static class TrayHost
     {
         var menu = new ContextMenuStrip();
 
-        menu.Items.Add("Open inventory finder", null, (_, _) => OpenBrowser(options.Url));
+        menu.Items.Add("Open InventoryTracker", null, (_, _) => OpenBrowser(options.Url));
         menu.Items.Add(new ToolStripSeparator());
 
         menu.Items.Add("Rescan logs now", null, (_, _) =>
