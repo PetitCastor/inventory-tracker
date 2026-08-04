@@ -1,4 +1,5 @@
-﻿using LogParser.Data;
+﻿using LogParser.App;
+using LogParser.Data;
 using LogParser.Ingest;
 using LogParser.Naming;
 using LogParser.Resolve;
@@ -10,8 +11,11 @@ internal static class Cli
 {
     public static async Task<int> RunAsync(string[] args)
     {
-        var logDir = LogFileLocator.DefaultLogDir;
-        var dbPath = TrackerDb.DefaultPath;
+        var config = AppConfig.Load();
+        var logDir = config.LogDir ?? LogFileLocator.DefaultLogDir;
+        var dbPath = config.DatabasePath ?? TrackerDb.DefaultPath;
+        var fromDate = config.InceptionDate;
+
         var reset = false;
         var trace = (string?)null;
         var find = (string?)null;
@@ -23,8 +27,6 @@ internal static class Cli
         {
             switch (args[i])
             {
-                case "--log-dir" when i + 1 < args.Length: logDir = args[++i]; break;
-                case "--db" when i + 1 < args.Length: dbPath = args[++i]; break;
                 case "--trace" when i + 1 < args.Length: trace = args[++i]; break;
                 case "--find" when i + 1 < args.Length: find = args[++i]; break;
                 case "--holdings": holdings = true; break;
@@ -42,7 +44,7 @@ internal static class Cli
 
         if (!Directory.Exists(logDir))
         {
-            Console.Error.WriteLine($"Log directory not found: {logDir}");
+            Console.Error.WriteLine($"Log directory not found: {logDir} (set in {AppConfig.DefaultPath})");
             return 1;
         }
 
@@ -52,11 +54,13 @@ internal static class Cli
 
         Console.WriteLine($"Log dir : {logDir}");
         Console.WriteLine($"Database: {db.Path}");
+        Console.WriteLine($"Config  : {AppConfig.DefaultPath}");
         Console.WriteLine($"Cutoff  : {InventoryEventParser.Cutoff:yyyy-MM-dd} (4.9)");
+        if (fromDate is { } fd) Console.WriteLine($"From    : {fd:yyyy-MM-dd} (inception date)");
         Console.WriteLine();
 
         var started = DateTime.UtcNow;
-        var stats = new LogIngestor(db, logDir).IngestAll();
+        var stats = new LogIngestor(db, logDir, fromDate).IngestAll();
         var elapsed = DateTime.UtcNow - started;
 
         Console.WriteLine($"Files discovered   : {stats.FilesSeen}");
@@ -180,17 +184,18 @@ internal static class Cli
         }
     }
 
-    private static void PrintUsage() => Console.WriteLine("""
+    private static void PrintUsage() => Console.WriteLine($"""
         Usage: LogParser [--scan] [options]
 
-          --log-dir <path>   Star Citizen LIVE folder (default: E:\Games\StarCitizen\LIVE)
-          --db <path>        SQLite store (default: %LOCALAPPDATA%\SCLogParser\tracker.db)
           --reset            Discard ingested logs and re-parse from scratch
           --holdings         Print every item's inferred location, grouped
           --find <text>      As --holdings, limited to item classes containing <text>
           --trace <geid>     Print the movement history of one item instance
           --refresh-names    Download the star-citizen.wiki item catalogue (~62 requests)
           --names            Report how many observed classes the catalogue can name
+
+          Log directory, database path, port and inception date are not set here —
+          edit {AppConfig.DefaultPath} and relaunch.
         """);
 
     private static void Summarize(TrackerDb db)
