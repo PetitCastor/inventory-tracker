@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Publishes LogParser as a single self-contained executable into dist/.
+    Publishes InventoryTracker as a single self-contained executable into dist/.
 
 .DESCRIPTION
     Produces one portable .exe with no .NET runtime prerequisite. Native
@@ -30,7 +30,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
-$project = Join-Path $root 'LogParser.csproj'
+$project = Join-Path $root 'src\InventoryTracker\InventoryTracker.csproj'
 $dist = Join-Path $root 'dist'
 
 if (-not (Test-Path $project)) {
@@ -39,8 +39,8 @@ if (-not (Test-Path $project)) {
 
 # A running instance locks its own exe, which would otherwise fail the clean below
 # with an opaque "access denied" instead of saying what's actually holding it.
-$distExe = Join-Path $dist 'LogParser.exe'
-Get-Process -Name 'LogParser' -ErrorAction SilentlyContinue |
+$distExe = Join-Path $dist 'InventoryTracker.exe'
+Get-Process -Name 'InventoryTracker' -ErrorAction SilentlyContinue |
     Where-Object { $_.Path -eq $distExe } |
     ForEach-Object {
         Write-Host "Stopping running instance (pid $($_.Id))" -ForegroundColor Yellow
@@ -56,7 +56,7 @@ New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
 $selfContained = -not $FrameworkDependent
 
-Write-Host "Publishing LogParser" -ForegroundColor Cyan
+Write-Host "Publishing InventoryTracker" -ForegroundColor Cyan
 Write-Host "  runtime       : $Runtime"
 Write-Host "  configuration : $Configuration"
 Write-Host "  self-contained: $selfContained"
@@ -95,7 +95,7 @@ Get-ChildItem -LiteralPath $dist -Directory |
     Where-Object { (Get-ChildItem -LiteralPath $_.FullName -Recurse -File).Count -eq 0 } |
     Remove-Item -Recurse -Force
 
-$exe = Join-Path $dist 'LogParser.exe'
+$exe = Join-Path $dist 'InventoryTracker.exe'
 if (-not (Test-Path $exe)) {
     throw "Expected executable was not produced: $exe"
 }
@@ -112,5 +112,5 @@ Write-Host ''
 Write-Host "Done: $exe ($sizeMb MB)" -ForegroundColor Green
 Write-Host ''
 Write-Host 'Run it:'
-Write-Host '  LogParser.exe                     tray app + UI at http://localhost:5730'
-Write-Host '  LogParser.exe --scan --holdings   console mode, no UI'
+Write-Host '  InventoryTracker.exe                     tray app + UI at http://localhost:5730'
+Write-Host '  InventoryTracker.exe --scan --holdings   console mode, no UI'
