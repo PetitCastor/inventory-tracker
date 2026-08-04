@@ -22,7 +22,7 @@ public static class TrayHost
 
     public static int Run(string[] args)
     {
-        var options = TrackerOptions.FromArgs(args);
+        var options = TrackerOptions.Load();
 
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseUrls(options.Url);

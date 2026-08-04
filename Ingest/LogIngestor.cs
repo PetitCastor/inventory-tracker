@@ -26,8 +26,15 @@ public sealed record IngestStats
 /// watermark) and idempotent (moves keyed by their line offset), so it can be run
 /// repeatedly and continuously against a growing live log.
 /// </summary>
-public sealed class LogIngestor(TrackerDb db, string logDir)
+public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fromDate = null)
 {
+    /// <summary>
+    /// Everything before this is ignored, on top of <see cref="InventoryEventParser.Cutoff"/>.
+    /// Lets a user mark an inception date and disregard history from before it.
+    /// </summary>
+    private readonly DateTimeOffset _sinceTs = fromDate is { } f && f > InventoryEventParser.Cutoff
+        ? f : InventoryEventParser.Cutoff;
+
     /// <summary>
     /// A location id is bound to the name in the next RequestLocationInventory. Beyond
     /// this gap the two lines are unrelated and pairing them would invent a mapping.
@@ -54,7 +61,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir)
     public IngestStats IngestAll(CancellationToken ct = default)
     {
         var stats = new IngestStats();
-        var files = LogFileLocator.Discover(LogDir, InventoryEventParser.Cutoff);
+        var files = LogFileLocator.Discover(LogDir, _sinceTs);
         stats.FilesSeen = files.Count;
 
         using var cn = db.Open();
@@ -89,7 +96,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir)
             stats.LinesRead++;
 
             if (!LogLine.TryParse(line.Text, out var log)) continue;
-            if (log.Timestamp < InventoryEventParser.Cutoff) continue;
+            if (log.Timestamp < _sinceTs) continue;
 
             firstTs ??= log.Timestamp;
             lastTs = log.Timestamp;

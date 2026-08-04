@@ -110,7 +110,7 @@ public sealed class LogWatchService(
     {
         try
         {
-            var stats = new LogIngestor(db, options.LogDir).IngestAll();
+            var stats = new LogIngestor(db, options.LogDir, options.InceptionDate).IngestAll();
 
             // Re-resolving is cheap, but pushing a no-op update to every open page is noise.
             if (stats.MovesInserted > 0 ||
