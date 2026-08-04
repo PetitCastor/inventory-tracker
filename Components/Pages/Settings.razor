@@ -1,11 +1,36 @@
-@page "/diagnostics"
+@page "/settings"
 @rendermode InteractiveServer
+@using LogParser.Data
+@using LogParser.Ingest
 @inject TrackerState State
 @inject TrackerOptions Options
+@inject TrackerDb Db
+@inject LogWatchService Watcher
 
-<PageTitle>Diagnostics — Star Citizen inventory</PageTitle>
+<PageTitle>Settings — Star Citizen inventory</PageTitle>
 
-<h1>Diagnostics</h1>
+<h1>Settings</h1>
+
+<h2>Settings</h2>
+<div class="settings-field">
+    <label for="log-dir">Game.log location</label>
+    <input id="log-dir" type="text" @bind="_logDir" placeholder="E:\Games\StarCitizen\LIVE" />
+</div>
+
+<div class="settings-field">
+    <label for="inception">Inception date</label>
+    <input id="inception" type="date" @bind="_inceptionDate" />
+</div>
+<p class="subtle">Everything logged before this date is ignored. Only applies to newly-ingested log lines — use "Save and rebuild" below to apply it to history already stored.</p>
+
+<div class="settings-actions">
+    <button @onclick="SaveSettings">Save</button>
+    <button @onclick="SaveAndRebuild">Save and rebuild from logs</button>
+    @if (_status is not null)
+    {
+        <span class="subtle">@_status</span>
+    }
+</div>
 
 <dl class="facts">
     <dt>Log directory</dt><dd><code>@Options.LogDir</code></dd>
@@ -58,10 +83,17 @@
     private List<string> _unnamedItems = [];
     private DateTimeOffset? _catalogueAge;
 
+    private string _logDir = "";
+    private DateOnly? _inceptionDate;
+    private string? _status;
+
     protected override void OnInitialized()
     {
         _holdings = State.Current.Holdings;
         _catalogueAge = State.Names.LastRefresh();
+
+        _logDir = Options.LogDir;
+        _inceptionDate = Options.InceptionDate is { } d ? DateOnly.FromDateTime(d.UtcDateTime) : null;
 
         // A link labelled "location <id>" or "container <id>" is the resolver's way of
         // saying it had nothing better than the raw id.
@@ -87,5 +119,39 @@
             .Distinct()
             .OrderBy(x => x)
             .ToList();
+    }
+
+    /// <summary>Persists the form to config.json and applies it to the running service —
+    /// no restart needed for a rescan to pick up the new log directory or cutoff.</summary>
+    private void SaveSettings()
+    {
+        var config = AppConfig.Load();
+        var logDirChanged = !string.Equals(config.LogDir, _logDir, StringComparison.OrdinalIgnoreCase);
+
+        config.LogDir = _logDir;
+        config.InceptionDate = _inceptionDate is { } d
+            ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+            : null;
+        config.Save();
+
+        Options.LogDir = config.LogDir ?? _logDir;
+        Options.InceptionDate = config.InceptionDate;
+
+        if (logDirChanged) Watcher.RestartWatching();
+
+        _status = "Saved.";
+    }
+
+    /// <summary>
+    /// The inception date only gates what gets ingested from here on — it does not remove
+    /// rows already in the store. Wiping and re-ingesting is the only way to make an
+    /// earlier cutoff apply to history that was captured before it was set.
+    /// </summary>
+    private void SaveAndRebuild()
+    {
+        SaveSettings();
+        Db.ResetIngest();
+        Watcher.RequestScan();
+        _status = "Saved — rebuilding from logs now.";
     }
 }

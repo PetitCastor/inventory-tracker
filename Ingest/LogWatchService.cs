@@ -39,6 +39,18 @@ public sealed class LogWatchService(
         catch (SemaphoreFullException) { /* a pass is already pending */ }
     }
 
+    /// <summary>
+    /// Re-points the watcher after Settings changes the log directory, and scans the new
+    /// location right away rather than waiting for the next sweep.
+    /// </summary>
+    public void RestartWatching()
+    {
+        _watcher?.Dispose();
+        _watcher = null;
+        StartWatching();
+        RequestScan();
+    }
+
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         Ingest();
