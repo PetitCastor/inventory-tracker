@@ -145,59 +145,6 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
         return new ResolvedName(className, className, NameMatch.None, null);
     }
 
-    /// <summary>
-    /// Class names whose catalogue entry matches <paramref name="query"/>. This is the
-    /// "find" direction: the user types a human name and we need class names to look up.
-    /// </summary>
-    public IReadOnlyList<string> Search(string query, int limit = 200)
-    {
-        query = query.Trim();
-        if (query.Length == 0) return [];
-
-        using var cn = db.Open();
-        using var cmd = cn.CreateCommand();
-
-        // Prefix-match the last token so results narrow as the user types.
-        cmd.CommandText = """
-            SELECT class_name FROM wiki_item_fts
-            WHERE wiki_item_fts MATCH $q
-            ORDER BY rank
-            LIMIT $n
-            """;
-        cmd.Parameters.AddWithValue("$q", ToPrefixQuery(query));
-        cmd.Parameters.AddWithValue("$n", limit);
-
-        var hits = new List<string>();
-        try
-        {
-            using var r = cmd.ExecuteReader();
-            while (r.Read()) hits.Add(r.GetString(0));
-        }
-        catch (SqliteException)
-        {
-            // Malformed FTS expression (stray quote, bare operator) — treat as no matches
-            // rather than surfacing a syntax error for something the user is still typing.
-            return [];
-        }
-
-        return hits;
-    }
-
-    /// <summary>
-    /// Turns free text into an FTS5 expression: each word becomes a quoted prefix term so
-    /// punctuation in the input cannot be read as query syntax.
-    /// </summary>
-    private static string ToPrefixQuery(string query)
-    {
-        var terms = query
-            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-            .Select(t => t.Replace("\"", "", StringComparison.Ordinal))
-            .Where(t => t.Length > 0)
-            .Select(t => $"\"{t}\"*");
-
-        return string.Join(' ', terms);
-    }
-
     private static string Display(WikiItem item, string fallback) =>
         string.IsNullOrWhiteSpace(item.DisplayName) ? fallback : item.DisplayName;
 

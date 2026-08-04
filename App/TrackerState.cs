@@ -53,24 +53,4 @@ public sealed class TrackerState(TrackerDb db, WikiNameService names)
 
         Changed?.Invoke();
     }
-
-    /// <summary>
-    /// Items whose display name, class name, or manufacturer match the query. Falls back
-    /// to a plain substring match so items missing from the wiki catalogue stay findable.
-    /// </summary>
-    public IReadOnlyList<NamedHolding> Find(string query)
-    {
-        var all = Current.Holdings;
-        query = query.Trim();
-        if (query.Length == 0) return all;
-
-        var fromCatalogue = names.Search(query).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        return all
-            .Where(h =>
-                fromCatalogue.Contains(h.ClassName) ||
-                h.Display.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                h.ClassName.Contains(query, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-    }
 }

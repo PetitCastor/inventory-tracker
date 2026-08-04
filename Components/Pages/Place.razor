@@ -1,4 +1,4 @@
-@page "/place"
+@page "/"
 @rendermode InteractiveServer
 @implements IDisposable
 @using LogParser.Model
@@ -7,9 +7,7 @@
 @using NamedPlace = LogParser.Naming.Place
 @inject TrackerState State
 
-<PageTitle>Browse by place — Star Citizen inventory</PageTitle>
-
-<h1>Browse by place</h1>
+<PageTitle>Browse — Star Citizen inventory</PageTitle>
 
 @if (_systems.Count == 0)
 {
@@ -18,45 +16,35 @@
 else
 {
     <div class="picker">
-        <select @bind="_system" @bind:after="OnSystemChanged">
-            @foreach (var system in _systems)
-            {
-                <option value="@system">@system</option>
-            }
-        </select>
+        <div class="picker-field">
+            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <circle cx="12" cy="12" r="3.5" />
+                <ellipse cx="12" cy="12" rx="10" ry="3.4" transform="rotate(-25 12 12)" />
+            </svg>
+            <select @bind="_system" @bind:after="OnSystemChanged">
+                @foreach (var system in _systems)
+                {
+                    <option value="@system">@system</option>
+                }
+            </select>
+        </div>
 
-        <select @bind="_placeId" @bind:after="Recompute">
-            @foreach (var place in _placesInSystem)
-            {
-                <option value="@place.Id">@place.Name</option>
-            }
-        </select>
+        <div class="picker-field">
+            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <path d="M12 21s7-6.79 7-12a7 7 0 1 0-14 0c0 5.21 7 12 7 12z" />
+                <circle cx="12" cy="9" r="2.5" />
+            </svg>
+            <select @bind="_placeId" @bind:after="Recompute">
+                @foreach (var place in _placesInSystem)
+                {
+                    <option value="@place.Id">@place.Name</option>
+                }
+            </select>
+        </div>
     </div>
-
-    @* The game logs movements, never an inventory listing, so this is always a floor. *@
-    <p class="subtle caveat-standing">
-        Rebuilt from movement logs. Star Citizen never writes down what an inventory contains,
-        so anything bought, looted or claimed without a recorded move — and anything the server
-        changed on its own, like a death or a claim — will not show up here.
-    </p>
 
     @if (_place is not null)
     {
-        @if (!_place.NameVerified || !_place.SystemVerified)
-        {
-            <p class="subtle">
-                @if (!_place.NameVerified)
-                {
-                    <span>The game never wrote this place's name, so its internal id is shown instead. </span>
-                }
-                @if (!_place.SystemVerified)
-                {
-                    <span>Its system was inferred rather than observed. </span>
-                }
-                <span>Correct it in <code>place_override.json</code> next to the database.</span>
-            </p>
-        }
-
         <section class="place">
             <h2>Directly in local inventory <span class="badge-count">@_direct.Sum(r => r.Quantity)</span></h2>
             @if (_direct.Count == 0)

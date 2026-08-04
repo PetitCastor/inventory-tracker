@@ -37,6 +37,17 @@ if (-not (Test-Path $project)) {
     throw "Project not found: $project"
 }
 
+# A running instance locks its own exe, which would otherwise fail the clean below
+# with an opaque "access denied" instead of saying what's actually holding it.
+$distExe = Join-Path $dist 'LogParser.exe'
+Get-Process -Name 'LogParser' -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -eq $distExe } |
+    ForEach-Object {
+        Write-Host "Stopping running instance (pid $($_.Id))" -ForegroundColor Yellow
+        Stop-Process -Id $_.Id -Force
+        $_.WaitForExit(5000) | Out-Null
+    }
+
 # Start clean so a stale exe can never be mistaken for a fresh build.
 if (Test-Path $dist) {
     Remove-Item -LiteralPath $dist -Recurse -Force
