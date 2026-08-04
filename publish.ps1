@@ -38,10 +38,11 @@ if (-not (Test-Path $project)) {
 }
 
 # A running instance locks its own exe, which would otherwise fail the clean below
-# with an opaque "access denied" instead of saying what's actually holding it.
-$distExe = Join-Path $dist 'InventoryTracker.exe'
-Get-Process -Name 'InventoryTracker' -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -eq $distExe } |
+# with an opaque "access denied" instead of saying what's actually holding it. Matched
+# by directory rather than a fixed name/path so a stale exe left over from before a
+# rename (e.g. an old LogParser.exe still running out of dist/) is still caught.
+Get-Process -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -and $_.Path.StartsWith($dist, [StringComparison]::OrdinalIgnoreCase) } |
     ForEach-Object {
         Write-Host "Stopping running instance (pid $($_.Id))" -ForegroundColor Yellow
         Stop-Process -Id $_.Id -Force
