@@ -79,7 +79,15 @@ public sealed class HoldingResolver
             .GroupBy(x => x.Class)
             .ToDictionary(g => g.Key, g => g.Select(x => (x.Geid, x.First, x.Last)).ToList());
 
-        _ledger = LedgerReplay.Run(moves, worn);
+        // Container class is only known once its Token Flow line has been seen, which can be
+        // anywhere in the log relative to a move that targets it — so this can only be
+        // resolved here, after ingestion, with the full catalogue in hand.
+        var backpackKeys = containers
+            .Where(kv => IsBackpack(kv.Value.ClassName))
+            .Select(kv => kv.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        _ledger = LedgerReplay.Run(moves, worn, backpackKeys);
     }
 
     /// <summary>The whole move history is only a few thousand rows, so resolve in memory.</summary>
@@ -422,6 +430,15 @@ public sealed class HoldingResolver
 
     private static readonly string[] ApparelMarks =
         ["backpack", "undersuit", "_core_", "_legs_", "_arms_"];
+
+    /// <summary>
+    /// Whatever put an item in the backpack — dragged from a location, another container,
+    /// or straight out of hand — says nothing about where the player actually is, so it is
+    /// never worth recording as a placement. Recognised by class name, the same reliable
+    /// signal <see cref="IsApparel"/> uses.
+    /// </summary>
+    private static bool IsBackpack(string? className) =>
+        className is not null && className.Contains("backpack", StringComparison.OrdinalIgnoreCase);
 
     private static InventoryKind ParseKind(string s) =>
         Enum.TryParse<InventoryKind>(s, out var k) ? k : InventoryKind.Unknown;
