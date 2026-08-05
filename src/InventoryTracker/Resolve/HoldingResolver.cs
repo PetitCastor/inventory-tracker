@@ -275,6 +275,7 @@ public sealed class HoldingResolver
                 {
                     var info = _containers.GetValueOrDefault(key);
                     var label = info?.ClassName ?? $"container {key}";
+                    var lootable = IsLootable(info?.ClassName);
 
                     // Worn apparel (backpack, chest, legs, arms, undersuit) is not a place — it
                     // travels with the player. Its contents aggregate an item's moves, but it
@@ -307,8 +308,13 @@ public sealed class HoldingResolver
 
                     // Boxes and crates get set down rather than stored, so they often have
                     // no move history at all. Opening one still proves it was within arm's
-                    // reach, which pins it to wherever the player was standing.
-                    if (info?.LastLocationId is { } seenAt)
+                    // reach, which pins it to wherever the player was standing — but a
+                    // lootable container is found, not owned, and is exactly as likely to
+                    // be opened out in the field as at a real station. Pinning those spawns
+                    // a "place" for every wreck and crate ever looted, most never named by
+                    // the game, which is what fills the browse list with "Unknown system".
+                    // Lootable containers are therefore never tracked as a place at all.
+                    if (!lootable && info?.LastLocationId is { } seenAt)
                     {
                         score *= 0.8;
                         caveats.Add($"'{label}' was placed by where you last opened it, not by a recorded move");
@@ -328,7 +334,9 @@ public sealed class HoldingResolver
                     }
 
                     score *= 0.6;
-                    caveats.Add($"we have never seen where '{label}' itself is kept");
+                    caveats.Add(lootable
+                        ? $"'{label}' is a lootable container, not a tracked place"
+                        : $"we have never seen where '{label}' itself is kept");
                     return chain;
                 }
 
@@ -430,6 +438,15 @@ public sealed class HoldingResolver
 
     private static readonly string[] ApparelMarks =
         ["backpack", "undersuit", "_core_", "_legs_", "_arms_"];
+
+    /// <summary>
+    /// Whether a container class is one of the game's found-loot crates (class names like
+    /// <c>Lootable_Container_...</c>) rather than storage the player actually owns. These are
+    /// scattered through the world and opened once in passing, so unlike a carryable box or a
+    /// freight elevator, their position is not worth remembering as a place.
+    /// </summary>
+    private static bool IsLootable(string? className) =>
+        className is not null && className.Contains("lootable", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Whatever put an item in the backpack — dragged from a location, another container,
