@@ -11,7 +11,12 @@
     <RootNamespace>InventoryTracker</RootNamespace>
     <AssemblyName>InventoryTracker</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <ApplicationIcon>..\..\assets\InventoryTracker.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\assets\InventoryTracker.ico" LogicalName="app.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />

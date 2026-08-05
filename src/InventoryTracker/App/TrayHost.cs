@@ -100,7 +100,7 @@ public static class TrayHost
 
         var icon = new NotifyIcon
         {
-            Icon = SystemIcons.Application,
+            Icon = LoadAppIcon(),
             Text = "InventoryTracker",
             Visible = true,
             ContextMenuStrip = menu,
@@ -108,6 +108,14 @@ public static class TrayHost
 
         icon.DoubleClick += (_, _) => OpenBrowser(options.Url);
         return icon;
+    }
+
+    // Embedded alongside blazor.web.js so the tray icon survives single-file publish
+    // rather than depending on a loose .ico sitting next to the exe.
+    private static Icon LoadAppIcon()
+    {
+        using var stream = typeof(TrayHost).Assembly.GetManifestResourceStream("app.ico");
+        return stream is null ? SystemIcons.Application : new Icon(stream);
     }
 
     private static void OpenBrowser(string url) =>
