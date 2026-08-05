@@ -44,7 +44,7 @@ public sealed class TrackerDb
     /// logs are the source of truth — so a mismatch is resolved by rebuilding rather
     /// than by writing migrations.
     /// </summary>
-    private const int SchemaVersion = 5;
+    private const int SchemaVersion = 7;
 
     public void Initialize()
     {
@@ -161,12 +161,17 @@ public sealed class TrackerDb
         -- Opening a container proves it was within reach, so the player's location at
         -- that moment places it. For SCU boxes and lootable crates -- which are set down
         -- and never "stored" anywhere -- this is the only thing that locates them at all.
+        -- The class is nullable because a container the player only ever moves items in and
+        -- out of is never named by any log line: the row then exists purely to pin it.
+        -- capacity is in µSCU, from the drag lines: 2,000,000 is a 2 SCU crate. It is the
+        -- only description of a container the game never names.
         CREATE TABLE IF NOT EXISTS container_class (
             geid           TEXT PRIMARY KEY,
-            class_name     TEXT NOT NULL,
+            class_name     TEXT,
             last_seen      TEXT,
             last_loc_id    TEXT,
-            last_loc_ts    TEXT
+            last_loc_ts    TEXT,
+            capacity       INTEGER
         );
 
         -- Ports worn on the player's body, from <AttachmentReceived>. Re-emitted on every

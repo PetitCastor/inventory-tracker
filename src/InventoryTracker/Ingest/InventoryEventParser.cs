@@ -99,6 +99,13 @@ public static partial class InventoryEventParser
         RegexOptions.CultureInvariant)]
     private static partial Regex TokenFlow();
 
+    // Source[0:ClientOnly:1] Capacity[196000] ... | Target[681562156430:Container:0] Capacity[2000000] ...
+    [GeneratedRegex(
+        @"^Source\[(?<srcinv>[^\]]*)\] Capacity\[(?<srccap>-?\d+)\].*?\| " +
+        @"Target\[(?<tgtinv>[^\]]*)\] Capacity\[(?<tgtcap>-?\d+)\]",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex DragCapacity();
+
     [GeneratedRegex(
         @"Landing \[\d+\] -> \[(?<landing>\d+)\]\. Location \[\d+\] -> \[(?<location>\d+)\]",
         RegexOptions.CultureInvariant)]
@@ -116,6 +123,7 @@ public static partial class InventoryEventParser
             "Player Inventory Request Complete" => ParseComplete(line, PlayerRequestComplete()),
             "Inventory Request Completed" => ParseComplete(line, RequestCompleted()),
             "Inventory Token Flow" => ParseTokenFlow(line),
+            "OnDragInventoryItemModifyTarget" => ParseDragCapacity(line),
             "Update Inventory Location" => ParseLocationChange(line),
             "RequestLocationInventory" => ParseLocationName(line),
             "UnstowPendingEntities" => ParseSpawn(line),
@@ -300,6 +308,19 @@ public static partial class InventoryEventParser
         if (entityGeid != geid) return null;
 
         return new ContainerIdentified(line.Timestamp, geid, cls);
+    }
+
+    private static InventoryEvent? ParseDragCapacity(LogLine line)
+    {
+        var m = DragCapacity().Match(line.Rest);
+        if (!m.Success) return null;
+
+        return new ContainerCapacitySeen(
+            line.Timestamp,
+            InventoryRef.Parse(m.Groups["srcinv"].Value),
+            long.Parse(m.Groups["srccap"].Value),
+            InventoryRef.Parse(m.Groups["tgtinv"].Value),
+            long.Parse(m.Groups["tgtcap"].Value));
     }
 
     private static InventoryEvent? ParseLocationChange(LogLine line)

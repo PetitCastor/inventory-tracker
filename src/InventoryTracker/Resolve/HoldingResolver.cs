@@ -26,8 +26,11 @@ public sealed class HoldingResolver
     /// <summary>Past this age a placement is old enough that the world has probably moved on.</summary>
     private static readonly TimeSpan StaleAfter = TimeSpan.FromDays(30);
 
-    /// <summary>A container's class plus the last place we saw the player open it.</summary>
-    public sealed record ContainerInfo(string ClassName, string? LastLocationId, DateTimeOffset? LastSeenAt);
+    /// <summary>A container's class plus the last place we saw the player open it. The class
+    /// is null for a container the game never named — its capacity in µSCU, if a drag line
+    /// ever reported one, is then all there is to describe it by.</summary>
+    public sealed record ContainerInfo(
+        string? ClassName, string? LastLocationId, DateTimeOffset? LastSeenAt, long? Capacity);
 
     private readonly List<MoveRecord> _moves;
     private readonly Dictionary<string, string> _locationNames;
@@ -274,7 +277,7 @@ public sealed class HoldingResolver
                 case InventoryKind.Container:
                 {
                     var info = _containers.GetValueOrDefault(key);
-                    var label = info?.ClassName ?? $"container {key}";
+                    var label = info?.ClassName ?? SizeLabel(info?.Capacity, key);
                     var lootable = IsLootable(info?.ClassName);
 
                     // Worn apparel (backpack, chest, legs, arms, undersuit) is not a place — it
@@ -439,6 +442,24 @@ public sealed class HoldingResolver
     private static readonly string[] ApparelMarks =
         ["backpack", "undersuit", "_core_", "_legs_", "_arms_"];
 
+    /// <summary>One SCU as the logs count it. Capacities are written in µSCU.</summary>
+    private const double MicroScuPerScu = 1_000_000;
+
+    /// <summary>
+    /// What to call a container the game never named. Its capacity is the one thing ever
+    /// said about it, and it is also how the player thinks of the thing they set down —
+    /// a 2 SCU box. Without even that, the geid is all that distinguishes it.
+    /// </summary>
+    private static string SizeLabel(long? capacity, string key)
+    {
+        if (capacity is not > 0) return $"container {key}";
+
+        var scu = capacity.Value / MicroScuPerScu;
+        return scu >= 1
+            ? $"{scu:0.##} SCU container"
+            : $"{capacity.Value / (MicroScuPerScu / 100):0.##} cSCU container";
+    }
+
     /// <summary>
     /// Whether a container class is one of the game's found-loot crates (class names like
     /// <c>Lootable_Container_...</c>) rather than storage the player actually owns. These are
@@ -474,16 +495,17 @@ public sealed class HoldingResolver
     private static Dictionary<string, ContainerInfo> LoadContainers(SqliteConnection cn)
     {
         using var cmd = cn.CreateCommand();
-        cmd.CommandText = "SELECT geid, class_name, last_loc_id, last_loc_ts FROM container_class";
+        cmd.CommandText = "SELECT geid, class_name, last_loc_id, last_loc_ts, capacity FROM container_class";
 
         var map = new Dictionary<string, ContainerInfo>();
         using var r = cmd.ExecuteReader();
         while (r.Read())
         {
             map[r.GetString(0)] = new ContainerInfo(
-                r.GetString(1),
+                r.IsDBNull(1) ? null : r.GetString(1),
                 r.IsDBNull(2) ? null : r.GetString(2),
-                r.IsDBNull(3) ? null : DateTimeOffset.Parse(r.GetString(3), CultureInfo.InvariantCulture));
+                r.IsDBNull(3) ? null : DateTimeOffset.Parse(r.GetString(3), CultureInfo.InvariantCulture),
+                r.IsDBNull(4) ? null : r.GetInt64(4));
         }
         return map;
     }

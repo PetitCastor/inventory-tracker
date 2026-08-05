@@ -69,6 +69,7 @@ internal static class Cli
         Console.WriteLine($"Moves inserted     : {stats.MovesInserted:N0}");
         Console.WriteLine($"Completions applied: {stats.CompletionsApplied:N0}");
         Console.WriteLine($"Container IDs seen : {stats.ContainersIdentified:N0}");
+        Console.WriteLine($"Capacity sightings : {stats.CapacitiesSeen:N0}");
         Console.WriteLine($"Location bindings  : {stats.LocationsNamed:N0}");
         Console.WriteLine($"Location conflicts : {stats.LocationConflicts:N0}");
         Console.WriteLine($"Batch moves fanned : {stats.BatchMovesExpanded:N0}");

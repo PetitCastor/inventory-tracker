@@ -150,6 +150,19 @@ public sealed record ContainerIdentified(
     string ClassName) : InventoryEvent(Timestamp);
 
 /// <summary>
+/// <c>&lt;OnDragInventoryItemModifyTarget&gt; Source[&lt;inv&gt;] Capacity[n] ... | Target[&lt;inv&gt;] Capacity[n] ...</c> —
+/// how much each end of a drag can hold, in µSCU. For a box the game never names this is the
+/// only description of it there is: 2,000,000 µSCU is the 2 SCU crate the player is looking at.
+/// A capacity of -1 means the side is INVALID and says nothing.
+/// </summary>
+public sealed record ContainerCapacitySeen(
+    DateTimeOffset Timestamp,
+    InventoryRef Source,
+    long SourceCapacity,
+    InventoryRef Target,
+    long TargetCapacity) : InventoryEvent(Timestamp);
+
+/// <summary>
 /// Where the player currently is, tracked from <see cref="LocationChanged"/>. Not an
 /// event in its own right — the ingestor carries it so that opening a container can be
 /// pinned to a place.

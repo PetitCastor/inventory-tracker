@@ -13,6 +13,7 @@ public sealed record IngestStats
     public int MovesInserted { get; set; }
     public int CompletionsApplied { get; set; }
     public int ContainersIdentified { get; set; }
+    public int CapacitiesSeen { get; set; }
     public int LocationsNamed { get; set; }
     public int LocationConflicts { get; set; }
     public int GeidsRecovered { get; set; }
@@ -204,6 +205,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                     InventoryRef.Invalid, stored.Target, stored.ClassName, stored.Geid, Amount: 1);
 
                 InsertMove(cn, tx, sessionId, lineOffset, synthetic, caller: null, itemIx: 0);
+                TouchContainer(cn, tx, stored.Target, stored.Timestamp, state.CurrentLocation);
                 break;
             }
 
@@ -226,6 +228,14 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             case ContainerIdentified container:
                 UpsertContainer(cn, tx, container, state.CurrentLocation);
                 stats.ContainersIdentified++;
+                break;
+
+            // A drag says how big both ends are. For a crate the game never names, that size
+            // is the only thing there is to call it by, and hovering over it proves reach.
+            case ContainerCapacitySeen cap:
+                TouchContainer(cn, tx, cap.Source, cap.Timestamp, state.CurrentLocation, cap.SourceCapacity);
+                TouchContainer(cn, tx, cap.Target, cap.Timestamp, state.CurrentLocation, cap.TargetCapacity);
+                stats.CapacitiesSeen++;
                 break;
 
             // No line carries both a location id and its name. The id arrives here...
@@ -309,6 +319,12 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         IngestStats stats,
         int itemIx = 0)
     {
+        // Both ends of a drag were in reach when it happened, which is what places a box
+        // the game never identifies. Done before the dedupe below so a re-read of a live
+        // file still pins containers whose moves were ingested on an earlier pass.
+        TouchContainer(cn, tx, move.Source, move.Timestamp, state.CurrentLocation);
+        TouchContainer(cn, tx, move.Target, move.Timestamp, state.CurrentLocation);
+
         // The spawn that names the instance sometimes lands before the move it fulfils.
         if (move.ItemGeid is null &&
             state.PendingGeids.TryGetValue(move.RequestNo, out var spawned) &&
@@ -548,26 +564,54 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     /// older log file cannot overwrite a newer sighting.
     /// </summary>
     private static void UpsertContainer(
-        SqliteConnection cn, SqliteTransaction tx, ContainerIdentified c, PlayerLocation? at)
+        SqliteConnection cn, SqliteTransaction tx, ContainerIdentified c, PlayerLocation? at) =>
+        UpsertContainer(cn, tx, c.Geid, c.ClassName, capacity: null, c.Timestamp, at);
+
+    /// <summary>
+    /// Notes that a container was within the player's reach, whatever it is, and how much it
+    /// holds when the line says so. Dragging an item into or out of one proves reach as surely
+    /// as opening it does, and it is the only evidence there is for a box the game never
+    /// names: a container that is only ever a move endpoint gets no Token Flow line, so
+    /// without this it has no row at all and everything stored in it resolves to nowhere.
+    /// </summary>
+    private static void TouchContainer(
+        SqliteConnection cn, SqliteTransaction tx, InventoryRef inv, DateTimeOffset at,
+        PlayerLocation? here, long? capacity = null)
+    {
+        if (inv.Kind != InventoryKind.Container || inv.HoldingKey.Length == 0) return;
+
+        // -1 is what an INVALID side reports, and 0 says nothing either.
+        UpsertContainer(
+            cn, tx, inv.HoldingKey, className: null, capacity > 0 ? capacity : null, at, here);
+    }
+
+    private static void UpsertContainer(
+        SqliteConnection cn, SqliteTransaction tx,
+        string geid, string? className, long? capacity, DateTimeOffset seenAt, PlayerLocation? at)
     {
         using var cmd = cn.CreateCommand();
         cmd.Transaction = tx;
+
+        // COALESCE keeps what an earlier line already established: a sighting that only
+        // proves reach must never erase the class, nor the capacity, that another line gave.
         cmd.CommandText = """
-            INSERT INTO container_class(geid, class_name, last_seen, last_loc_id, last_loc_ts)
-            VALUES($g, $c, $t, $loc, $lts)
+            INSERT INTO container_class(geid, class_name, last_seen, last_loc_id, last_loc_ts, capacity)
+            VALUES($g, $c, $t, $loc, $lts, $cap)
             ON CONFLICT(geid) DO UPDATE SET
-                class_name  = $c,
+                class_name  = COALESCE($c, class_name),
+                capacity    = COALESCE($cap, capacity),
                 last_seen   = MAX(last_seen, $t),
                 last_loc_id = CASE WHEN $loc IS NOT NULL AND ($lts > last_loc_ts OR last_loc_ts IS NULL)
                                    THEN $loc ELSE last_loc_id END,
                 last_loc_ts = CASE WHEN $loc IS NOT NULL AND ($lts > last_loc_ts OR last_loc_ts IS NULL)
                                    THEN $lts ELSE last_loc_ts END
             """;
-        cmd.Parameters.AddWithValue("$g", c.Geid);
-        cmd.Parameters.AddWithValue("$c", c.ClassName);
-        cmd.Parameters.AddWithValue("$t", Iso(c.Timestamp));
+        cmd.Parameters.AddWithValue("$g", geid);
+        cmd.Parameters.AddWithValue("$c", (object?)className ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$cap", (object?)capacity ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$t", Iso(seenAt));
         cmd.Parameters.AddWithValue("$loc", (object?)at?.LocationId ?? DBNull.Value);
-        cmd.Parameters.AddWithValue("$lts", at is null ? DBNull.Value : Iso(c.Timestamp));
+        cmd.Parameters.AddWithValue("$lts", at is null ? DBNull.Value : Iso(seenAt));
         cmd.ExecuteNonQuery();
     }
 
