@@ -1,12 +1,12 @@
-# InventoryTracker
+# Inventory Tracker
 
 Ever stashed a rifle in a 2 SCU box three stations ago and had no idea where it went? Same.
 
-InventoryTracker watches Star Citizen's `Game.log` while you play and reconstructs where your stuff actually is by replaying every move it sees — drags, drops, stows, container transfers, the works. No manual logging, no spreadsheet. Just play, and the tracker builds the picture from what the game already writes to disk.
+Inventory Tracker watches Star Citizen's `Game.log` while you play and reconstructs where your stuff actually is by replaying every move it sees — drags, drops, stows, container transfers, the works. No manual logging, no spreadsheet. Just play, and the tracker builds the picture from what the game already writes to disk.
 
 ## How it works
 
-Star Citizen never hands you a clean inventory snapshot — there's no "here's everything you own" event. What it does log, constantly, is *movement*: an item leaving one place and landing in another. InventoryTracker reads that stream and replays it forward, so "where's my pants" becomes a lookup instead of a memory test.
+Star Citizen never hands you a clean inventory snapshot — there's no "here's everything you own" event. What it does log, constantly, is *movement*: an item leaving one place and landing in another. Inventory Tracker reads that stream and replays it forward, so "where's my pants" becomes a lookup instead of a memory test.
 
 It runs as a small tray app with a local web UI (`http://localhost:5730`) — browse by system and station, drill into a container's contents, or trace one item's full history.
 
