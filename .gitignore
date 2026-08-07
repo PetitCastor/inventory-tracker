@@ -6,7 +6,11 @@ dist/
 *.db-wal
 *.db-shm
 .vs/
+.rtk/
+
+# Node tooling that some editor/agent plugins drop into the repo root. This is a .NET
+# project with no JavaScript build step, so the manifests are ignored rather than tracked
+# — nothing here should ever need them.
 node_modules/
 package.json
 package-lock.json
-.rtk/

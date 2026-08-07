@@ -20,9 +20,31 @@ public static class TrayHost
 {
     private const string WikiClient = "star-citizen-wiki";
 
+    /// <summary>Outbound identification to api.star-citizen.wiki. Shared with the CLI path.</summary>
+    public const string WikiUserAgent = "InventoryTracker/1.0 (Star Citizen inventory tracker)";
+
+    /// <summary>Session-scoped, so a second desktop session gets its own instance.</summary>
+    private const string SingleInstanceMutex = @"Local\InventoryTracker.SingleInstance";
+
     public static int Run(string[] args)
     {
         var options = TrackerOptions.Load();
+
+        // The port is fixed so the bookmark keeps working, which means a second instance
+        // cannot bind and would die on app.Start() with no console to report it. Hand the
+        // user the running instance's window instead.
+        using var single = new Mutex(initiallyOwned: true, SingleInstanceMutex, out var isFirstInstance);
+        if (!isFirstInstance)
+        {
+            OpenBrowser(options.Url);
+            return 0;
+        }
+
+        // A crash in an event handler or on a background thread would otherwise take the
+        // tray app down silently: it is a WinExe, so there is no console for the trace.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => ReportFatal(e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) => ReportFatal(e.ExceptionObject as Exception);
 
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseUrls(options.Url);
@@ -42,7 +64,7 @@ public static class TrayHost
         builder.Services.AddHttpClient(WikiClient, c =>
         {
             c.Timeout = TimeSpan.FromSeconds(60);
-            c.DefaultRequestHeaders.UserAgent.ParseAdd("SCLogParser/1.0 (inventory tracker)");
+            c.DefaultRequestHeaders.UserAgent.ParseAdd(WikiUserAgent);
         });
         builder.Services.AddSingleton(sp => new WikiNameService(
             sp.GetRequiredService<TrackerDb>(),
@@ -78,7 +100,22 @@ public static class TrayHost
         app.MapRazorComponents<Root>().AddInteractiveServerRenderMode();
 
         // Kestrel runs alongside the WinForms message loop rather than owning the thread.
-        app.Start();
+        try
+        {
+            app.Start();
+        }
+        catch (IOException ex)
+        {
+            // Almost always the port being held by something else — the single-instance
+            // check above covers our own second copy, but not an unrelated listener.
+            MessageBox.Show(
+                $"Could not start the local UI on {options.Url}.\n\n{ex.Message}\n\n" +
+                $"Another program may be using the port. Change it in {AppConfig.DefaultPath} and relaunch.",
+                "Inventory Tracker",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return 1;
+        }
 
         using var tray = BuildTrayIcon(app, options);
         // Land first-time users on the setup wizard; the UI gate enforces it regardless.
@@ -99,11 +136,30 @@ public static class TrayHost
         menu.Items.Add("Rescan logs now", null, (_, _) =>
             app.Services.GetRequiredService<LogWatchService>().RequestScan());
 
+        // The handler is async void — an EventHandler returns void — so nothing can observe
+        // what it throws and an unhandled exception would end the process. RefreshAsync
+        // makes ~62 network calls, so failure is routine rather than exceptional: being
+        // offline must not cost the user their tracker.
         menu.Items.Add("Refresh item names from wiki", null, async (_, _) =>
         {
-            var names = app.Services.GetRequiredService<WikiNameService>();
-            await names.RefreshAsync();
-            app.Services.GetRequiredService<TrackerState>().Rebuild();
+            try
+            {
+                var names = app.Services.GetRequiredService<WikiNameService>();
+                await names.RefreshAsync();
+                app.Services.GetRequiredService<TrackerState>().Rebuild();
+            }
+            catch (Exception ex)
+            {
+                app.Services.GetRequiredService<ILogger<WebApplication>>()
+                    .LogWarning(ex, "Could not refresh item names");
+
+                MessageBox.Show(
+                    $"Could not download item names.\n\n{ex.Message}\n\n" +
+                    "The tracker keeps working; items just show their raw class names.",
+                    "Inventory Tracker",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
         });
 
         menu.Items.Add(new ToolStripSeparator());
@@ -129,6 +185,32 @@ public static class TrayHost
         return stream is null ? SystemIcons.Application : new Icon(stream);
     }
 
-    private static void OpenBrowser(string url) =>
-        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+    private static void OpenBrowser(string url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            // No default browser, or the association is broken. The tray icon still works,
+            // and the URL is fixed, so this is recoverable by hand.
+            MessageBox.Show(
+                $"Could not open a browser.\n\n{ex.Message}\n\nOpen {url} manually.",
+                "Inventory Tracker",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
+    private static void ReportFatal(Exception? ex)
+    {
+        MessageBox.Show(
+            $"Inventory Tracker hit an unexpected error and has to close.\n\n{ex}",
+            "Inventory Tracker",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Error);
+
+        Application.Exit();
+    }
 }

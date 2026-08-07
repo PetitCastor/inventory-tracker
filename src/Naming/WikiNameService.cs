@@ -52,6 +52,14 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
     /// <summary>How many trailing "_token" segments to strip before giving up on a match.</summary>
     private const int MaxSuffixDrops = 3;
 
+    /// <summary>
+    /// Guards <see cref="_cache"/>. The service is a singleton by design (it holds the whole
+    /// ~12k-entry catalogue), so <see cref="Resolve"/> is called from Blazor circuit threads
+    /// and from the background ingest thread while <see cref="RefreshAsync"/> may be
+    /// invalidating from a third.
+    /// </summary>
+    private readonly Lock _cacheGate = new();
+
     private Dictionary<string, WikiItem>? _cache;
 
     /// <summary>
@@ -97,9 +105,12 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
         }
         while (page <= lastPage);
 
-        RebuildSearchIndex(cn);
         Stamp(cn, "wiki_refreshed_at", DateTimeOffset.UtcNow.ToString("O"));
-        _cache = null;
+
+        lock (_cacheGate)
+        {
+            Volatile.Write(ref _cache, null);
+        }
 
         return written;
     }
@@ -150,8 +161,21 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
 
     private Dictionary<string, WikiItem> Cache()
     {
-        if (_cache is not null) return _cache;
+        // Fast path without the lock; the field is only ever published fully built.
+        if (Volatile.Read(ref _cache) is { } ready) return ready;
 
+        lock (_cacheGate)
+        {
+            if (_cache is not null) return _cache;
+
+            var map = LoadCatalogue();
+            Volatile.Write(ref _cache, map);
+            return map;
+        }
+    }
+
+    private Dictionary<string, WikiItem> LoadCatalogue()
+    {
         using var cn = db.Open();
         using var cmd = cn.CreateCommand();
         cmd.CommandText =
@@ -166,7 +190,7 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
                 Str(r, 1), Str(r, 2), Str(r, 3), Str(r, 4), Str(r, 5), Str(r, 6));
         }
 
-        return _cache = map;
+        return map;
     }
 
     private static string? Str(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
@@ -224,21 +248,6 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
         cmd.Parameters.AddWithValue("$i", (object?)item.ImageUrl ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$w", (object?)item.WebUrl ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$f", DateTimeOffset.UtcNow.ToString("O"));
-        cmd.ExecuteNonQuery();
-    }
-
-    private static void RebuildSearchIndex(SqliteConnection cn)
-    {
-        using var cmd = cn.CreateCommand();
-        cmd.CommandText = """
-            DELETE FROM wiki_item_fts;
-            INSERT INTO wiki_item_fts(class_name, display_name, manufacturer, type_label)
-            SELECT class_name,
-                   COALESCE(display_name, ''),
-                   COALESCE(manufacturer, ''),
-                   COALESCE(type_label, '')
-            FROM wiki_item;
-            """;
         cmd.ExecuteNonQuery();
     }
 

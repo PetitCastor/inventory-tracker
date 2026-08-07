@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="InventoryTracker.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
     <!-- Microsoft.Data.Sqlite 10.0.0 pulls SQLitePCLRaw 2.1.11, which carries
          GHSA-2m69-gcr7-jv3q. Pin the bundle forward past the advisory. -->
@@ -33,8 +37,6 @@
          script is simply absent and no interactive circuit is ever established.
       2. Static web assets are written next to the executable on publish, which
          would defeat the single-file output.
-    BlazorFrameworkStaticWebAssetRoot comes from the framework assets package and is
-    only set once NuGet's .targets are imported, so this has to run as a target.
   -->
   <ItemGroup>
     <EmbeddedResource Include="$(NuGetPackageRoot)microsoft.aspnetcore.app.internal.assets\*\_framework\blazor.web.js"
@@ -42,9 +44,16 @@
   </ItemGroup>
 
   <!-- Embedding is easy to lose silently: the app would still serve pages, they
-       would just never respond to input. Fail the build instead. -->
+       would just never respond to input. Fail the build instead.
+       The check must filter by LogicalName rather than test @(EmbeddedResource) for
+       emptiness: the application icon above is also an EmbeddedResource, so the list
+       is never empty and a bare emptiness test would never fire. -->
   <Target Name="VerifyBlazorScriptEmbedded" BeforeTargets="CoreCompile">
-    <Error Condition="'@(EmbeddedResource)' == ''"
+    <ItemGroup>
+      <_BlazorStartupScript Include="@(EmbeddedResource)"
+                            Condition="'%(EmbeddedResource.LogicalName)' == 'blazor.web.js'" />
+    </ItemGroup>
+    <Error Condition="'@(_BlazorStartupScript)' == ''"
            Text="blazor.web.js was not found under '$(NuGetPackageRoot)microsoft.aspnetcore.app.internal.assets'. Without it the UI renders but never becomes interactive." />
   </Target>
 

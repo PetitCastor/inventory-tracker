@@ -4,6 +4,9 @@
   </Folder>
   <Folder Name="/Solution Items/">
     <File Path="README.md" />
+    <File Path="VERSION" />
+    <File Path="publish.ps1" />
   </Folder>
   <Project Path="src/InventoryTracker.csproj" />
+  <Project Path="tests/InventoryTracker.Tests/InventoryTracker.Tests.csproj" />
 </Solution>

@@ -12,7 +12,68 @@ public sealed record LogFile(string Path, DateTime LastWrite, bool IsLive);
 /// </summary>
 public static partial class LogFileLocator
 {
-    public const string DefaultLogDir = @"E:\Games\StarCitizen\LIVE";
+    /// <summary>The channel folders the launcher creates, most likely first.</summary>
+    private static readonly string[] Channels = ["LIVE", "PTU", "EPTU"];
+
+    /// <summary>
+    /// Paths relative to a drive root or Program Files where the RSI launcher installs.
+    /// The default is the first that exists, so ordering is the preference order.
+    /// </summary>
+    private static readonly string[] InstallRoots =
+    [
+        @"Roberts Space Industries\StarCitizen",
+        @"Games\StarCitizen",
+        @"StarCitizen",
+    ];
+
+    /// <summary>
+    /// A best guess at the install, probed once. Empty when nothing is found, which leaves
+    /// the setup wizard's folder field blank rather than pre-filling a path that does not
+    /// exist on this machine.
+    /// <para>
+    /// Declared after the arrays it reads on purpose: static field initialisers run in
+    /// declaration order, so probing from above them would read nulls.
+    /// </para>
+    /// </summary>
+    public static string DefaultLogDir { get; } = ProbeLogDir();
+
+    /// <summary>
+    /// Channel is the outermost loop on purpose: a LIVE install on any drive beats a PTU one,
+    /// and players routinely have both on different disks. Looping drives first would hand
+    /// back whichever happened to sort earlier, which is how a D:\...\PTU install can win
+    /// over the E:\...\LIVE the player actually plays.
+    /// </summary>
+    private static string ProbeLogDir()
+    {
+        foreach (var channel in Channels)
+        {
+            foreach (var root in CandidateRoots())
+            {
+                foreach (var install in InstallRoots)
+                {
+                    var candidate = Path.Combine(root, install, channel);
+                    if (Directory.Exists(candidate)) return candidate;
+                }
+            }
+        }
+
+        return "";
+    }
+
+    private static IEnumerable<string> CandidateRoots()
+    {
+        yield return Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        yield return Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+
+        // The game is large and routinely lives on a secondary drive rather than under
+        // Program Files, so every fixed drive is worth a look. Ready drives only: probing
+        // a disconnected network or removable drive blocks for its timeout.
+        foreach (var drive in DriveInfo.GetDrives())
+        {
+            if (drive.DriveType != DriveType.Fixed || !drive.IsReady) continue;
+            yield return drive.RootDirectory.FullName;
+        }
+    }
 
     /// <summary>
     /// First 4.9 build. Earlier clients use a different inventory event vocabulary, so their
@@ -61,6 +122,32 @@ public static partial class LogFileLocator
             .ToList();
     }
 
+    /// <summary>The first parseable line's timestamp, used to tell one Game.log from the
+    /// next after a rotation. Null when the file has no parseable line near its head.</summary>
+    public static DateTimeOffset? FirstTimestamp(string path)
+    {
+        try
+        {
+            var scanned = 0;
+            foreach (var line in new ByteLineReader().ReadLines(path))
+            {
+                if (LogLine.TryParse(line.Text, out var log)) return log.Timestamp;
+
+                // The header is a handful of lines; anything further means this is not a
+                // log we can date, and reading the whole file to find that out is wasteful.
+                if (++scanned > HeadScanLines) break;
+            }
+        }
+        catch (IOException)
+        {
+            // The game rotates the file out from under us; the next pass tries again.
+        }
+
+        return null;
+    }
+
+    private const int HeadScanLines = 200;
+
     private static bool IsParseable(string path, DateTimeOffset cutoff)
     {
         var m = BuildId().Match(Path.GetFileName(path));
@@ -68,6 +155,4 @@ public static partial class LogFileLocator
 
         return File.GetLastWriteTimeUtc(path) >= cutoff.UtcDateTime;
     }
-
-    public static string LiveLogPath(string logDir) => Path.Combine(logDir, "Game.log");
 }

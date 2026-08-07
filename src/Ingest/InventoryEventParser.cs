@@ -334,6 +334,12 @@ public static partial class InventoryEventParser
     private static InventoryEvent? ParseLocationName(LogLine line)
     {
         var m = LocationName().Match(line.Rest);
-        return m.Success ? new LocationNamed(line.Timestamp, m.Groups["name"].Value) : null;
+        if (!m.Success) return null;
+
+        // "Location[]" matches with an empty name. Binding an id to "" would lock out the
+        // real name later, because the ingestor treats a second, different name as a
+        // conflict rather than a correction. Same guard as ParseRouteStart.
+        var name = m.Groups["name"].Value.Trim();
+        return name.Length == 0 ? null : new LocationNamed(line.Timestamp, name);
     }
 }

@@ -25,10 +25,13 @@ public sealed class AppConfig
     /// </summary>
     public bool SetupComplete { get; set; }
 
+    /// <summary>The port the local UI listens on. Fixed so a bookmark keeps working.</summary>
+    public const int DefaultPort = 5730;
+
     /// <summary>Same directory as the database: both are this install's private state.</summary>
     public static string DefaultPath => Path.Combine(
         Path.GetDirectoryName(TrackerDb.DefaultPath) ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SCLogParser"),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InventoryTracker"),
         "config.json");
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -45,17 +48,28 @@ public sealed class AppConfig
     public static AppConfig Load(string? path = null)
     {
         path ??= DefaultPath;
-        var config = File.Exists(path) ? ReadOrDefault(path) : new AppConfig();
+        var existed = File.Exists(path);
+        var config = existed ? ReadOrDefault(path) : new AppConfig();
 
-        var changed = !File.Exists(path);
+        var changed = !existed;
         if (config.LogDir is null) { config.LogDir = LogFileLocator.DefaultLogDir; changed = true; }
         if (config.DatabasePath is null) { config.DatabasePath = TrackerDb.DefaultPath; changed = true; }
-        if (config.Port is null) { config.Port = 5730; changed = true; }
+        if (config.Port is null) { config.Port = DefaultPort; changed = true; }
 
         if (changed) config.Save(path);
         return config;
     }
 
+    /// <summary>
+    /// Reads the config, or returns a blank one after moving an unreadable file aside.
+    /// <para>
+    /// The file is never overwritten in place on a parse failure. Load fills the blank
+    /// config's defaults and saves it, so overwriting here would destroy InceptionDate and
+    /// SetupComplete — sending the user back through the setup wizard with no way to
+    /// recover what was lost. Keeping the original under .corrupt makes that repairable,
+    /// and the tray app has no console for a message to go to.
+    /// </para>
+    /// </summary>
     private static AppConfig ReadOrDefault(string path)
     {
         try
@@ -65,16 +79,41 @@ public sealed class AppConfig
         catch (Exception ex) when (ex is JsonException or IOException)
         {
             Console.Error.WriteLine($"Could not read config at {path}, using defaults: {ex.Message}");
+            TryPreserveCorrupt(path);
             return new AppConfig();
         }
     }
 
+    private static void TryPreserveCorrupt(string path)
+    {
+        try
+        {
+            var kept = path + ".corrupt";
+            File.Delete(kept);
+            File.Move(path, kept);
+            Console.Error.WriteLine($"Original kept at {kept}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Best effort. Losing the copy is bad; failing to start over it would be worse.
+        }
+    }
+
+    /// <summary>
+    /// Writes the config atomically. A direct WriteAllText truncates before it writes, so a
+    /// crash or power cut mid-write leaves a half-written file that fails to parse on the
+    /// next launch — the exact input <see cref="ReadOrDefault"/> has to recover from.
+    /// </summary>
     public void Save(string? path = null)
     {
         path ??= DefaultPath;
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-        File.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+        var json = JsonSerializer.Serialize(this, JsonOptions);
+        var temp = path + ".tmp";
+
+        File.WriteAllText(temp, json);
+        File.Move(temp, path, overwrite: true);
     }
 }

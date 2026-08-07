@@ -30,7 +30,7 @@ public sealed class HoldingResolver
     /// is null for a container the game never named — its capacity in µSCU, if a drag line
     /// ever reported one, is then all there is to describe it by.</summary>
     public sealed record ContainerInfo(
-        string? ClassName, string? LastLocationId, DateTimeOffset? LastSeenAt, long? Capacity);
+        string? ClassName, string? LastLocationId, long? Capacity);
 
     private readonly List<MoveRecord> _moves;
     private readonly Dictionary<string, string> _locationNames;
@@ -49,9 +49,6 @@ public sealed class HoldingResolver
     private readonly Dictionary<string, List<(string Geid, DateTimeOffset First, DateTimeOffset Last)>> _classSpans;
 
     private readonly LedgerReplay _ledger;
-
-    /// <summary>All known location ids and their raw internal names.</summary>
-    public IReadOnlyDictionary<string, string> LocationNames => _locationNames;
 
     /// <summary>Systems and place names as a player would recognise them.</summary>
     public PlaceCatalog Places { get; }
@@ -495,7 +492,7 @@ public sealed class HoldingResolver
     private static Dictionary<string, ContainerInfo> LoadContainers(SqliteConnection cn)
     {
         using var cmd = cn.CreateCommand();
-        cmd.CommandText = "SELECT geid, class_name, last_loc_id, last_loc_ts, capacity FROM container_class";
+        cmd.CommandText = "SELECT geid, class_name, last_loc_id, capacity FROM container_class";
 
         var map = new Dictionary<string, ContainerInfo>();
         using var r = cmd.ExecuteReader();
@@ -504,8 +501,7 @@ public sealed class HoldingResolver
             map[r.GetString(0)] = new ContainerInfo(
                 r.IsDBNull(1) ? null : r.GetString(1),
                 r.IsDBNull(2) ? null : r.GetString(2),
-                r.IsDBNull(3) ? null : DateTimeOffset.Parse(r.GetString(3), CultureInfo.InvariantCulture),
-                r.IsDBNull(4) ? null : r.GetInt64(4));
+                r.IsDBNull(3) ? null : r.GetInt64(3));
         }
         return map;
     }

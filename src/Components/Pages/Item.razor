@@ -1,5 +1,6 @@
 @page "/item/{Geid}"
 @rendermode InteractiveServer
+@implements IDisposable
 @inject TrackerState State
 
 <PageTitle>@_name — Star Citizen inventory</PageTitle>
@@ -59,7 +60,16 @@ else
     private IReadOnlyList<MoveRecord> _history = [];
     private string _name = "Item";
 
-    protected override void OnParametersSet()
+    protected override void OnInitialized() => State.Changed += OnChanged;
+
+    protected override void OnParametersSet() => Load();
+
+    /// <summary>
+    /// Re-reads this instance from the current snapshot. Without the subscription the page
+    /// would sit on a stale placement while the tracker ingests the very move that relocated
+    /// it — the live-update contract TrackerState documents.
+    /// </summary>
+    private void Load()
     {
         var snapshot = State.Current;
 
@@ -67,4 +77,8 @@ else
         _history = snapshot.Resolver?.History(Geid) ?? [];
         _name = _holding is null ? "Unknown item" : State.Names.Resolve(_holding.ItemClass).Display;
     }
+
+    private void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
+
+    public void Dispose() => State.Changed -= OnChanged;
 }

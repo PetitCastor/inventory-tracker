@@ -6,9 +6,11 @@ on:
   pull_request:
     branches: [main]
 
-# The publish job creates a GitHub Release.
+# Least privilege by default. Only the publish job needs to write, and it asks for
+# that itself — a workflow-level write would hand the same token to the build job,
+# which runs on every pull request.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -24,17 +26,23 @@ jobs:
           dotnet-quality: preview
 
       - name: Restore
-        run: dotnet restore src/InventoryTracker.csproj
+        run: dotnet restore InventoryTracker.slnx
 
       - name: Build
-        run: dotnet build src/InventoryTracker.csproj --configuration Release --no-restore
+        run: dotnet build InventoryTracker.slnx --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test InventoryTracker.slnx --configuration Release --no-build
 
   # Publishes the self-contained single-file exe and cuts a GitHub Release for it.
-  # Only on a merge landing in main — never for a PR, which just gets the build check above.
+  # Only on a merge landing in main — never for a PR, which just gets the checks above.
   publish:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
+
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -44,38 +52,45 @@ jobs:
           dotnet-version: '10.0.x'
           dotnet-quality: preview
 
-      # 0.1 is the starting line the project was published at; the run number gives every
-      # merge to main its own increasing patch version without needing to commit a bump
-      # back into the protected branch.
-      - name: Compute version
+      # The version comes from the VERSION file, bumped in the same PR as the change
+      # it ships. github.run_number was previously used to avoid committing a bump into
+      # a protected branch, but it counts pull-request runs too, so released versions
+      # skipped numbers and would collide if the workflow were ever renamed.
+      - name: Read version
         id: version
         shell: bash
-        run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
 
+      # A merge that does not bump VERSION must not fail the build; it just has nothing
+      # new to release.
+      - name: Check whether this version is already released
+        id: released
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.version.outputs.version }} already released; skipping."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Same script developers run locally, so the two cannot drift.
       - name: Publish
+        if: steps.released.outputs.exists == 'false'
         shell: pwsh
         run: |
-          dotnet publish src/InventoryTracker.csproj `
-            --configuration Release `
-            --runtime win-x64 `
-            --self-contained:true `
-            --output dist `
-            --nologo `
-            -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:EnableCompressionInSingleFile=true `
-            -p:DebugType=none `
-            -p:GenerateDocumentationFile=false `
-            -p:SatelliteResourceLanguages=en `
-            -p:Version=${{ steps.version.outputs.version }}
-
-          Get-ChildItem -LiteralPath dist -File | Where-Object { $_.Extension -ne '.exe' } | Remove-Item -Force
+          ./publish.ps1 -Version '${{ steps.version.outputs.version }}'
 
           Rename-Item -LiteralPath 'dist\InventoryTracker.exe' `
             -NewName "InventoryTracker-v${{ steps.version.outputs.version }}.exe"
 
+      # Pinned to a commit rather than the mutable v2 tag: this step runs with a
+      # write-capable token.
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        if: steps.released.outputs.exists == 'false'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
