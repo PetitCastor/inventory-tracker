@@ -6,6 +6,7 @@
 @inject TrackerOptions Options
 @inject TrackerDb Db
 @inject LogWatchService Watcher
+@inject InventoryTracker.App.DesktopShell Shell
 
 <PageTitle>Settings — Star Citizen inventory</PageTitle>
 
@@ -14,7 +15,15 @@
 <h2>Settings</h2>
 <div class="settings-field">
     <label for="log-dir">Game.log location</label>
-    <input id="log-dir" type="text" @bind="_logDir" placeholder="E:\Games\StarCitizen\LIVE" />
+    <div class="input-row">
+        <input id="log-dir" type="text" @bind="_logDir" placeholder="E:\Games\StarCitizen\LIVE" />
+        <button type="button" class="icon-btn" title="Browse for folder" @onclick="BrowseFolder">
+            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v1H3z" />
+                <path d="M3 10h18l-2 8a2 2 0 0 1-2 1.5H5a2 2 0 0 1-2-1.5z" />
+            </svg>
+        </button>
+    </div>
 </div>
 
 <div class="settings-field">
@@ -86,6 +95,12 @@
     private string _logDir = "";
     private DateOnly? _inceptionDate;
     private string? _status;
+
+    private async Task BrowseFolder()
+    {
+        var picked = await Task.Run(() => Shell.PickFolder(_logDir));
+        if (picked is not null) _logDir = picked;
+    }
 
     protected override void OnInitialized()
     {

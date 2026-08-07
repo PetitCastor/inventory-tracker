@@ -1,0 +1,96 @@
+@page "/setup"
+@rendermode InteractiveServer
+@using InventoryTracker.App
+@using InventoryTracker.Ingest
+@inject TrackerOptions Options
+@inject DesktopShell Shell
+@inject LogWatchService Watcher
+@inject NavigationManager Nav
+
+<PageTitle>Set up — Star Citizen inventory</PageTitle>
+
+<h1>Welcome</h1>
+<p class="subtle">Two things before tracking starts: where Star Citizen writes its logs, and how far back to read.</p>
+
+<div class="settings-field">
+    <label for="log-dir">Game.log folder</label>
+    <div class="input-row">
+        <input id="log-dir" type="text" @bind="_logDir" placeholder="E:\Games\StarCitizen\LIVE" />
+        <button type="button" class="icon-btn" title="Browse for folder" @onclick="BrowseFolder">
+            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v1H3z" />
+                <path d="M3 10h18l-2 8a2 2 0 0 1-2 1.5H5a2 2 0 0 1-2-1.5z" />
+            </svg>
+        </button>
+    </div>
+</div>
+<p class="subtle">Pick the LIVE (or PTU) folder that contains <code>Game.log</code>.</p>
+
+<div class="settings-field">
+    <label for="inception">Inception date</label>
+    <input id="inception" type="date" @bind="_inceptionDate" />
+</div>
+<p class="subtle">Everything logged before this date is ignored. Defaults to today — tracking starts from now forward.</p>
+
+<div class="settings-actions">
+    <button @onclick="StartTracking">Start tracking</button>
+    @if (_error is not null)
+    {
+        <span class="subtle">@_error</span>
+    }
+</div>
+
+@code {
+    private string _logDir = "";
+    private DateOnly? _inceptionDate;
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        _logDir = Options.LogDir;
+        // Prefill the inception date to today (UTC) — start tracking from install forward.
+        _inceptionDate = Options.InceptionDate is { } d
+            ? DateOnly.FromDateTime(d.UtcDateTime)
+            : DateOnly.FromDateTime(DateTime.UtcNow);
+    }
+
+    private async Task BrowseFolder()
+    {
+        var picked = await Task.Run(() => Shell.PickFolder(_logDir));
+        if (picked is not null)
+        {
+            _logDir = picked;
+            _error = null;
+        }
+    }
+
+    /// <summary>Persists the two answers, marks setup complete, applies them to the running
+    /// service, then hands the user off to Browse.</summary>
+    private void StartTracking()
+    {
+        if (string.IsNullOrWhiteSpace(_logDir) || !Directory.Exists(_logDir))
+        {
+            _error = "That folder does not exist — pick the one containing Game.log.";
+            return;
+        }
+
+        var config = AppConfig.Load();
+        var logDirChanged = !string.Equals(config.LogDir, _logDir, StringComparison.OrdinalIgnoreCase);
+
+        config.LogDir = _logDir;
+        config.InceptionDate = _inceptionDate is { } d
+            ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+            : null;
+        config.SetupComplete = true;
+        config.Save();
+
+        Options.LogDir = config.LogDir ?? _logDir;
+        Options.InceptionDate = config.InceptionDate;
+        Options.SetupComplete = true;
+
+        if (logDirChanged) Watcher.RestartWatching();
+        Watcher.RequestScan();
+
+        Nav.NavigateTo("");
+    }
+}

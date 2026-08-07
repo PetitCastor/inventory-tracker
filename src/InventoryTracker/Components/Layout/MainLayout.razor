@@ -1,4 +1,6 @@
 @inherits LayoutComponentBase
+@inject InventoryTracker.App.TrackerOptions Options
+@inject NavigationManager Nav
 
 <header>
     <nav>
@@ -11,3 +13,18 @@
 <main>
     @Body
 </main>
+
+@code {
+    protected override void OnInitialized()
+    {
+        // First-run gate: until setup is done, every page bounces to the wizard. The path
+        // check keeps /setup itself from redirecting to itself. Navigating during static
+        // SSR is turned into a real redirect by the framework.
+        if (!Options.SetupComplete)
+        {
+            var relative = Nav.ToBaseRelativePath(Nav.Uri).Split('?', '#')[0].Trim('/');
+            if (!string.Equals(relative, "setup", StringComparison.OrdinalIgnoreCase))
+                Nav.NavigateTo("setup");
+        }
+    }
+}
