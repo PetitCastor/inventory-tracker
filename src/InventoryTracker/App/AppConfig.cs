@@ -18,6 +18,13 @@ public sealed class AppConfig
     /// <summary>Everything logged before this is ignored. Null means no inception date is set.</summary>
     public DateTimeOffset? InceptionDate { get; set; }
 
+    /// <summary>
+    /// False until the first-run setup wizard has been completed. A brand-new config.json
+    /// leaves this false, which is exactly the signal the UI uses to gate the app behind
+    /// <c>/setup</c> until the user has confirmed a log directory and inception date.
+    /// </summary>
+    public bool SetupComplete { get; set; }
+
     /// <summary>Same directory as the database: both are this install's private state.</summary>
     public static string DefaultPath => Path.Combine(
         Path.GetDirectoryName(TrackerDb.DefaultPath) ?? Path.Combine(

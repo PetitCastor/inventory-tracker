@@ -15,6 +15,9 @@ public sealed class TrackerOptions
     /// <summary>Everything logged before this is ignored. Null means no inception date is set.</summary>
     public DateTimeOffset? InceptionDate { get; set; }
 
+    /// <summary>False until the first-run setup wizard has been completed; see <see cref="AppConfig.SetupComplete"/>.</summary>
+    public bool SetupComplete { get; set; }
+
     public string Url => $"http://localhost:{Port}";
 
     /// <summary>
@@ -32,6 +35,7 @@ public sealed class TrackerOptions
             DatabasePath = config.DatabasePath ?? TrackerDb.DefaultPath,
             Port = config.Port ?? 5730,
             InceptionDate = config.InceptionDate,
+            SetupComplete = config.SetupComplete,
         };
     }
 }

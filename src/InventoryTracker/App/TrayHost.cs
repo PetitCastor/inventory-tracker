@@ -34,6 +34,7 @@ public static class TrayHost
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(db);
         builder.Services.AddSingleton<TrackerState>();
+        builder.Services.AddSingleton<DesktopShell>();
 
         // Registered by hand rather than as a typed client: the service caches the whole
         // catalogue in memory, so it has to be a singleton, and AddHttpClient<T> would
@@ -80,7 +81,8 @@ public static class TrayHost
         app.Start();
 
         using var tray = BuildTrayIcon(app, options);
-        OpenBrowser(options.Url);
+        // Land first-time users on the setup wizard; the UI gate enforces it regardless.
+        OpenBrowser(options.SetupComplete ? options.Url : $"{options.Url}/setup");
         Application.Run();
 
         app.StopAsync().GetAwaiter().GetResult();
