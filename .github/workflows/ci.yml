@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    # WinExe / net10.0-windows (UseWindowsForms) only builds on Windows.
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: preview
+
+      - name: Restore
+        run: dotnet restore src/InventoryTracker.csproj
+
+      - name: Build
+        run: dotnet build src/InventoryTracker.csproj --configuration Release --no-restore
