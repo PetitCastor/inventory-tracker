@@ -30,7 +30,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = $PSScriptRoot
-$project = Join-Path $root 'src\InventoryTracker\InventoryTracker.csproj'
+$project = Join-Path $root 'src\InventoryTracker.csproj'
 $dist = Join-Path $root 'dist'
 
 if (-not (Test-Path $project)) {

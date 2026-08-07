@@ -30,6 +30,10 @@ public sealed class LogWatchService(
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(2);
 
     private readonly SemaphoreSlim _wake = new(0, 1);
+
+    /// <summary>Serialises ingest passes so a "rebuild now" and the background loop never
+    /// hit the store at the same time.</summary>
+    private readonly SemaphoreSlim _ingestLock = new(1, 1);
     private FileSystemWatcher? _watcher;
 
     /// <summary>Nudges the service to ingest now — used by the tray's "Rescan" command.</summary>
@@ -38,6 +42,10 @@ public sealed class LogWatchService(
         try { _wake.Release(); }
         catch (SemaphoreFullException) { /* a pass is already pending */ }
     }
+
+    /// <summary>Runs one ingest pass and returns only when it has finished, so the caller
+    /// can show a rebuild-complete state. Used by Settings' "Save and rebuild".</summary>
+    public Task RebuildNowAsync() => Task.Run(Ingest);
 
     /// <summary>
     /// Re-points the watcher after Settings changes the log directory, and scans the new
@@ -120,6 +128,7 @@ public sealed class LogWatchService(
 
     private void Ingest()
     {
+        _ingestLock.Wait();
         try
         {
             var stats = new LogIngestor(db, options.LogDir, options.InceptionDate).IngestAll();
@@ -144,12 +153,17 @@ public sealed class LogWatchService(
         {
             log.LogError(ex, "Ingest pass failed");
         }
+        finally
+        {
+            _ingestLock.Release();
+        }
     }
 
     public override void Dispose()
     {
         _watcher?.Dispose();
         _wake.Dispose();
+        _ingestLock.Dispose();
         base.Dispose();
     }
 }

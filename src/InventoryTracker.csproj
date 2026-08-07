@@ -11,11 +11,11 @@
     <RootNamespace>InventoryTracker</RootNamespace>
     <AssemblyName>InventoryTracker</AssemblyName>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <ApplicationIcon>..\..\assets\InventoryTracker.ico</ApplicationIcon>
+    <ApplicationIcon>..\assets\InventoryTracker.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="..\..\assets\InventoryTracker.ico" LogicalName="app.ico" />
+    <EmbeddedResource Include="..\assets\InventoryTracker.ico" LogicalName="app.ico" />
   </ItemGroup>
 
   <ItemGroup>

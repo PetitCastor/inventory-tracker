@@ -33,11 +33,18 @@
 <p class="subtle">Everything logged before this date is ignored. Only applies to newly-ingested log lines — use "Save and rebuild" below to apply it to history already stored.</p>
 
 <div class="settings-actions">
-    <button @onclick="SaveSettings">Save</button>
-    <button @onclick="SaveAndRebuild">Save and rebuild from logs</button>
-    @if (_status is not null)
+    <button @onclick="SaveAndRebuild" disabled="@_rebuilding">Save and rebuild from logs</button>
+    @if (_rebuilding)
     {
-        <span class="subtle">@_status</span>
+        <span class="rebuild-status"><span class="spinner"></span> Rebuilding…</span>
+    }
+    else if (_rebuilt)
+    {
+        <span class="rebuild-status done">
+            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6 9 17l-5-5" />
+            </svg>
+        </span>
     }
 </div>
 
@@ -94,7 +101,8 @@
 
     private string _logDir = "";
     private DateOnly? _inceptionDate;
-    private string? _status;
+    private bool _rebuilding;
+    private bool _rebuilt;
 
     private async Task BrowseFolder()
     {
@@ -153,8 +161,6 @@
         Options.InceptionDate = config.InceptionDate;
 
         if (logDirChanged) Watcher.RestartWatching();
-
-        _status = "Saved.";
     }
 
     /// <summary>
@@ -162,11 +168,19 @@
     /// rows already in the store. Wiping and re-ingesting is the only way to make an
     /// earlier cutoff apply to history that was captured before it was set.
     /// </summary>
-    private void SaveAndRebuild()
+    private async Task SaveAndRebuild()
     {
         SaveSettings();
         Db.ResetIngest();
-        Watcher.RequestScan();
-        _status = "Saved — rebuilding from logs now.";
+
+        _rebuilt = false;
+        _rebuilding = true;
+        StateHasChanged();
+
+        await Watcher.RebuildNowAsync();
+
+        _holdings = State.Current.Holdings;
+        _rebuilding = false;
+        _rebuilt = true;
     }
 }

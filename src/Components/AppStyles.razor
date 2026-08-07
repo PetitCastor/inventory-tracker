@@ -104,6 +104,24 @@
 
     .settings-actions { display: flex; align-items: center; gap: 0.75rem; margin: 1rem 0 2rem; }
 
+    button:disabled { opacity: 0.6; cursor: default; }
+
+    .rebuild-status { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--muted); font-size: 0.9rem; }
+
+    .rebuild-status .spinner {
+        width: 1rem;
+        height: 1rem;
+        border: 2px solid var(--line);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+    }
+
+    @@keyframes spin { to { transform: rotate(360deg); } }
+
+    .rebuild-status.done { color: #3fb950; }
+    .rebuild-status.done .check { width: 1.25rem; height: 1.25rem; }
+
     button {
         padding: 0.55rem 0.9rem;
         background: var(--panel);
