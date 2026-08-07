@@ -5,6 +5,7 @@
 @inject TrackerOptions Options
 @inject DesktopShell Shell
 @inject LogWatchService Watcher
+@inject InventoryTracker.Data.TrackerDb Db
 @inject NavigationManager Nav
 
 <PageTitle>Set up — Star Citizen inventory</PageTitle>
@@ -89,6 +90,10 @@
         Options.SetupComplete = true;
 
         if (logDirChanged) Watcher.RestartWatching();
+
+        // Same as Settings' "Save and rebuild from logs": wipe ingest state so the whole
+        // history is re-read from the chosen inception date, then kick off a scan.
+        Db.ResetIngest();
         Watcher.RequestScan();
 
         Nav.NavigateTo("");
