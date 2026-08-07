@@ -1,5 +1,9 @@
 <Solution>
-  <Folder Name="/src/">
-    <Project Path="src/InventoryTracker/InventoryTracker.csproj" />
+  <Folder Name="/.github/">
+    <File Path=".github/workflows/ci.yml" />
   </Folder>
+  <Folder Name="/Solution Items/">
+    <File Path="README.md" />
+  </Folder>
+  <Project Path="src/InventoryTracker.csproj" />
 </Solution>
