@@ -3,8 +3,6 @@
 @implements IDisposable
 @using InventoryTracker.Model
 @using InventoryTracker.Naming
-@* The generated component class is also called Place, so the domain type needs a name here. *@
-@using NamedPlace = InventoryTracker.Naming.Place
 @inject TrackerState State
 
 <PageTitle>Browse — Star Citizen inventory</PageTitle>
@@ -92,12 +90,12 @@ else
         IReadOnlyList<string> Caveats);
 
     private List<string> _systems = [];
-    private Dictionary<string, List<NamedPlace>> _bySystem = [];
-    private List<NamedPlace> _placesInSystem = [];
+    private Dictionary<string, List<Place>> _bySystem = [];
+    private List<Place> _placesInSystem = [];
 
     private string? _system;
     private string? _placeId;
-    private NamedPlace? _place;
+    private Place? _place;
 
     private List<Row> _direct = [];
     private List<(HoldingLink Container, List<Row> Rows)> _viaContainer = [];

@@ -1,10 +1,9 @@
 @page "/settings"
 @rendermode InteractiveServer
-@using InventoryTracker.Data
+@implements IDisposable
 @using InventoryTracker.Ingest
 @inject TrackerState State
 @inject TrackerOptions Options
-@inject TrackerDb Db
 @inject LogWatchService Watcher
 @inject InventoryTracker.App.DesktopShell Shell
 
@@ -12,11 +11,11 @@
 
 <h1>Settings</h1>
 
-<h2>Settings</h2>
+<h2>Log source</h2>
 <div class="settings-field">
     <label for="log-dir">Game.log location</label>
     <div class="input-row">
-        <input id="log-dir" type="text" @bind="_logDir" placeholder="E:\Games\StarCitizen\LIVE" />
+        <input id="log-dir" type="text" @bind="_logDir" placeholder="C:\Program Files\Roberts Space Industries\StarCitizen\LIVE" />
         <button type="button" class="icon-btn" title="Browse for folder" @onclick="BrowseFolder">
             <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v1H3z" />
@@ -112,11 +111,24 @@
 
     protected override void OnInitialized()
     {
-        _holdings = State.Current.Holdings;
-        _catalogueAge = State.Names.LastRefresh();
+        State.Changed += OnChanged;
 
         _logDir = Options.LogDir;
         _inceptionDate = Options.InceptionDate is { } d ? DateOnly.FromDateTime(d.UtcDateTime) : null;
+
+        RefreshDiagnostics();
+    }
+
+    /// <summary>
+    /// Re-derives everything shown from the current snapshot. Called on load, whenever the
+    /// tracker publishes a new snapshot, and after a rebuild — the three diagnostic lists
+    /// would otherwise keep describing the previous store, headline counts included, with
+    /// nothing on screen saying so.
+    /// </summary>
+    private void RefreshDiagnostics()
+    {
+        _holdings = State.Current.Holdings;
+        _catalogueAge = State.Names.LastRefresh();
 
         // A link labelled "location <id>" or "container <id>" is the resolver's way of
         // saying it had nothing better than the raw id.
@@ -143,6 +155,10 @@
             .OrderBy(x => x)
             .ToList();
     }
+
+    private void OnChanged() => InvokeAsync(() => { RefreshDiagnostics(); StateHasChanged(); });
+
+    public void Dispose() => State.Changed -= OnChanged;
 
     /// <summary>Persists the form to config.json and applies it to the running service —
     /// no restart needed for a rescan to pick up the new log directory or cutoff.</summary>
@@ -171,16 +187,22 @@
     private async Task SaveAndRebuild()
     {
         SaveSettings();
-        Db.ResetIngest();
 
         _rebuilt = false;
         _rebuilding = true;
         StateHasChanged();
 
-        await Watcher.RebuildNowAsync();
-
-        _holdings = State.Current.Holdings;
-        _rebuilding = false;
-        _rebuilt = true;
+        try
+        {
+            // The wipe and the re-ingest go together under the service's ingest lock; doing
+            // the reset here would race a background pass already in flight.
+            await Watcher.ResetAndRebuildAsync();
+            RefreshDiagnostics();
+            _rebuilt = true;
+        }
+        finally
+        {
+            _rebuilding = false;
+        }
     }
 }

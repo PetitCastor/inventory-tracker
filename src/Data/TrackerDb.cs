@@ -17,25 +17,37 @@ public sealed class TrackerDb
         var dir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path));
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
+        // Private cache, not shared: shared-cache mode moves contention to table-level
+        // locks within the process and surfaces as SQLITE_LOCKED, which the busy handler
+        // cannot retry. WAL already gives concurrent readers alongside the single writer,
+        // which is exactly the shape here (background ingest writes, UI reads).
         _connectionString = new SqliteConnectionStringBuilder
         {
             DataSource = path,
             Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Shared,
+            DefaultTimeout = 30,
         }.ToString();
     }
 
     /// <summary>The default store location, alongside the user's other app data.</summary>
     public static string DefaultPath => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "SCLogParser",
+        "InventoryTracker",
         "tracker.db");
 
     public SqliteConnection Open()
     {
         var cn = new SqliteConnection(_connectionString);
         cn.Open();
-        Execute(cn, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;");
+
+        // busy_timeout makes a writer wait for a competing one rather than failing
+        // immediately; the UI's "rebuild now" and the background sweep can overlap.
+        Execute(cn, """
+            PRAGMA journal_mode=WAL;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA foreign_keys=ON;
+            PRAGMA busy_timeout=30000;
+            """);
         return cn;
     }
 
@@ -44,7 +56,7 @@ public sealed class TrackerDb
     /// logs are the source of truth — so a mismatch is resolved by rebuilding rather
     /// than by writing migrations.
     /// </summary>
-    private const int SchemaVersion = 7;
+    private const int SchemaVersion = 8;
 
     public void Initialize()
     {
@@ -211,9 +223,10 @@ public sealed class TrackerDb
             fetched_at   TEXT
         );
 
-        -- Search index over the catalogue: the user types a human name, we need class names.
-        CREATE VIRTUAL TABLE IF NOT EXISTS wiki_item_fts USING fts5(
-            class_name, display_name, manufacturer, type_label, tokenize = 'unicode61');
+        -- Dropped in schema 8. It was rebuilt from wiki_item on every catalogue refresh
+        -- (~12k rows) and never read by anything: the name search it was built for was
+        -- never written. Reinstate it alongside the feature, not before.
+        DROP TABLE IF EXISTS wiki_item_fts;
 
         CREATE TABLE IF NOT EXISTS meta (
             key   TEXT PRIMARY KEY,

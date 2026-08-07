@@ -56,8 +56,6 @@ public sealed partial class PlaceCatalog
         _byLocationId = byLocationId;
     }
 
-    public static readonly PlaceCatalog Empty = new([], []);
-
     /// <summary>The place an id belongs to, or null when the id was never seen named.</summary>
     public Place? ByLocationId(string? id) =>
         id is not null && _byLocationId.TryGetValue(id, out var p) ? p : null;

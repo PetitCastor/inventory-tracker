@@ -16,6 +16,11 @@
 .PARAMETER Runtime
     Target runtime identifier. Defaults to win-x64.
 
+.PARAMETER Version
+    Version to stamp into the assembly. Defaults to the contents of the VERSION
+    file, which is also what CI publishes, so a local build and a released one
+    report the same number.
+
 .EXAMPLE
     .\publish.ps1
     .\publish.ps1 -FrameworkDependent
@@ -24,7 +29,8 @@
 param(
     [switch]$FrameworkDependent,
     [string]$Runtime = 'win-x64',
-    [string]$Configuration = 'Release'
+    [string]$Configuration = 'Release',
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,9 +38,17 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $project = Join-Path $root 'src\InventoryTracker.csproj'
 $dist = Join-Path $root 'dist'
+$versionFile = Join-Path $root 'VERSION'
 
 if (-not (Test-Path $project)) {
     throw "Project not found: $project"
+}
+
+if (-not $Version) {
+    if (-not (Test-Path $versionFile)) {
+        throw "No -Version given and no VERSION file at $versionFile"
+    }
+    $Version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
 }
 
 # A running instance locks its own exe, which would otherwise fail the clean below
@@ -58,6 +72,7 @@ New-Item -ItemType Directory -Path $dist -Force | Out-Null
 $selfContained = -not $FrameworkDependent
 
 Write-Host "Publishing InventoryTracker" -ForegroundColor Cyan
+Write-Host "  version       : $Version"
 Write-Host "  runtime       : $Runtime"
 Write-Host "  configuration : $Configuration"
 Write-Host "  self-contained: $selfContained"
@@ -79,6 +94,7 @@ $arguments = @(
     '-p:DebugType=none'
     '-p:GenerateDocumentationFile=false'
     '-p:SatelliteResourceLanguages=en'
+    "-p:Version=$Version"
 )
 
 & dotnet @arguments

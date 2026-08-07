@@ -56,6 +56,24 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     /// </summary>
     private static readonly TimeSpan GeidPairingWindow = TimeSpan.FromSeconds(60);
 
+    /// <summary>
+    /// How far apart a move and a completion line can be before sharing a request number
+    /// stops meaning they are the same operation. Completions normally land within
+    /// milliseconds; the allowance is for a slow server, not for a reused number.
+    /// <para>
+    /// Without this, a move restored by <see cref="PreloadPendingRequests"/> keeps its slot
+    /// until some newer move reuses the number, so a completion arriving first would stamp
+    /// its result onto an unrelated row from much earlier in the file.
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan CompletionPairingWindow = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// How many unresolved moves to restore when resuming mid-file. Completions past this
+    /// go unmatched, which costs a confirmation flag rather than a placement.
+    /// </summary>
+    private const int PreloadLimit = 500;
+
     public string LogDir { get; } = logDir;
 
     /// <summary>Parses everything not yet ingested. Safe to call on a timer.</summary>
@@ -82,6 +100,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
         // Rotated backups never change again, so once fully read they are never reopened.
         if (session.Complete) return;
+
+        session = DiscardIfRotated(cn, session, file);
 
         var reader = new ByteLineReader(session.Offset);
         var state = new SessionState();
@@ -220,8 +240,18 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             case MoveCompleted done:
                 if (state.MoveByRequest.TryGetValue(done.RequestNo, out var moves))
                 {
-                    foreach (var m in moves) UpdateResult(cn, tx, m.Id, done.Result);
-                    stats.CompletionsApplied++;
+                    var applied = 0;
+                    foreach (var m in moves)
+                    {
+                        // A number alone does not bind a completion to a move: they restart
+                        // per file and again on every shard change.
+                        if (done.Timestamp - m.At > CompletionPairingWindow) continue;
+
+                        UpdateResult(cn, tx, m.Id, done.Result);
+                        applied++;
+                    }
+
+                    if (applied > 0) stats.CompletionsApplied++;
                 }
                 break;
 
@@ -374,22 +404,83 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         public PlayerLocation? CurrentLocation { get; set; }
     }
 
-    private sealed record SessionRow(long Id, long Offset, bool Complete);
+    private sealed record SessionRow(long Id, long Offset, bool Complete, DateTimeOffset? FirstTs);
 
     private static SessionRow LoadOrCreateSession(SqliteConnection cn, string path)
     {
         using (var sel = cn.CreateCommand())
         {
-            sel.CommandText = "SELECT id, byte_offset, complete FROM session WHERE path = $p";
+            sel.CommandText = "SELECT id, byte_offset, complete, first_ts FROM session WHERE path = $p";
             sel.Parameters.AddWithValue("$p", path);
             using var r = sel.ExecuteReader();
-            if (r.Read()) return new SessionRow(r.GetInt64(0), r.GetInt64(1), r.GetInt32(2) != 0);
+            if (r.Read())
+            {
+                return new SessionRow(
+                    r.GetInt64(0),
+                    r.GetInt64(1),
+                    r.GetInt32(2) != 0,
+                    r.IsDBNull(3) ? null : DateTimeOffset.Parse(r.GetString(3), CultureInfo.InvariantCulture));
+            }
         }
 
         using var ins = cn.CreateCommand();
         ins.CommandText = "INSERT INTO session(path) VALUES($p); SELECT last_insert_rowid();";
         ins.Parameters.AddWithValue("$p", path);
-        return new SessionRow((long)ins.ExecuteScalar()!, 0, false);
+        return new SessionRow((long)ins.ExecuteScalar()!, 0, false, null);
+    }
+
+    /// <summary>
+    /// Starts a session over when the file behind its path is not the one it was built from.
+    /// <para>
+    /// Game.log keeps its name across a rotation, so the stored byte watermark is the only
+    /// thing tying a session to a file — and a watermark alone cannot tell a longer file from
+    /// a different one. Shrinkage is caught by <see cref="ByteLineReader"/>, but a rotation
+    /// that happens while the tracker is closed is not: by the time it runs again the new
+    /// Game.log may already be past the old offset, and ingestion would resume in the middle
+    /// of an unrelated file. Every line before that point would be missed, and the recorded
+    /// line offsets — which are a move's identity — would collide with the previous file's
+    /// under the same session, so the new rows would be dropped as duplicates.
+    /// </para>
+    /// <para>
+    /// The first line's timestamp identifies the file cheaply and survives the copy, restore
+    /// and tunnelling cases that make file creation time unreliable.
+    /// </para>
+    /// </summary>
+    private static SessionRow DiscardIfRotated(SqliteConnection cn, SessionRow session, LogFile file)
+    {
+        if (session.Offset == 0 || session.FirstTs is not { } knownFirst) return session;
+
+        var actualFirst = LogFileLocator.FirstTimestamp(file.Path);
+        if (actualFirst is null || actualFirst == knownFirst) return session;
+
+        using var tx = cn.BeginTransaction();
+
+        // The rotated content is not lost: it now sits in logbackups/ under its own name and
+        // is ingested as a separate session. Keeping these rows would only collide with the
+        // new file's offsets.
+        using (var del = cn.CreateCommand())
+        {
+            del.Transaction = tx;
+            del.CommandText = "DELETE FROM move WHERE session_id = $s";
+            del.Parameters.AddWithValue("$s", session.Id);
+            del.ExecuteNonQuery();
+        }
+
+        using (var reset = cn.CreateCommand())
+        {
+            reset.Transaction = tx;
+            reset.CommandText = """
+                UPDATE session
+                SET byte_offset = 0, first_ts = NULL, last_ts = NULL, complete = 0
+                WHERE id = $s
+                """;
+            reset.Parameters.AddWithValue("$s", session.Id);
+            reset.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+
+        return session with { Offset = 0, FirstTs = null };
     }
 
     /// <summary>
@@ -402,9 +493,10 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.CommandText = """
             SELECT request_no, id, ts FROM move
             WHERE session_id = $s AND result IS NULL
-            ORDER BY id DESC LIMIT 500
+            ORDER BY id DESC LIMIT $limit
             """;
         cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$limit", PreloadLimit);
 
         using var r = cmd.ExecuteReader();
         while (r.Read())

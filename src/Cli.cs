@@ -1,4 +1,4 @@
-﻿using InventoryTracker.App;
+using InventoryTracker.App;
 using InventoryTracker.Data;
 using InventoryTracker.Ingest;
 using InventoryTracker.Naming;
@@ -40,6 +40,14 @@ internal static class Cli
                     PrintUsage();
                     return 2;
             }
+        }
+
+        if (string.IsNullOrWhiteSpace(logDir))
+        {
+            Console.Error.WriteLine(
+                $"No Star Citizen log directory is configured, and none was found automatically. " +
+                $"Set LogDir in {AppConfig.DefaultPath}.");
+            return 1;
         }
 
         if (!Directory.Exists(logDir))
@@ -93,7 +101,7 @@ internal static class Cli
     private static async Task RefreshNamesAsync(TrackerDb db)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("SCLogParser/1.0 (inventory tracker)");
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(TrayHost.WikiUserAgent);
 
         Console.WriteLine();
         Console.WriteLine("-- refreshing item catalogue from star-citizen.wiki --");
@@ -141,7 +149,7 @@ internal static class Cli
         }
     }
 
-    /// <summary>Groups every inferred placement by where it ends up â€” the Find view, in text.</summary>
+    /// <summary>Groups every inferred placement by where it ends up — the Find view, in text.</summary>
     private static void PrintHoldings(TrackerDb db, string? filter)
     {
         var resolved = HoldingResolver.Load(db).ResolveAll();
@@ -206,8 +214,14 @@ internal static class Cli
         Console.WriteLine("-- store contents --");
         Console.WriteLine($"Sessions          : {Scalar(cn, "SELECT COUNT(*) FROM session"):N0}");
         Console.WriteLine($"Moves             : {Scalar(cn, "SELECT COUNT(*) FROM move"):N0}");
-        Console.WriteLine($"  succeeded       : {Scalar(cn, "SELECT COUNT(*) FROM move WHERE result IN ('Succeed','succeed')"):N0}");
+
+        // LOWER() rather than an IN list of spellings: SQLite's = is case-sensitive, and
+        // MoveRecord.Succeeded already compares case-insensitively. Two spellings of one
+        // rule diverge the moment the game emits a third.
+        Console.WriteLine($"  succeeded       : {Scalar(cn, "SELECT COUNT(*) FROM move WHERE LOWER(result) = 'succeed'"):N0}");
         Console.WriteLine($"  unconfirmed     : {Scalar(cn, "SELECT COUNT(*) FROM move WHERE result IS NULL"):N0}");
+
+        // COUNT(DISTINCT ...) already ignores NULLs, so this is every named instance.
         Console.WriteLine($"Distinct items    : {Scalar(cn, "SELECT COUNT(DISTINCT item_geid) FROM move"):N0}");
         Console.WriteLine($"Distinct classes  : {Scalar(cn, "SELECT COUNT(DISTINCT item_class) FROM move"):N0}");
         Console.WriteLine($"Location names    : {Scalar(cn, "SELECT COUNT(*) FROM location_name"):N0}");
@@ -222,7 +236,6 @@ internal static class Cli
             """);
         Console.WriteLine($"Containers in use : {containersUsed:N0} ({containersKnown:N0} identified)");
 
-        Console.WriteLine($"Distinct instances: {Scalar(cn, "SELECT COUNT(DISTINCT item_geid) FROM move WHERE item_geid IS NOT NULL"):N0}");
         Console.WriteLine($"  named moves     : {Scalar(cn, "SELECT COUNT(*) FROM move WHERE item_geid IS NOT NULL"):N0}");
         Console.WriteLine($"  class-only moves: {Scalar(cn, "SELECT COUNT(*) FROM move WHERE item_geid IS NULL"):N0}");
         Console.WriteLine($"Worn entities     : {Scalar(cn, "SELECT COUNT(*) FROM attachment"):N0}");
@@ -246,7 +259,7 @@ internal static class Cli
         }
     }
 
-    /// <summary>Prints one item instance's full movement history â€” the audit view.</summary>
+    /// <summary>Prints one item instance's full movement history — the audit view.</summary>
     private static void Trace(TrackerDb db, string geid)
     {
         using var cn = db.Open();
@@ -275,7 +288,11 @@ internal static class Cli
                       : r.GetString(5) is { Length: > 0 } cls ? cls
                       : "(unidentified)";
             var result = r.IsDBNull(3) ? "unconfirmed" : r.GetString(3);
-            Console.WriteLine($"  {r.GetString(0)[..19]}  {r.GetString(1),-11} -> {target,-34} {label,-38} [{result}]");
+
+            // Timestamps are written with DateTime "O", which is fixed-width, so the
+            // seconds-precision prefix is always present.
+            var when = r.GetString(0);
+            Console.WriteLine($"  {when[..Math.Min(19, when.Length)]}  {r.GetString(1),-11} -> {target,-34} {label,-38} [{result}]");
         }
 
         if (!any) Console.WriteLine("  no moves recorded");
@@ -299,4 +316,3 @@ internal static class Cli
         return rows;
     }
 }
-

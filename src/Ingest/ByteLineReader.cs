@@ -8,7 +8,8 @@ namespace InventoryTracker.Ingest;
 /// <para>
 /// A trailing fragment with no '\n' is deliberately withheld: the game flushes
 /// Game.log mid-line, and parsing a half-written record would corrupt the store.
-/// The fragment is carried in <see cref="Pending"/> and completed on a later read.
+/// The fragment is dropped and re-read from <see cref="Offset"/> on the next pass,
+/// since the offset only ever advances past complete lines.
 /// </para>
 /// </summary>
 public sealed class ByteLineReader
@@ -19,13 +20,10 @@ public sealed class ByteLineReader
     /// <summary>Byte offset just past the last complete line handed out.</summary>
     public long Offset { get; private set; }
 
-    /// <summary>Bytes of an unterminated trailing line held back for the next pass.</summary>
-    public int Pending => (int)_partial.Length;
-
     public ByteLineReader(long startOffset = 0) => Offset = startOffset;
 
     /// <summary>Forget all state — used when a file is truncated or rotated.</summary>
-    public void Reset()
+    private void Reset()
     {
         Offset = 0;
         _partial.SetLength(0);

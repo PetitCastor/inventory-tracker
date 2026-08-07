@@ -4,9 +4,8 @@ namespace InventoryTracker.App;
 
 /// <summary>
 /// The small amount of native desktop interaction the Blazor UI needs: showing a folder
-/// picker and revealing a folder in Explorer. Registered as a singleton so pages can inject
-/// it. Both methods are safe to call from a Blazor circuit thread even though the app's
-/// message loop lives on the WinForms UI thread.
+/// picker. Registered as a singleton so pages can inject it, and safe to call from a Blazor
+/// circuit thread even though the app's message loop lives on the WinForms UI thread.
 /// </summary>
 public sealed class DesktopShell
 {
@@ -31,8 +30,25 @@ public sealed class DesktopShell
             if (!string.IsNullOrWhiteSpace(initial) && Directory.Exists(initial))
                 dialog.SelectedPath = initial;
 
-            if (dialog.ShowDialog() == DialogResult.OK)
+            // The user is looking at a browser, and this thread owns no window. Without a
+            // topmost owner the dialog can open behind everything, leaving the page looking
+            // frozen with nothing on screen to explain why — and the request blocked until
+            // a dialog the user cannot see is dismissed.
+            using var owner = new Form
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = new System.Drawing.Point(-32000, -32000),
+                Size = new System.Drawing.Size(1, 1),
+                FormBorderStyle = FormBorderStyle.None,
+                ShowInTaskbar = false,
+                TopMost = true,
+            };
+            owner.Show();
+
+            if (dialog.ShowDialog(owner) == DialogResult.OK)
                 result = dialog.SelectedPath;
+
+            owner.Close();
         });
 
         thread.SetApartmentState(ApartmentState.STA);

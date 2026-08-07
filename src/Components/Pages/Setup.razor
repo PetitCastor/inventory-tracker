@@ -5,7 +5,6 @@
 @inject TrackerOptions Options
 @inject DesktopShell Shell
 @inject LogWatchService Watcher
-@inject InventoryTracker.Data.TrackerDb Db
 @inject NavigationManager Nav
 
 <PageTitle>Set up — Star Citizen inventory</PageTitle>
@@ -16,7 +15,7 @@
 <div class="settings-field">
     <label for="log-dir">Game.log folder</label>
     <div class="input-row">
-        <input id="log-dir" type="text" @bind="_logDir" placeholder="E:\Games\StarCitizen\LIVE" />
+        <input id="log-dir" type="text" @bind="_logDir" placeholder="C:\Program Files\Roberts Space Industries\StarCitizen\LIVE" />
         <button type="button" class="icon-btn" title="Browse for folder" @onclick="BrowseFolder">
             <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v1H3z" />
@@ -34,7 +33,11 @@
 <p class="subtle">Everything logged before this date is ignored. Defaults to today — tracking starts from now forward.</p>
 
 <div class="settings-actions">
-    <button @onclick="StartTracking">Start tracking</button>
+    <button @onclick="StartTracking" disabled="@_starting">Start tracking</button>
+    @if (_starting)
+    {
+        <span class="rebuild-status"><span class="spinner"></span> Reading logs…</span>
+    }
     @if (_error is not null)
     {
         <span class="subtle">@_error</span>
@@ -45,6 +48,7 @@
     private string _logDir = "";
     private DateOnly? _inceptionDate;
     private string? _error;
+    private bool _starting;
 
     protected override void OnInitialized()
     {
@@ -67,11 +71,17 @@
 
     /// <summary>Persists the two answers, marks setup complete, applies them to the running
     /// service, then hands the user off to Browse.</summary>
-    private void StartTracking()
+    private async Task StartTracking()
     {
         if (string.IsNullOrWhiteSpace(_logDir) || !Directory.Exists(_logDir))
         {
             _error = "That folder does not exist — pick the one containing Game.log.";
+            return;
+        }
+
+        if (!File.Exists(Path.Combine(_logDir, "Game.log")))
+        {
+            _error = "No Game.log in that folder — pick the LIVE (or PTU) folder itself.";
             return;
         }
 
@@ -92,9 +102,18 @@
         if (logDirChanged) Watcher.RestartWatching();
 
         // Same as Settings' "Save and rebuild from logs": wipe ingest state so the whole
-        // history is re-read from the chosen inception date, then kick off a scan.
-        Db.ResetIngest();
-        Watcher.RequestScan();
+        // history is re-read from the chosen inception date. The wipe and the re-ingest run
+        // together under the service's ingest lock — doing the reset here would race the
+        // background pass that RestartWatching just asked for.
+        _starting = true;
+        try
+        {
+            await Watcher.ResetAndRebuildAsync();
+        }
+        finally
+        {
+            _starting = false;
+        }
 
         Nav.NavigateTo("");
     }

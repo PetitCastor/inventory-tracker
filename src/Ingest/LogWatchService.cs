@@ -41,11 +41,36 @@ public sealed class LogWatchService(
     {
         try { _wake.Release(); }
         catch (SemaphoreFullException) { /* a pass is already pending */ }
+        catch (ObjectDisposedException) { /* shutting down; a watcher event raced Dispose */ }
     }
 
     /// <summary>Runs one ingest pass and returns only when it has finished, so the caller
-    /// can show a rebuild-complete state. Used by Settings' "Save and rebuild".</summary>
+    /// can show a rebuild-complete state.</summary>
     public Task RebuildNowAsync() => Task.Run(Ingest);
+
+    /// <summary>
+    /// Discards everything derived from the logs and re-ingests from scratch, as one
+    /// operation under the ingest lock.
+    /// <para>
+    /// The wipe must not be done by the caller: a background pass triggered by the watcher
+    /// or the sweep timer can be mid-transaction, and its commit would land after the delete
+    /// — leaving rows behind plus a session watermark pointing past data that no longer
+    /// exists, so those lines would never be re-read.
+    /// </para>
+    /// </summary>
+    public Task ResetAndRebuildAsync() => Task.Run(() =>
+    {
+        _ingestLock.Wait();
+        try
+        {
+            db.ResetIngest();
+            IngestLocked();
+        }
+        finally
+        {
+            _ingestLock.Release();
+        }
+    });
 
     /// <summary>
     /// Re-points the watcher after Settings changes the log directory, and scans the new
@@ -61,6 +86,11 @@ public sealed class LogWatchService(
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
+        // Everything before the first await runs inline on the host's startup thread, and
+        // the first pass is a full backfill over every rotated log. Without this the tray
+        // icon, Kestrel and the browser launch all wait on it.
+        await Task.Yield();
+
         Ingest();
         StartWatching();
 
@@ -131,6 +161,19 @@ public sealed class LogWatchService(
         _ingestLock.Wait();
         try
         {
+            IngestLocked();
+        }
+        finally
+        {
+            _ingestLock.Release();
+        }
+    }
+
+    /// <summary>One ingest pass. The caller must already hold <see cref="_ingestLock"/>.</summary>
+    private void IngestLocked()
+    {
+        try
+        {
             var stats = new LogIngestor(db, options.LogDir, options.InceptionDate).IngestAll();
 
             // Re-resolving is cheap, but pushing a no-op update to every open page is noise.
@@ -152,10 +195,6 @@ public sealed class LogWatchService(
         catch (Exception ex)
         {
             log.LogError(ex, "Ingest pass failed");
-        }
-        finally
-        {
-            _ingestLock.Release();
         }
     }
 

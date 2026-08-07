@@ -1,3 +1,12 @@
+# Domain notes
+
+Reverse-engineering notes on Star Citizen's `Game.log` — the research the parser and the
+resolver are built from. They record what the game actually writes, which of it is
+trustworthy, and what was tried and found not to work.
+
+These are also the natural fixture source for `tests/InventoryTracker.Tests`: the log lines
+quoted here are real records.
+
 - [Parse cutoff: 4.9 only](sc-parse-cutoff-49.md) — **hard stop**: parse only build >= 12232306 (2026-07-16+). Read before writing any scan.
 - [SC log corpus](sc-log-corpus.md) — where the logs live, 603 files / 917MB / Mar-Jul 2026, session + crash stats.
 - [SC log grammar](sc-log-grammar.md) — line format and verified regex anchors for every extractable gameplay signal.

@@ -10,7 +10,7 @@ public sealed class TrackerOptions
     public string DatabasePath { get; set; } = TrackerDb.DefaultPath;
 
     /// <summary>Fixed so the bookmarked URL keeps working across restarts.</summary>
-    public int Port { get; set; } = 5730;
+    public int Port { get; set; } = AppConfig.DefaultPort;
 
     /// <summary>Everything logged before this is ignored. Null means no inception date is set.</summary>
     public DateTimeOffset? InceptionDate { get; set; }
@@ -33,7 +33,7 @@ public sealed class TrackerOptions
         {
             LogDir = config.LogDir ?? LogFileLocator.DefaultLogDir,
             DatabasePath = config.DatabasePath ?? TrackerDb.DefaultPath,
-            Port = config.Port ?? 5730,
+            Port = config.Port ?? AppConfig.DefaultPort,
             InceptionDate = config.InceptionDate,
             SetupComplete = config.SetupComplete,
         };

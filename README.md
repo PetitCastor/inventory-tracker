@@ -19,4 +19,26 @@ InventoryTracker.exe                     tray app + UI at http://localhost:5730
 InventoryTracker.exe --scan --holdings   console mode, no UI
 ```
 
-First launch walks you through picking your Star Citizen log folder and an inception date (everything logged before that is ignored).
+First launch walks you through picking your Star Citizen log folder and an inception date (everything logged before that is ignored). The tracker probes the usual install locations, so the folder is usually already filled in.
+
+## Building it
+
+```
+dotnet build InventoryTracker.slnx
+dotnet test InventoryTracker.slnx
+.\publish.ps1
+```
+
+`publish.ps1` produces a single self-contained `dist\InventoryTracker.exe` with no .NET prerequisite. The version comes from the `VERSION` file — bump it in the same PR as the change it ships, and CI cuts the matching GitHub Release on merge to `main`.
+
+## Layout
+
+| Path | What's in it |
+|---|---|
+| `src/Ingest` | Reading `Game.log` and turning lines into typed events |
+| `src/Resolve` | Replaying those events into "what is sitting where" |
+| `src/Naming` | Class names → human names, location ids → places |
+| `src/Components` | The Blazor UI |
+| `src/App` | Tray host, config, shared state |
+| `tests/` | Parser, ledger and reader tests |
+| `docs/domain` | Reverse-engineering notes on the log format |
