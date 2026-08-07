@@ -66,12 +66,21 @@ public static class TrayHost
             return Results.Stream(stream, "text/javascript");
         });
 
+        app.MapGet("/favicon.ico", () =>
+        {
+            var stream = typeof(TrayHost).Assembly.GetManifestResourceStream("app.ico")
+                ?? throw new InvalidOperationException("app.ico was not embedded in the build.");
+
+            return Results.Stream(stream, "image/x-icon");
+        });
+
         app.MapRazorComponents<Root>().AddInteractiveServerRenderMode();
 
         // Kestrel runs alongside the WinForms message loop rather than owning the thread.
         app.Start();
 
         using var tray = BuildTrayIcon(app, options);
+        OpenBrowser(options.Url);
         Application.Run();
 
         app.StopAsync().GetAwaiter().GetResult();

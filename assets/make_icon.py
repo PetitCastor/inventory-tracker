@@ -1,13 +1,13 @@
-"""Generates InventoryTracker.ico: a crate glyph on a dark HUD-blue rounded square."""
+"""Generates InventoryTracker.ico: flat crate + data grid + checkmark on slate navy."""
 from PIL import Image, ImageDraw
 
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 
-BG_TOP = (16, 24, 38)
-BG_BOTTOM = (26, 38, 58)
-ACCENT = (86, 214, 255)      # HUD cyan
-ACCENT_DIM = (54, 140, 176)
-EDGE = (10, 14, 22)
+BG = (14, 20, 32)          # deep slate navy
+BORDER = (6, 9, 14)
+CYAN = (77, 224, 255)      # HUD cyan
+CYAN_DIM = (58, 120, 140)  # grid lines
+AMBER = (255, 176, 64)     # accent / checkmark
 
 
 def rounded_mask(size, radius):
@@ -17,61 +17,53 @@ def rounded_mask(size, radius):
     return mask
 
 
-def vgradient(size, top, bottom):
-    img = Image.new("RGB", (size, size))
-    for y in range(size):
-        t = y / max(size - 1, 1)
-        row = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
-        for x in range(size):
-            img.putpixel((x, y), row)
-    return img
-
-
 def draw_crate(draw, s):
-    # Isometric crate: top diamond + two side faces, drawn in a cyan wire/fill style
+    # Flat frontal container: square outline with a 3x3 data grid, cyan on navy.
     cx, cy = s * 0.5, s * 0.5
-    w, h = s * 0.62, s * 0.62
-    top = (cx, cy - h * 0.5)
-    right = (cx + w * 0.5, cy - h * 0.08)
-    bottom = (cx, cy + h * 0.5)
-    left = (cx - w * 0.5, cy - h * 0.08)
-    mid_r = (cx + w * 0.5, cy + h * 0.14)
-    mid_l = (cx - w * 0.5, cy + h * 0.14)
+    half = s * 0.30
+    x0, y0 = cx - half, cy - half
+    x1, y1 = cx + half, cy + half
 
-    # left face (dim), right face (bright), top face (brightest)
-    draw.polygon([left, cx_bottom_pt(cx, cy, h), bottom, mid_l], fill=blend(ACCENT_DIM, 0.55))
-    draw.polygon([right, mid_r, bottom, cx_bottom_pt(cx, cy, h)], fill=blend(ACCENT, 0.75))
-    draw.polygon([top, right, cx_bottom_pt(cx, cy, h), left], fill=blend(ACCENT, 1.0))
+    lw = max(1, round(s * 0.045))
+    grid_lw = max(1, round(s * 0.018))
 
-    outline = EDGE
-    lw = max(1, int(s * 0.018))
-    draw.line([top, right, mid_r, bottom, mid_l, left, top], fill=outline, width=lw, joint="curve")
-    draw.line([left, cx_bottom_pt(cx, cy, h)], fill=outline, width=lw)
-    draw.line([right, cx_bottom_pt(cx, cy, h)], fill=outline, width=lw)
-    draw.line([top, cx_bottom_pt(cx, cy, h)], fill=outline, width=max(1, int(s * 0.012)))
+    # container face, flat fill (slightly lighter than bg, no gradient)
+    draw.rectangle([x0, y0, x1, y1], fill=(22, 32, 48))
 
+    # data grid: two interior verticals + horizontals
+    for t in (1 / 3, 2 / 3):
+        gx = x0 + (x1 - x0) * t
+        draw.line([(gx, y0), (gx, y1)], fill=CYAN_DIM, width=grid_lw)
+        gy = y0 + (y1 - y0) * t
+        draw.line([(x0, gy), (x1, gy)], fill=CYAN_DIM, width=grid_lw)
 
-def cx_bottom_pt(cx, cy, h):
-    return (cx, cy + h * 0.02)
+    # outline last, on top of grid, clean edge
+    draw.rectangle([x0, y0, x1, y1], outline=CYAN, width=lw)
 
-
-def blend(color, factor):
-    return tuple(min(255, int(c * factor + 20 * (1 - factor))) for c in color)
+    # amber checkmark, intersecting the container's lower-right corner
+    ck_lw = max(1, round(s * 0.055))
+    p1 = (cx - half * 0.55, cy + half * 0.10)
+    p2 = (cx - half * 0.05, cy + half * 0.65)
+    p3 = (cx + half * 1.05, cy - half * 0.55)
+    draw.line([p1, p2, p3], fill=AMBER, width=ck_lw, joint="curve")
+    # round the joints/caps so the stroke reads clean at small sizes
+    for pt in (p1, p2, p3):
+        r = ck_lw / 2
+        draw.ellipse([pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r], fill=AMBER)
 
 
 def build(size):
-    base = vgradient(size, BG_TOP, BG_BOTTOM).convert("RGBA")
-    mask = rounded_mask(size, radius=int(size * 0.22))
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    canvas.paste(base, (0, 0), mask)
+    mask = rounded_mask(size, radius=int(size * 0.22))
+    bg = Image.new("RGBA", (size, size), BG)
+    canvas.paste(bg, (0, 0), mask)
 
     draw = ImageDraw.Draw(canvas)
     draw_crate(draw, size)
 
-    # subtle border
     ImageDraw.Draw(canvas).rounded_rectangle(
         [0, 0, size - 1, size - 1], radius=int(size * 0.22),
-        outline=(6, 9, 14, 255), width=max(1, int(size * 0.02)))
+        outline=BORDER, width=max(1, int(size * 0.02)))
     return canvas
 
 
