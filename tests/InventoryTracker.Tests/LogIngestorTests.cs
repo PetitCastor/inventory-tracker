@@ -1,5 +1,6 @@
 using InventoryTracker.Data;
 using InventoryTracker.Ingest;
+using Microsoft.Data.Sqlite;
 
 namespace InventoryTracker.Tests;
 
@@ -15,7 +16,15 @@ public sealed class LogIngestorTests : IDisposable
         _db.Initialize();
     }
 
-    public void Dispose() => Directory.Delete(_dir, recursive: true);
+    public void Dispose()
+    {
+        // Microsoft.Data.Sqlite pools connections by default, so the native handle to
+        // tracker.db can outlive every SqliteConnection's Dispose() here. On Windows that
+        // keeps the file locked, and deleting the directory right after fails with
+        // "being used by another process" unless the pools are cleared first.
+        SqliteConnection.ClearAllPools();
+        Directory.Delete(_dir, recursive: true);
+    }
 
     private static string StoreLine(string ts, int requestNo) =>
         $"<{ts}> [Notice] <InventoryManagementRequest> Queued Request[{requestNo}] " +
