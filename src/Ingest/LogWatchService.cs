@@ -95,8 +95,10 @@ public sealed class LogWatchService(
         StartWatching();
 
         // Without the catalogue every item shows as a raw class name, which is useless as
-        // a search term. Fetch it once in the background so the first run is usable.
-        _ = EnsureCatalogueAsync(ct);
+        // a search term. Refresh it every launch, not just the first, so items the wiki
+        // added since the last run (and the catalogue's own edits) show up without the
+        // user having to remember to hit the manual refresh.
+        _ = RefreshCatalogueAsync(ct);
 
         while (!ct.IsCancellationRequested)
         {
@@ -115,10 +117,8 @@ public sealed class LogWatchService(
         }
     }
 
-    private async Task EnsureCatalogueAsync(CancellationToken ct)
+    private async Task RefreshCatalogueAsync(CancellationToken ct)
     {
-        if (names.LastRefresh() is not null) return;
-
         try
         {
             log.LogInformation("Downloading item catalogue from star-citizen.wiki");
