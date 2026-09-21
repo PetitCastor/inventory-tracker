@@ -53,8 +53,28 @@
     <dt>Recorded moves</dt><dd>@(State.Current.Resolver?.Moves.Count ?? 0)</dd>
     <dt>Snapshot built</dt><dd>@State.Current.BuiltAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</dd>
     <dt>Item catalogue</dt>
-    <dd>@(_catalogueAge is null ? "never downloaded — use the tray menu" : $"refreshed {_catalogueAge:yyyy-MM-dd}")</dd>
+    <dd>@(_catalogueAge is null ? "never downloaded" : $"refreshed {_catalogueAge:yyyy-MM-dd}")</dd>
 </dl>
+
+<div class="settings-actions">
+    <button @onclick="RefreshNames" disabled="@_refreshingNames">Refresh item names from wiki</button>
+    @if (_refreshingNames)
+    {
+        <span class="rebuild-status"><span class="spinner"></span> @(_namesProgress ?? "starting…")</span>
+    }
+    else if (_namesError is { } err)
+    {
+        <span class="rebuild-status error">@err</span>
+    }
+    else if (_namesRefreshed)
+    {
+        <span class="rebuild-status done">
+            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 6 9 17l-5-5" />
+            </svg>
+        </span>
+    }
+</div>
 
 <h2>Confidence spread</h2>
 <ul>
@@ -102,6 +122,11 @@
     private DateOnly? _inceptionDate;
     private bool _rebuilding;
     private bool _rebuilt;
+
+    private bool _refreshingNames;
+    private bool _namesRefreshed;
+    private string? _namesProgress;
+    private string? _namesError;
 
     private async Task BrowseFolder()
     {
@@ -180,6 +205,43 @@
         finally
         {
             _rebuilding = false;
+        }
+    }
+
+    /// <summary>
+    /// Web-UI equivalent of the tray menu's "Refresh item names from wiki". Progress is
+    /// reported via the page-by-page callback <see cref="WikiNameService.RefreshAsync"/>
+    /// already supports; <see cref="Progress{T}"/> captures this circuit's synchronization
+    /// context at construction time, so each report marshals back here on its own.
+    /// </summary>
+    private async Task RefreshNames()
+    {
+        _namesRefreshed = false;
+        _namesError = null;
+        _namesProgress = null;
+        _refreshingNames = true;
+        StateHasChanged();
+
+        var progress = new Progress<string>(p =>
+        {
+            _namesProgress = p;
+            StateHasChanged();
+        });
+
+        try
+        {
+            await State.Names.RefreshAsync(progress);
+            State.Rebuild();
+            RefreshDiagnostics();
+            _namesRefreshed = true;
+        }
+        catch (Exception ex)
+        {
+            _namesError = $"Could not download item names: {ex.Message}";
+        }
+        finally
+        {
+            _refreshingNames = false;
         }
     }
 }

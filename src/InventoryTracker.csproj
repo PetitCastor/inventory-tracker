@@ -38,8 +38,14 @@
       2. Static web assets are written next to the executable on publish, which
          would defeat the single-file output.
   -->
+  <!-- Pinned to the exact bundled shared-framework version rather than a "*" wildcard:
+       a machine with more than one 10.0.x AspNetCore runtime installed has more than one
+       microsoft.aspnetcore.app.internal.assets version under NuGetPackageRoot, and the
+       wildcard matched all of them, embedding "blazor.web.js" twice (CS1508). This
+       property is the SDK's own record of which shared-framework version it targets, so
+       it always resolves to exactly one path. -->
   <ItemGroup>
-    <EmbeddedResource Include="$(NuGetPackageRoot)microsoft.aspnetcore.app.internal.assets\*\_framework\blazor.web.js"
+    <EmbeddedResource Include="$(NuGetPackageRoot)microsoft.aspnetcore.app.internal.assets\$(BundledNETCoreAppPackageVersion)\_framework\blazor.web.js"
                       LogicalName="blazor.web.js" />
   </ItemGroup>
 
@@ -54,7 +60,7 @@
                             Condition="'%(EmbeddedResource.LogicalName)' == 'blazor.web.js'" />
     </ItemGroup>
     <Error Condition="'@(_BlazorStartupScript)' == ''"
-           Text="blazor.web.js was not found under '$(NuGetPackageRoot)microsoft.aspnetcore.app.internal.assets'. Without it the UI renders but never becomes interactive." />
+           Text="blazor.web.js was not found under '$(NuGetPackageRoot)microsoft.aspnetcore.app.internal.assets\$(BundledNETCoreAppPackageVersion)'. Without it the UI renders but never becomes interactive." />
   </Target>
 
 </Project>
