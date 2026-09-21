@@ -96,7 +96,7 @@ public sealed class HoldingResolver
         using var cn = db.Open();
         return new HoldingResolver(
             LoadMoves(cn), LoadWorn(cn), LoadLocationNames(cn), LoadContainers(cn),
-            LoadWornContainers(cn), PlaceCatalog.Load(db));
+            LoadWornContainers(cn), PlaceCatalog.Load(cn, db));
     }
 
     /// <summary>
