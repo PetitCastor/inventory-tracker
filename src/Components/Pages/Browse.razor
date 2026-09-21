@@ -148,8 +148,12 @@ else
             .Select(id => catalogue.ByLocationId(id) ?? PlaceCatalog.Unnamed(id))
             .DistinctBy(p => p.Id);
 
+        // A deep link (?at=) must resolve even to a place currently holding nothing, or it
+        // gets silently dropped from the very picker it needs to appear in.
+        var deepLinked = At is not null ? catalogue.ByLocationId(At) : null;
+
         _bySystem = catalogue.Places
-            .Where(p => p.AliasIds.Any(holdingKeys.Contains))
+            .Where(p => p.AliasIds.Any(holdingKeys.Contains) || p.Id == deepLinked?.Id)
             .Concat(orphans)
             .GroupBy(p => p.System, StringComparer.OrdinalIgnoreCase)
             .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)

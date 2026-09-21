@@ -71,12 +71,17 @@ public sealed partial class PlaceCatalog
     public static PlaceCatalog Load(TrackerDb db)
     {
         using var cn = db.Open();
-        return Build(
+        return Load(cn, db);
+    }
+
+    /// <summary>Same as <see cref="Load(TrackerDb)"/>, but on a connection the caller already
+    /// has open — for a caller loading several tables in one unit of work.</summary>
+    public static PlaceCatalog Load(SqliteConnection cn, TrackerDb db) =>
+        Build(
             LoadRawNames(cn),
             LoadEvidence(cn, "name"),
             LoadEvidence(cn, "system"),
             LoadOverrides(OverridePathFor(db)));
-    }
 
     private static PlaceCatalog Build(
         Dictionary<string, (string Raw, int Evidence)> rawNames,

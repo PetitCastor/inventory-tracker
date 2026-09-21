@@ -38,4 +38,34 @@ public sealed class TrackerOptions
             SetupComplete = config.SetupComplete,
         };
     }
+
+    /// <summary>
+    /// Persists a new log directory and inception date to config.json, applies them here,
+    /// restarts the watcher if the directory changed, then wipes and re-ingests under its
+    /// lock. Setup and Settings both drive a log-source change through this single path so
+    /// the two forms cannot answer "what happens when you change it" differently.
+    /// </summary>
+    public async Task ApplyLogSourceAsync(
+        string logDir, DateOnly? inceptionDate, LogWatchService watcher, bool markSetupComplete = false)
+    {
+        var config = AppConfig.Load();
+        var logDirChanged = !string.Equals(config.LogDir, logDir, StringComparison.OrdinalIgnoreCase);
+
+        config.LogDir = logDir;
+        config.InceptionDate = inceptionDate is { } d
+            ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+            : null;
+        if (markSetupComplete) config.SetupComplete = true;
+        config.Save();
+
+        LogDir = config.LogDir ?? logDir;
+        InceptionDate = config.InceptionDate;
+        if (markSetupComplete) SetupComplete = true;
+
+        if (logDirChanged) watcher.RestartWatching();
+
+        // The wipe and the re-ingest go together under the watcher's ingest lock; doing the
+        // reset here would race a background pass already in flight.
+        await watcher.ResetAndRebuildAsync();
+    }
 }

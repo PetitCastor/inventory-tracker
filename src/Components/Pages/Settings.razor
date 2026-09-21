@@ -160,25 +160,6 @@
 
     public void Dispose() => State.Changed -= OnChanged;
 
-    /// <summary>Persists the form to config.json and applies it to the running service —
-    /// no restart needed for a rescan to pick up the new log directory or cutoff.</summary>
-    private void SaveSettings()
-    {
-        var config = AppConfig.Load();
-        var logDirChanged = !string.Equals(config.LogDir, _logDir, StringComparison.OrdinalIgnoreCase);
-
-        config.LogDir = _logDir;
-        config.InceptionDate = _inceptionDate is { } d
-            ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
-            : null;
-        config.Save();
-
-        Options.LogDir = config.LogDir ?? _logDir;
-        Options.InceptionDate = config.InceptionDate;
-
-        if (logDirChanged) Watcher.RestartWatching();
-    }
-
     /// <summary>
     /// The inception date only gates what gets ingested from here on — it does not remove
     /// rows already in the store. Wiping and re-ingesting is the only way to make an
@@ -186,17 +167,13 @@
     /// </summary>
     private async Task SaveAndRebuild()
     {
-        SaveSettings();
-
         _rebuilt = false;
         _rebuilding = true;
         StateHasChanged();
 
         try
         {
-            // The wipe and the re-ingest go together under the service's ingest lock; doing
-            // the reset here would race a background pass already in flight.
-            await Watcher.ResetAndRebuildAsync();
+            await Options.ApplyLogSourceAsync(_logDir, _inceptionDate, Watcher);
             RefreshDiagnostics();
             _rebuilt = true;
         }

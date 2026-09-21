@@ -117,9 +117,15 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             stats.LinesRead++;
 
             if (!LogLine.TryParse(line.Text, out var log)) continue;
+
+            // Captured before the cutoff filter below: this is the file's identity for
+            // DiscardIfRotated, which compares it against LogFileLocator.FirstTimestamp
+            // (also unfiltered). Filtering it by _sinceTs would make a session whose
+            // inception date falls after the file's true start look rotated forever.
+            firstTs ??= log.Timestamp;
+
             if (log.Timestamp < _sinceTs) continue;
 
-            firstTs ??= log.Timestamp;
             lastTs = log.Timestamp;
             parsedAny = true;
 
