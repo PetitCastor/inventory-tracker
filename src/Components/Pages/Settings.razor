@@ -8,6 +8,7 @@
 @inject LogWatchService Watcher
 @inject InventoryTracker.App.DesktopShell Shell
 @inject UpdateService Updates
+@inject Microsoft.Extensions.Hosting.IHostApplicationLifetime Lifetime
 
 <PageTitle>Settings — Star Citizen inventory</PageTitle>
 
@@ -325,11 +326,13 @@
 
             _updateStatus = $"Restarting into {info.TagName}…";
             StateHasChanged();
-            await Task.Delay(300);
 
-            // Nothing after this should run: InstallAndRestart hands off to a helper that
-            // waits for this process to exit, so exiting now is the handoff.
+            // Signal a normal shutdown first — same as every other exit path (tray menu,
+            // closing the window) — so LogWatchService and any in-flight store work get a
+            // chance to stop cleanly via StopAsync instead of being cut off mid-write.
             UpdateService.InstallAndRestart(path);
+            Lifetime.StopApplication();
+            await Task.Delay(1000);
             Environment.Exit(0);
         }
         catch (Exception ex)

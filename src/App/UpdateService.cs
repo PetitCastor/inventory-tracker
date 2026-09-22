@@ -27,8 +27,11 @@ public sealed class UpdateService(HttpClient http)
 
     /// <summary>
     /// The version of the running build, read from the assembly version publish.ps1 stamps
-    /// from VERSION. Local dev builds (no -p:Version) default to 1.0.0.0, which sorts above
-    /// every real release, so an unstamped build never offers to "update" itself.
+    /// from VERSION. Local dev builds (no -p:Version) get the compiler's own default of
+    /// 1.0.0.0, which sorts above every real release, so an unstamped build never offers to
+    /// "update" itself. The null-coalesced 0.0.0 below is only a defensive fallback for the
+    /// (practically unreachable) case where a loaded assembly reports no version at all —
+    /// it is not what an unstamped build actually gets.
     /// </summary>
     public static Version CurrentVersion => Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0);
 
@@ -116,6 +119,12 @@ public sealed class UpdateService(HttpClient http)
     /// moves the downloaded exe over the running one and starts it. Call this last: the
     /// process should exit (return from Run/Main) immediately after, without doing anything
     /// else that assumes the current exe still exists.
+    /// <para>
+    /// The swap renames the running exe aside rather than deleting it up front, and only
+    /// deletes that backup once the new exe is confirmed in place and started — a failed
+    /// <c>Move-Item</c> (partial download, AV quarantine, permissions) then rolls back to the
+    /// backup instead of leaving the app deleted with nothing to relaunch.
+    /// </para>
     /// </summary>
     public static void InstallAndRestart(string downloadedExePath)
     {
@@ -124,13 +133,33 @@ public sealed class UpdateService(HttpClient http)
         var pid = Environment.ProcessId;
 
         var scriptPath = Path.Combine(Path.GetTempPath(), $"InventoryTracker-update-{pid}.ps1");
+        var backupExe = currentExe + ".old";
+        var backupName = Path.GetFileName(backupExe);
+        var currentName = Path.GetFileName(currentExe);
+
         var script = $$"""
+            $ErrorActionPreference = 'Stop'
             try { Wait-Process -Id {{pid}} -Timeout 30 -ErrorAction SilentlyContinue } catch {}
             Start-Sleep -Milliseconds 500
-            Remove-Item -LiteralPath '{{currentExe}}' -Force -ErrorAction SilentlyContinue
-            Move-Item -LiteralPath '{{downloadedExePath}}' -Destination '{{currentExe}}' -Force
-            Start-Process -FilePath '{{currentExe}}'
-            Remove-Item -LiteralPath '{{scriptPath}}' -Force -ErrorAction SilentlyContinue
+
+            Remove-Item -LiteralPath {{Quote(backupExe)}} -Force -ErrorAction SilentlyContinue
+
+            try {
+                Rename-Item -LiteralPath {{Quote(currentExe)}} -NewName {{Quote(backupName)}} -Force
+                Move-Item -LiteralPath {{Quote(downloadedExePath)}} -Destination {{Quote(currentExe)}} -Force
+                Start-Process -FilePath {{Quote(currentExe)}}
+                Remove-Item -LiteralPath {{Quote(backupExe)}} -Force -ErrorAction SilentlyContinue
+            }
+            catch {
+                if ((Test-Path -LiteralPath {{Quote(backupExe)}}) -and -not (Test-Path -LiteralPath {{Quote(currentExe)}})) {
+                    Rename-Item -LiteralPath {{Quote(backupExe)}} -NewName {{Quote(currentName)}} -Force
+                }
+                if (Test-Path -LiteralPath {{Quote(currentExe)}}) {
+                    Start-Process -FilePath {{Quote(currentExe)}}
+                }
+            }
+
+            Remove-Item -LiteralPath {{Quote(scriptPath)}} -Force -ErrorAction SilentlyContinue
             """;
         File.WriteAllText(scriptPath, script);
 
@@ -141,4 +170,8 @@ public sealed class UpdateService(HttpClient http)
             CreateNoWindow = true,
         });
     }
+
+    /// <summary>Single-quotes a value for embedding in the generated PowerShell script,
+    /// doubling any embedded single quote the way PowerShell itself expects.</summary>
+    private static string Quote(string value) => "'" + value.Replace("'", "''") + "'";
 }

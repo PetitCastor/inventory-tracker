@@ -82,9 +82,15 @@ public static class TrayHost
         // Same registration shape as the wiki client above, for the "Check for updates"
         // button in Settings — the startup check in Run() uses its own short-lived
         // HttpClient instead, since it runs before this container exists.
+        //
+        // HttpClient.Timeout bounds the whole request including streaming the response body,
+        // not just the initial round trip, so it has to be generous enough for the exe
+        // download itself (this client backs both the release check and DownloadAsync). The
+        // check step gets its own short-lived cancellation instead, so a hung/offline check
+        // still fails fast without capping how long the download is allowed to take.
         builder.Services.AddHttpClient(UpdateClient, c =>
         {
-            c.Timeout = TimeSpan.FromSeconds(30);
+            c.Timeout = TimeSpan.FromMinutes(5);
             c.DefaultRequestHeaders.UserAgent.ParseAdd(UpdateService.UserAgent);
             c.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         });
@@ -238,7 +244,11 @@ public static class TrayHost
     {
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            // Timeout has to cover the exe download below too (HttpClient.Timeout bounds the
+            // whole request, body included, not just the round trip to get headers) — the
+            // check itself is bounded separately by checkTimeout so a hung/offline check
+            // still fails fast without capping how long the download gets.
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
             http.DefaultRequestHeaders.UserAgent.ParseAdd(UpdateService.UserAgent);
             http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
             var updates = new UpdateService(http);
