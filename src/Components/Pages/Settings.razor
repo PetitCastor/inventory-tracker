@@ -101,6 +101,21 @@
 </div>
 <p class="subtle">Running v@(_currentVersion).</p>
 
+@* Read-only mirror of the numbers the Browse page's health banner is derived from — useful
+   for confirming *why* it is (or isn't) showing a banner without leaving Settings. Before the
+   first background ingest pass finishes, State.Current is still Snapshot.Empty and every one
+   of these numbers reads 0 — not because ingest found nothing, but because it hasn't run yet —
+   so show "not read yet" rather than a row of misleading zeros. *@
+<h2>Ingest health</h2>
+@{ var notYetBuilt = State.Current.BuiltAt == DateTimeOffset.MinValue; }
+<dl class="facts">
+    <dt>Log files found</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.LogFiles.ToString())</dd>
+    <dt>Files with data since inception</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.FilesWithLinesSinceInception.ToString())</dd>
+    <dt>Unrecognised move lines</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.UnrecognisedMoveLines.ToString())</dd>
+    <dt>Newest log line</dt>
+    <dd>@(State.Current.Health.NewestLogLine is { } newest ? $"{newest:yyyy-MM-dd HH:mm:ss} UTC" : "none read yet")</dd>
+</dl>
+
 <h2>Confidence spread</h2>
 <ul>
     @foreach (var group in _holdings.GroupBy(h => h.Holding.Confidence).OrderByDescending(g => g.Key))

@@ -55,17 +55,6 @@ public sealed class LedgerReplay
     /// same guess is never collapsed into an entity twice.</summary>
     private readonly HashSet<string> _reconciled = [];
 
-    /// <summary>
-    /// Container geids identified as a backpack. A move landing on one of these is dropped
-    /// before it touches the ledger — see <see cref="Apply"/>.
-    /// </summary>
-    private readonly IReadOnlySet<string> _backpackKeys;
-
-    private LedgerReplay(IReadOnlySet<string> backpackKeys)
-    {
-        _backpackKeys = backpackKeys;
-    }
-
     /// <summary>Where each named entity ended up. Containers are entities too, so this is
     /// also how a backpack's own position is found when building a chain.</summary>
     public IReadOnlyDictionary<string, Holding> InstanceAt => _instanceAt;
@@ -92,10 +81,9 @@ public sealed class LedgerReplay
     /// Folds the whole move history. Moves must arrive oldest first; the caller's ordering
     /// is the ledger's ordering, since a delta stream only means anything in sequence.
     /// </summary>
-    public static LedgerReplay Run(
-        IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn, IReadOnlySet<string> backpackKeys)
+    public static LedgerReplay Run(IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn)
     {
-        var ledger = new LedgerReplay(backpackKeys);
+        var ledger = new LedgerReplay();
 
         // Attachment sightings are enumerations of the player's body rather than moves, so
         // they are merged into the same timeline and applied by timestamp like anything else.
@@ -123,11 +111,6 @@ public sealed class LedgerReplay
 
         var target = new Holding(move.TargetKind, move.TargetKey);
         if (!target.IsReal) return;
-
-        // Wherever it came from, landing in the backpack says nothing about where the
-        // player is, so it never happened as far as the ledger is concerned — the item
-        // stays put at its last real placement until it moves somewhere else.
-        if (target.Kind == InventoryKind.Container && _backpackKeys.Contains(target.Key)) return;
 
         var source = new Holding(move.SourceKind, move.SourceKey);
 

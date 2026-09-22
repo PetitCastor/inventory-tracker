@@ -13,6 +13,12 @@ public class LedgerReplayTests
     private static readonly Holding OtherStation = new(InventoryKind.Location, "9999999999");
     private static readonly Holding Crate = new(InventoryKind.Container, "681562156430");
 
+    /// <summary>A container that happens to be a backpack. The ledger itself has no notion of
+    /// "backpack" any more — that classification lives in HoldingResolver, which decides how
+    /// to present a container's chain — so as far as LedgerReplay is concerned this is just
+    /// another container geid.</summary>
+    private static readonly Holding Backpack = new(InventoryKind.Container, "555566667777");
+
     /// <summary>A source that is not a real holding — "we never saw where it came from".</summary>
     private static readonly Holding Nowhere = new(InventoryKind.Invalid, "");
 
@@ -42,7 +48,7 @@ public class LedgerReplayTests
             result);
 
     private static LedgerReplay Run(params MoveRecord[] moves) =>
-        LedgerReplay.Run(moves, [], new HashSet<string>());
+        LedgerReplay.Run(moves, []);
 
     [Fact]
     public void Places_a_named_entity_where_its_last_move_put_it()
@@ -125,25 +131,56 @@ public class LedgerReplayTests
         var ledger = LedgerReplay.Run(
             [Move(Nowhere, Station, "undersuit_01", geid: "222222222222", minute: 1)],
             [new LedgerReplay.WornSighting(
-                new DateTimeOffset(2026, 7, 16, 12, 5, 0, TimeSpan.Zero), "222222222222", "undersuit_01")],
-            new HashSet<string>());
+                new DateTimeOffset(2026, 7, 16, 12, 5, 0, TimeSpan.Zero), "222222222222", "undersuit_01")]);
 
         Assert.Equal(InventoryKind.Equipped, ledger.InstanceAt["222222222222"].Kind);
     }
 
     [Fact]
-    public void A_move_into_a_backpack_leaves_the_item_where_it_was()
+    public void A_move_into_a_backpack_takes_the_item_off_the_station()
     {
-        // The backpack travels with the player, so landing in it says nothing about where
-        // the player is.
-        var ledger = LedgerReplay.Run(
-            [
-                Move(Nowhere, Station, "rifle_01", geid: "111111111111", minute: 1),
-                Move(Station, Crate, "rifle_01", geid: "111111111111", minute: 2),
-            ],
-            [],
-            new HashSet<string> { Crate.Key });
+        // The ledger does not know or care that the target is a backpack — that
+        // classification is HoldingResolver's job, applied when it presents the chain, not
+        // the ledger's when it folds moves. A move into any real container takes the item off
+        // wherever it was, backpack included; a class-level pickup out of it later must find
+        // it here to avoid double-counting (see the test below).
+        var ledger = Run(
+            Move(Nowhere, Station, "rifle_01", geid: "111111111111", minute: 1),
+            Move(Station, Backpack, "rifle_01", geid: "111111111111", minute: 2));
 
-        Assert.Equal(Station, ledger.InstanceAt["111111111111"]);
+        Assert.Equal(Backpack, ledger.InstanceAt["111111111111"]);
+        Assert.Empty(ledger.NamedIn(Station, "rifle_01"));
+        Assert.Single(ledger.NamedIn(Backpack, "rifle_01"));
+    }
+
+    [Fact]
+    public void Moving_an_item_out_of_a_backpack_by_class_does_not_duplicate_it()
+    {
+        // Dropping the backpack special-case (reversing 708e0d9) means the named rifle
+        // actually lands in the ledger's idea of the backpack when it is stored there. That is
+        // what lets the later class-level pickup — logged by class only, the game never says
+        // which item was grabbed — find the named instance already sitting at its source
+        // instead of inventing a second, anonymous one at the target.
+        var ledger = Run(
+            Move(Nowhere, Station, "rifle_01", geid: "111111111111", minute: 1),
+            Move(Station, Backpack, "rifle_01", geid: "111111111111", minute: 2),
+            Move(Backpack, OtherStation, "rifle_01", minute: 3));
+
+        Assert.Equal(OtherStation, ledger.InstanceAt["111111111111"]);
+
+        var allNamed = new[] { Station, Backpack, OtherStation }
+            .SelectMany(h => ledger.NamedIn(h, "rifle_01"))
+            .ToList();
+        var allLoose = new[] { Station, Backpack, OtherStation }
+            .SelectMany(h => ledger.Contents(h))
+            .Where(c => c.ItemClass == "rifle_01")
+            .Select(c => c.Loose)
+            .Where(l => l is { Quantity: > 0 })
+            .ToList();
+
+        var namedInstance = Assert.Single(allNamed);
+        Assert.Equal("111111111111", namedInstance.Geid);
+        Assert.Single(ledger.NamedIn(OtherStation, "rifle_01"));
+        Assert.Empty(allLoose);
     }
 }

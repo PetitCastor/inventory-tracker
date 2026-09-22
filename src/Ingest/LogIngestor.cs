@@ -20,6 +20,14 @@ public sealed record IngestStats
     public int BatchMovesExpanded { get; set; }
     public int AttachmentsSeen { get; set; }
     public int PlaceEvidence { get; set; }
+
+    /// <summary>
+    /// Lines that carried every visible sign of being an inventory move request but matched
+    /// none of <see cref="InventoryEventParser"/>'s patterns — the canary for a log-grammar
+    /// change the parser has not been taught yet. Should always be zero; see
+    /// <see cref="UnrecognisedMove"/>.
+    /// </summary>
+    public int UnrecognisedMoves { get; set; }
 }
 
 /// <summary>
@@ -110,7 +118,12 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         using var tx = cn.BeginTransaction();
 
         var parsedAny = false;
-        DateTimeOffset? firstTs = null, lastTs = null;
+        DateTimeOffset? firstTs = null, lastTs = null, newestLineTs = null;
+
+        // Isolates this pass's contribution so it can be added to the session's running
+        // total below, rather than overwriting it — the counter must survive across every
+        // ingest pass over a live, growing file.
+        var unrecognisedBefore = stats.UnrecognisedMoves;
 
         foreach (var line in reader.ReadLines(file.Path))
         {
@@ -124,6 +137,11 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             // inception date falls after the file's true start look rotated forever.
             firstTs ??= log.Timestamp;
 
+            // Tracked independently of _sinceTs: a file that predates the inception date is
+            // otherwise indistinguishable from an empty one, when what the user needs to see
+            // is "your newest log line is from before your inception date".
+            if (newestLineTs is null || log.Timestamp > newestLineTs) newestLineTs = log.Timestamp;
+
             if (log.Timestamp < _sinceTs) continue;
 
             lastTs = log.Timestamp;
@@ -135,7 +153,10 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             Apply(cn, tx, session.Id, line.StartOffset, ev, state, stats);
         }
 
-        SaveSession(cn, tx, session.Id, reader.Offset, firstTs, lastTs, complete: !file.IsLive);
+        var unrecognisedThisPass = stats.UnrecognisedMoves - unrecognisedBefore;
+        SaveSession(
+            cn, tx, session.Id, reader.Offset, firstTs, lastTs, newestLineTs, unrecognisedThisPass,
+            complete: !file.IsLive);
         tx.Commit();
 
         if (parsedAny) stats.FilesParsed++;
@@ -264,6 +285,13 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             case ContainerIdentified container:
                 UpsertContainer(cn, tx, container, state.CurrentLocation);
                 stats.ContainersIdentified++;
+                break;
+
+            // The canary firing: a request-shaped line neither ParseQueued nor ParseAddMove
+            // could read. Nothing to persist for it beyond the count — there is no move to
+            // record, only the fact that one was probably missed.
+            case UnrecognisedMove:
+                stats.UnrecognisedMoves++;
                 break;
 
             // A drag says how big both ends are. For a crate the game never names, that size
@@ -477,7 +505,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             reset.Transaction = tx;
             reset.CommandText = """
                 UPDATE session
-                SET byte_offset = 0, first_ts = NULL, last_ts = NULL, complete = 0
+                SET byte_offset = 0, first_ts = NULL, last_ts = NULL, complete = 0,
+                    unrecognised = 0, last_line_ts = NULL
                 WHERE id = $s
                 """;
             reset.Parameters.AddWithValue("$s", session.Id);
@@ -523,22 +552,28 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         long offset,
         DateTimeOffset? firstTs,
         DateTimeOffset? lastTs,
+        DateTimeOffset? newestLineTs,
+        int unrecognisedDelta,
         bool complete)
     {
         using var cmd = cn.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText = """
             UPDATE session SET
-                byte_offset = $o,
-                complete    = $c,
-                first_ts    = COALESCE(first_ts, $f),
-                last_ts     = COALESCE($l, last_ts)
+                byte_offset  = $o,
+                complete     = $c,
+                first_ts     = COALESCE(first_ts, $f),
+                last_ts      = COALESCE($l, last_ts),
+                last_line_ts = COALESCE($nl, last_line_ts),
+                unrecognised = unrecognised + $u
             WHERE id = $i
             """;
         cmd.Parameters.AddWithValue("$o", offset);
         cmd.Parameters.AddWithValue("$c", complete ? 1 : 0);
         cmd.Parameters.AddWithValue("$f", Iso(firstTs));
         cmd.Parameters.AddWithValue("$l", Iso(lastTs));
+        cmd.Parameters.AddWithValue("$nl", Iso(newestLineTs));
+        cmd.Parameters.AddWithValue("$u", unrecognisedDelta);
         cmd.Parameters.AddWithValue("$i", id);
         cmd.ExecuteNonQuery();
     }

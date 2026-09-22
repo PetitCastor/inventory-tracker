@@ -16,7 +16,7 @@ public sealed record NamedHolding(ItemHolding Holding, ResolvedName Name)
 /// ingest pass; pages subscribe to <see cref="Changed"/> so tailing the live log updates
 /// an open browser without a refresh.
 /// </summary>
-public sealed class TrackerState(TrackerDb db, WikiNameService names)
+public sealed class TrackerState(TrackerDb db, WikiNameService names, TrackerOptions options)
 {
     private readonly Lock _gate = new();
     private Snapshot _current = Snapshot.Empty;
@@ -26,9 +26,10 @@ public sealed class TrackerState(TrackerDb db, WikiNameService names)
     public sealed record Snapshot(
         IReadOnlyList<NamedHolding> Holdings,
         HoldingResolver? Resolver,
-        DateTimeOffset BuiltAt)
+        DateTimeOffset BuiltAt,
+        IngestHealth Health)
     {
-        public static readonly Snapshot Empty = new([], null, DateTimeOffset.MinValue);
+        public static readonly Snapshot Empty = new([], null, DateTimeOffset.MinValue, IngestHealth.Empty);
     }
 
     public Snapshot Current
@@ -46,9 +47,13 @@ public sealed class TrackerState(TrackerDb db, WikiNameService names)
             .Select(h => new NamedHolding(h, names.Resolve(h.ItemClass)))
             .ToList();
 
+        // Read fresh each time rather than captured at construction: Settings can change
+        // the log directory or inception date while the app is running.
+        var health = IngestHealth.Load(db, options.LogDir, options.InceptionDate);
+
         lock (_gate)
         {
-            _current = new Snapshot(holdings, resolver, DateTimeOffset.UtcNow);
+            _current = new Snapshot(holdings, resolver, DateTimeOffset.UtcNow, health);
         }
 
         Changed?.Invoke();

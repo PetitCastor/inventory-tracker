@@ -12,6 +12,6 @@ quoted here are real records.
 - [SC log grammar](sc-log-grammar.md) — line format and verified regex anchors for every extractable gameplay signal.
 - [Killfeed removed in 4.6+](sc-killfeed-removed.md) — Actor Death / CActor::Kill log 0 hits corpus-wide; don't go looking.
 - [Log error noise floor](sc-log-noise-floor.md) — which errors are background vs. real; normalise to errors/minute.
-- [Item movement ledger](sc-item-movement.md) — from→to extraction via Request[N] join; per-type endpoint semantics; batch moves; two logging eras split at build 12232306.
+- [Item movement ledger](sc-item-movement.md) — from→to extraction via Request[N] join; per-type endpoint semantics; batch moves; three logging eras, split at build 12232306 and again at build 12519617; geid stability across sessions.
 - [Location ids](sc-location-ids.md) — `<player>:Location:<id>` is player-led; how to name the numeric id from `<RequestLocationInventory>`; not a container.
 - [Wiki name resolution](sc-wiki-naming.md) — api.star-citizen.wiki partial-match gotcha, Found/NotFound/Error caching rule, empty-ItemClass crash, cache file location.

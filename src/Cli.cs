@@ -84,8 +84,18 @@ internal static class Cli
         Console.WriteLine($"Geids recovered    : {stats.GeidsRecovered:N0}");
         Console.WriteLine($"Worn sightings     : {stats.AttachmentsSeen:N0}");
         Console.WriteLine($"Place evidence     : {stats.PlaceEvidence:N0}");
+        Console.WriteLine($"Unrecognised moves : {stats.UnrecognisedMoves:N0}");
         Console.WriteLine($"Elapsed            : {elapsed.TotalSeconds:F1}s");
         Console.WriteLine();
+
+        if (stats.UnrecognisedMoves > 0)
+        {
+            Console.WriteLine(
+                $"WARNING: {stats.UnrecognisedMoves:N0} log line(s) looked like inventory move " +
+                "requests but matched none of the parser's patterns. The game's log format has " +
+                "probably changed; tracking is incomplete.");
+            Console.WriteLine();
+        }
 
         Summarize(db);
 
