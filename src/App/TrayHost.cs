@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading;
 using System.Windows.Forms;
 using InventoryTracker.Components;
 using InventoryTracker.Data;
@@ -19,6 +20,7 @@ namespace InventoryTracker.App;
 public static class TrayHost
 {
     private const string WikiClient = "star-citizen-wiki";
+    private const string UpdateClient = "github-releases";
 
     /// <summary>Outbound identification to api.star-citizen.wiki. Shared with the CLI path.</summary>
     public const string WikiUserAgent = "InventoryTracker/1.0 (Star Citizen inventory tracker)";
@@ -46,6 +48,13 @@ public static class TrayHost
         Application.ThreadException += (_, e) => ReportFatal(e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) => ReportFatal(e.ExceptionObject as Exception);
 
+        // Checked before anything else starts: if a newer build exists, this replaces the
+        // running exe and relaunches it instead of continuing to boot the old one.
+        if (CheckAndApplyUpdateOnStartup())
+        {
+            return 0;
+        }
+
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseUrls(options.Url);
         builder.Logging.SetMinimumLevel(LogLevel.Information);
@@ -69,6 +78,24 @@ public static class TrayHost
         builder.Services.AddSingleton(sp => new WikiNameService(
             sp.GetRequiredService<TrackerDb>(),
             sp.GetRequiredService<IHttpClientFactory>().CreateClient(WikiClient)));
+
+        // Same registration shape as the wiki client above, for the "Check for updates"
+        // button in Settings — the startup check in Run() uses its own short-lived
+        // HttpClient instead, since it runs before this container exists.
+        //
+        // HttpClient.Timeout bounds the whole request including streaming the response body,
+        // not just the initial round trip, so it has to be generous enough for the exe
+        // download itself (this client backs both the release check and DownloadAsync). The
+        // check step gets its own short-lived cancellation instead, so a hung/offline check
+        // still fails fast without capping how long the download is allowed to take.
+        builder.Services.AddHttpClient(UpdateClient, c =>
+        {
+            c.Timeout = TimeSpan.FromMinutes(5);
+            c.DefaultRequestHeaders.UserAgent.ParseAdd(UpdateService.UserAgent);
+            c.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        });
+        builder.Services.AddSingleton(sp => new UpdateService(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(UpdateClient)));
 
         builder.Services.AddSingleton<LogWatchService>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<LogWatchService>());
@@ -200,6 +227,59 @@ public static class TrayHost
                 "Inventory Tracker",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
+        }
+    }
+
+    /// <summary>
+    /// Checks GitHub for a newer release and, if found, downloads it and hands off to the
+    /// updater helper — returning true, meaning the caller should stop and let the new
+    /// process take over. Runs before the DI container exists, so it uses its own
+    /// short-lived HttpClient rather than <see cref="UpdateClient"/>.
+    /// <para>
+    /// Anything that goes wrong here — offline, GitHub unreachable, a bad download — is
+    /// swallowed: a failed update check must never stop the tracker itself from starting.
+    /// </para>
+    /// </summary>
+    private static bool CheckAndApplyUpdateOnStartup()
+    {
+        try
+        {
+            // Timeout has to cover the exe download below too (HttpClient.Timeout bounds the
+            // whole request, body included, not just the round trip to get headers) — the
+            // check itself is bounded separately by checkTimeout so a hung/offline check
+            // still fails fast without capping how long the download gets.
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd(UpdateService.UserAgent);
+            http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+            var updates = new UpdateService(http);
+
+            using var checkTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var info = updates.CheckForUpdateAsync(checkTimeout.Token).GetAwaiter().GetResult();
+            if (info is null) return false;
+
+            using var progress = new UpdateProgressForm(info.TagName);
+            progress.Show();
+
+            // No message loop is running yet (Application.Run is further down in Run()), so
+            // the download is pumped by hand to keep the window responsive and repainting.
+            var download = updates.DownloadAsync(info, new Progress<double>(progress.SetProgress));
+            while (!download.IsCompleted)
+            {
+                Application.DoEvents();
+                Thread.Sleep(15);
+            }
+            var path = download.GetAwaiter().GetResult();
+
+            progress.SetStatus("Restarting…");
+            Application.DoEvents();
+
+            UpdateService.InstallAndRestart(path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"Update check skipped: {ex.Message}");
+            return false;
         }
     }
 
