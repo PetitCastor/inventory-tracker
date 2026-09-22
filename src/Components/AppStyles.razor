@@ -65,6 +65,29 @@
 
     .picker select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
+    /* Sits above the station picker rather than inside it: search replaces the whole
+       station view, so it isn't scoped to "picking a place" the way the two dropdowns are. */
+    .search-field { margin-bottom: 1.25rem; max-width: 28rem; }
+
+    .search-input {
+        flex: 1;
+        padding: 0.6rem 0.8rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        color: var(--text);
+        font-size: 1rem;
+    }
+
+    .search-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+    /* Health banners on Browse: a standing warning (unrecognised log lines, shown alongside
+       real data) versus an informational explanation for why the page below is empty. */
+    .banner { padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1.25rem; font-size: 0.9rem; }
+    .banner-warn { background: rgba(210, 153, 34, 0.12); border: 1px solid rgba(210, 153, 34, 0.35); color: var(--medium); }
+    .banner-info { background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+    .banner a { color: var(--accent); }
+
     .settings-field {
         display: flex;
         align-items: center;

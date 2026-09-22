@@ -7,69 +7,200 @@
 
 <PageTitle>Browse — Star Citizen inventory</PageTitle>
 
-@if (_systems.Count == 0)
+@{
+    var health = State.Current.Health;
+}
+
+@* Unrecognised lines are a standing warning, not an emptiness explanation: the parser can
+   be silently dropping some moves while still showing plenty of (incomplete) data, so this
+   stacks above whatever else the page is doing rather than replacing it. *@
+@if (health.UnrecognisedMoveLines > 0)
 {
-    <p class="empty">No locations tracked yet. The tracker reads Star Citizen's logs as you play.</p>
+    <p class="banner banner-warn">
+        @health.UnrecognisedMoveLines.ToString("N0") inventory move line(s) in your logs weren't recognised —
+        Star Citizen's log format has probably changed, so tracking is incomplete.
+    </p>
+}
+
+@* Before the first background ingest pass finishes, State.Current is still Snapshot.Empty:
+   BuiltAt is unset and Health is IngestHealth.Empty, so health.LogDir reads "" and
+   health.LogFiles reads 0 — indistinguishable from a real "no logs found in <LogDir>" unless
+   we check BuiltAt first. Show a neutral "still working" banner instead; Browse re-renders on
+   its own via State.Changed once Rebuild() publishes a real snapshot. *@
+@if (State.Current.BuiltAt == DateTimeOffset.MinValue)
+{
+    <p class="banner banner-info">
+        Reading your Star Citizen logs&hellip; this page updates by itself when done.
+    </p>
+}
+@* These three are mutually exclusive and each one fully explains why the page below has
+   nothing in it, so at most one is shown and it replaces the generic "no locations" message
+   further down (see EmptiesExplained). *@
+else if (health.LogFiles == 0)
+{
+    <p class="banner banner-info">
+        No Star Citizen logs found in <code>@health.LogDir</code>.
+        <a href="settings">Check the log location in Settings</a>.
+    </p>
+}
+else if (health.FilesWithLinesSinceInception == 0)
+{
+    <p class="banner banner-info">
+        Found @health.LogFiles log file(s), but none has anything after your inception date
+        (@FormatDate(health.InceptionDate)). Newest log line: @FormatDate(health.NewestLogLine).
+        <a href="settings">Move the inception date back in Settings</a>.
+    </p>
+}
+else if (health.Moves == 0)
+{
+    <p class="banner banner-info">
+        Logs since @FormatDate(health.InceptionDate) were read, but no item movement was found yet.
+    </p>
+}
+
+<div class="picker-field search-field">
+    <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <circle cx="10.5" cy="10.5" r="6.5" />
+        <path d="m20 20-4.35-4.35" stroke-linecap="round" />
+    </svg>
+    <input type="text" placeholder="Search items by name or class…" class="search-input"
+           @bind="_query" @bind:event="oninput" />
+</div>
+
+@if (!string.IsNullOrWhiteSpace(_query))
+{
+    <section class="place">
+        @{ var results = SearchResults(); }
+        <h2>Search results <span class="badge-count">@results.Count</span></h2>
+        @if (results.Count == 0)
+        {
+            <p class="empty">Nothing matches "@_query".</p>
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Qty</th>
+                        <th>Where</th>
+                        <th>Last moved</th>
+                        <th>Confidence</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var h in results)
+                {
+                    <tr>
+                        <td>
+                            @if (h.Holding.Geid is { } geid)
+                            {
+                                <a href="item/@geid">@h.Display</a>
+                            }
+                            else
+                            {
+                                @h.Display
+                            }
+                        </td>
+                        <td class="qty">@h.Holding.Quantity&times;</td>
+                        <td class="chain">@h.Holding.Where</td>
+                        <td class="when" title="@h.Holding.LastMove.ToString("u")">@Ago(h.Holding.LastMove)</td>
+                        <td>
+                            <span class="conf conf-@h.Holding.Confidence.ToString().ToLowerInvariant()"
+                                  title="@string.Join("; ", h.Holding.Caveats)">
+                                @h.Holding.Confidence
+                            </span>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        }
+    </section>
 }
 else
 {
-    <div class="picker">
-        <div class="picker-field">
-            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-                <circle cx="12" cy="12" r="3.5" />
-                <ellipse cx="12" cy="12" rx="10" ry="3.4" transform="rotate(-25 12 12)" />
-            </svg>
-            <select @bind="_system" @bind:after="OnSystemChanged">
-                @foreach (var system in _systems)
-                {
-                    <option value="@system">@system</option>
-                }
-            </select>
+    @if (_systems.Count > 0)
+    {
+        <div class="picker">
+            <div class="picker-field">
+                <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                    <circle cx="12" cy="12" r="3.5" />
+                    <ellipse cx="12" cy="12" rx="10" ry="3.4" transform="rotate(-25 12 12)" />
+                </svg>
+                <select @bind="_system" @bind:after="OnSystemChanged">
+                    @foreach (var system in _systems)
+                    {
+                        <option value="@system">@system</option>
+                    }
+                </select>
+            </div>
+
+            <div class="picker-field">
+                <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                    <path d="M12 21s7-6.79 7-12a7 7 0 1 0-14 0c0 5.21 7 12 7 12z" />
+                    <circle cx="12" cy="9" r="2.5" />
+                </svg>
+                <select @bind="_placeId" @bind:after="Recompute">
+                    @foreach (var place in _placesInSystem)
+                    {
+                        <option value="@place.Id">@place.Name</option>
+                    }
+                </select>
+            </div>
         </div>
 
-        <div class="picker-field">
-            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-                <path d="M12 21s7-6.79 7-12a7 7 0 1 0-14 0c0 5.21 7 12 7 12z" />
-                <circle cx="12" cy="9" r="2.5" />
-            </svg>
-            <select @bind="_placeId" @bind:after="Recompute">
-                @foreach (var place in _placesInSystem)
+        @if (_place is not null)
+        {
+            <section class="place">
+                <h2>Directly in local inventory <span class="badge-count">@_direct.Sum(r => r.Quantity)</span></h2>
+                @if (_direct.Count == 0)
                 {
-                    <option value="@place.Id">@place.Name</option>
+                    <p class="empty">Nothing tracked here directly.</p>
                 }
-            </select>
-        </div>
-    </div>
+                else
+                {
+                    @ItemTable(_direct)
+                }
+            </section>
 
-    @if (_place is not null)
+            <section class="place">
+                <h2>Inside a container here <span class="badge-count">@_viaContainer.Sum(g => g.Rows.Sum(r => r.Quantity))</span></h2>
+                @if (_viaContainer.Count == 0)
+                {
+                    <p class="empty">Nothing tracked inside a container here.</p>
+                }
+                else
+                {
+                    @foreach (var group in _viaContainer)
+                    {
+                        <h3>@group.Container.Label <span class="badge-count">@group.Rows.Sum(r => r.Quantity)</span></h3>
+                        @ItemTable(group.Rows)
+                    }
+                }
+            </section>
+        }
+    }
+
+    @* Equipped/carried/dropped/unplaced-container holdings never belong to a Location, so
+       they were previously invisible everywhere in the UI — this is the only place they
+       surface. Shown regardless of which system/place is selected above, and even when
+       there are no stations at all. *@
+    @if (_notAtStation.Count > 0)
     {
         <section class="place">
-            <h2>Directly in local inventory <span class="badge-count">@_direct.Sum(r => r.Quantity)</span></h2>
-            @if (_direct.Count == 0)
+            <h2>Not at a station <span class="badge-count">@_notAtStation.Sum(g => g.Rows.Sum(r => r.Quantity))</span></h2>
+            @foreach (var group in _notAtStation)
             {
-                <p class="empty">Nothing tracked here directly.</p>
-            }
-            else
-            {
-                @ItemTable(_direct)
+                <h3>@group.Root.Label <span class="badge-count">@group.Rows.Sum(r => r.Quantity)</span></h3>
+                @ItemTable(group.Rows)
             }
         </section>
+    }
 
-        <section class="place">
-            <h2>Inside a container here <span class="badge-count">@_viaContainer.Sum(g => g.Rows.Sum(r => r.Quantity))</span></h2>
-            @if (_viaContainer.Count == 0)
-            {
-                <p class="empty">Nothing tracked inside a container here.</p>
-            }
-            else
-            {
-                @foreach (var group in _viaContainer)
-                {
-                    <h3>@group.Container.Label <span class="badge-count">@group.Rows.Sum(r => r.Quantity)</span></h3>
-                    @ItemTable(group.Rows)
-                }
-            }
-        </section>
+    @if (_systems.Count == 0 && _notAtStation.Count == 0 && !EmptinessExplained(State.Current))
+    {
+        <p class="empty">No locations tracked yet. The tracker reads Star Citizen's logs as you play.</p>
     }
 }
 
@@ -99,6 +230,9 @@ else
 
     private List<Row> _direct = [];
     private List<(HoldingLink Container, List<Row> Rows)> _viaContainer = [];
+    private List<(HoldingLink Root, List<Row> Rows)> _notAtStation = [];
+
+    private string _query = "";
 
     /// <summary>Any id of the place to open, so a particular station can be linked to.</summary>
     [SupplyParameterFromQuery(Name = "at")] private string? At { get; set; }
@@ -119,6 +253,21 @@ else
     private void RefreshOptions()
     {
         var snapshot = State.Current;
+
+        // Independent of the station catalogue below: equipped/carried/dropped/unplaced-container
+        // holdings never belong to a Location, so this has to be computed even when there is no
+        // catalogue at all (or no station currently selected).
+        _notAtStation = snapshot.Holdings
+            .Where(h => h.Holding.Root is { Kind: not InventoryKind.Location })
+            .GroupBy(h => h.Holding.Root!)
+            // Grouping on the whole HoldingLink rather than just Kind+Key matters here: every
+            // Equipped root shares Key == "", but the resolver labels some of them "equipped on
+            // your character" and others "carried on your character" (worn vs. carried-in-a-
+            // worn-container) — folding those into one bucket would lose that distinction.
+            .Select(g => (Root: g.Key, Rows: Pool(g)))
+            .OrderByDescending(g => g.Rows.Sum(r => r.Quantity))
+            .ToList();
+
         var catalogue = snapshot.Resolver?.Places;
 
         if (catalogue is null)
@@ -252,7 +401,17 @@ else
         {
             <tr>
                 <td>
-                    @row.Display
+                    @* Only a pooled row that resolved to exactly one instance can be linked —
+                       Row.Geid is null whenever the pool mixes named and anonymous units, or
+                       more than one named instance, and there is no single item page for that. *@
+                    @if (row.Geid is { } geid)
+                    {
+                        <a href="item/@geid">@row.Display</a>
+                    }
+                    else
+                    {
+                        @row.Display
+                    }
                     @if (row.Unnamed)
                     {
                         <span class="unnamed" title="Not found in the wiki catalogue">?</span>
@@ -270,6 +429,34 @@ else
         }
         </tbody>
     </table>;
+
+    /// <summary>
+    /// Every holding whose display name or item class contains the query, unpooled — search
+    /// exists precisely to find one named instance out of a pool, so collapsing rows here would
+    /// defeat the point (unlike the station tables, which pool because the game itself never
+    /// distinguishes the pooled units).
+    /// </summary>
+    private List<NamedHolding> SearchResults() =>
+        State.Current.Holdings
+            .Where(h => h.Display.Contains(_query, StringComparison.OrdinalIgnoreCase)
+                     || h.ClassName.Contains(_query, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase)
+            .ThenByDescending(h => h.Holding.LastMove)
+            .ToList();
+
+    /// <summary>True when the not-yet-built banner or one of the three IngestHealth banners
+    /// above already accounts for an empty page — used to suppress the generic "no locations
+    /// tracked yet" message so the page never shows two different explanations for the same
+    /// emptiness.</summary>
+    private static bool EmptinessExplained(TrackerState.Snapshot snapshot) =>
+        snapshot.BuiltAt == DateTimeOffset.MinValue
+        || snapshot.Health.LogFiles == 0
+        || snapshot.Health.FilesWithLinesSinceInception == 0
+        || snapshot.Health.Moves == 0;
+
+    /// <summary>Calendar-day formatting for the health banners; "-" stands in for a date that
+    /// was never set (no inception date) or never seen (no log line read yet).</summary>
+    private static string FormatDate(DateTimeOffset? when) => when?.ToString("yyyy-MM-dd") ?? "-";
 
     private static string Ago(DateTimeOffset when)
     {

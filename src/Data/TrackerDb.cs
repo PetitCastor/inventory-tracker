@@ -55,8 +55,17 @@ public sealed class TrackerDb
     /// Bump whenever <see cref="Schema"/> changes shape. The store is a derived cache —
     /// logs are the source of truth — so a mismatch is resolved by rebuilding rather
     /// than by writing migrations.
+    /// <para>
+    /// 8 -> 9 is required for more than the new <c>session.unrecognised</c> /
+    /// <c>session.last_line_ts</c> columns: it also forces every existing store to rebuild
+    /// from scratch. Before this fix, the parser silently read zero moves from any build
+    /// 12519617+ log — but it still advanced each session's byte watermark past those lines
+    /// and, for a rotated file, marked it <c>complete</c>. Without the bump, the fixed parser
+    /// would never be given those bytes to re-read: it would resume exactly where the broken
+    /// one left off, or skip the file entirely.
+    /// </para>
     /// </summary>
-    private const int SchemaVersion = 8;
+    private const int SchemaVersion = 9;
 
     public void Initialize()
     {
@@ -123,7 +132,19 @@ public sealed class TrackerDb
             first_ts     TEXT,
             last_ts      TEXT,
             byte_offset  INTEGER NOT NULL DEFAULT 0,
-            complete     INTEGER NOT NULL DEFAULT 0
+            complete     INTEGER NOT NULL DEFAULT 0,
+            -- Running count of UnrecognisedMove lines seen across every ingest pass over
+            -- this file. Added to, never overwritten, so it keeps growing as a live file
+            -- does instead of resetting on each pass.
+            unrecognised INTEGER NOT NULL DEFAULT 0,
+            -- Timestamp of the newest well-formed log line in the file, independent of the
+            -- inception-date filter. Unlike last_line_ts, first_ts is also captured before
+            -- that filter (so DiscardIfRotated can identify a file regardless of where the
+            -- cutoff falls) and is therefore set for any file with any line at all; last_ts
+            -- is the one still gated by the filter. This is what lets diagnostics say "your
+            -- newest log is from before your inception date" instead of a file with real
+            -- content looking empty.
+            last_line_ts TEXT
         );
 
         -- One row per item relocation.

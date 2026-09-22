@@ -43,11 +43,6 @@ public sealed class HoldingResolver
 
     private readonly Dictionary<string, List<MoveRecord>> _byGeid;
 
-    /// <summary>Per item class, the lifespan (first and last move) of every named entity of
-    /// that class. Used to spot a stored instance that a later, never-overlapping entity of
-    /// the same class superseded — the fingerprint of a relog re-issuing the geid.</summary>
-    private readonly Dictionary<string, List<(string Geid, DateTimeOffset First, DateTimeOffset Last)>> _classSpans;
-
     private readonly LedgerReplay _ledger;
 
     /// <summary>Systems and place names as a player would recognise them.</summary>
@@ -74,20 +69,7 @@ public sealed class HoldingResolver
             .GroupBy(m => m.ItemGeid!)
             .ToDictionary(g => g.Key, g => g.OrderBy(m => m.Timestamp).ToList());
 
-        _classSpans = _byGeid.Values
-            .Select(h => (Geid: h[^1].ItemGeid!, Class: h[^1].ItemClass, First: h[0].Timestamp, Last: h[^1].Timestamp))
-            .GroupBy(x => x.Class)
-            .ToDictionary(g => g.Key, g => g.Select(x => (x.Geid, x.First, x.Last)).ToList());
-
-        // Container class is only known once its Token Flow line has been seen, which can be
-        // anywhere in the log relative to a move that targets it — so this can only be
-        // resolved here, after ingestion, with the full catalogue in hand.
-        var backpackKeys = containers
-            .Where(kv => IsBackpack(kv.Value.ClassName))
-            .Select(kv => kv.Key)
-            .ToHashSet(StringComparer.Ordinal);
-
-        _ledger = LedgerReplay.Run(moves, worn, backpackKeys);
+        _ledger = LedgerReplay.Run(moves, worn);
     }
 
     /// <summary>The whole move history is only a few thousand rows, so resolve in memory.</summary>
@@ -146,22 +128,6 @@ public sealed class HoldingResolver
     private string ClassOf(string geid) =>
         _byGeid.TryGetValue(geid, out var h) && h.Count > 0 ? h[^1].ItemClass : "";
 
-    /// <summary>
-    /// True when another entity of the same class first appeared strictly after this one's
-    /// last move — a later identity that never coexisted with it. Two items held at once
-    /// overlap in time and are left alone; only a clean hand-off (this one goes quiet, a new
-    /// geid takes over) reads as the same physical item relogged under a fresh id.
-    /// </summary>
-    private bool SupersededByRelog(string geid, string itemClass)
-    {
-        if (!_classSpans.TryGetValue(itemClass, out var spans)) return false;
-
-        var mine = spans.FirstOrDefault(s => s.Geid == geid);
-        if (mine.Geid is null) return false;
-
-        return spans.Any(other => other.Geid != geid && other.First > mine.Last);
-    }
-
     /// <summary>Full movement history for one instance, oldest first — the audit view.</summary>
     public IReadOnlyList<MoveRecord> History(string geid) =>
         _byGeid.TryGetValue(geid, out var h) ? h : [];
@@ -198,20 +164,6 @@ public sealed class HoldingResolver
             caveats.Add($"last seen {age.TotalDays:F0} days ago");
         }
 
-        // A named item parked at a station, whose class then turns up under a different entity
-        // that only ever existed after this one went quiet, is almost certainly the same
-        // physical item picked back up: the game re-issues an entity id every session, so the
-        // pickup was logged under a new geid that can never be tied back to this row. Its
-        // stored position is therefore stale — knock it well down rather than assert it.
-        if (geid is not null && where.Kind == InventoryKind.Location && SupersededByRelog(geid, itemClass))
-        {
-            score *= 0.35;
-            caveats.Add(
-                "the same kind of item was carried later under a different identity that never "
-                + "overlapped this one — entities are re-issued each session, so this was most "
-                + "likely picked back up and this location is stale");
-        }
-
         // Which of several identical items this is says nothing about whether one of them
         // is here, so it is reported without touching the score.
         if (ambiguous && geid is not null)
@@ -235,6 +187,11 @@ public sealed class HoldingResolver
         var chain = new List<HoldingLink>();
         var seen = new HashSet<string>();
         if (itemGeid is not null) seen.Add(itemGeid);
+
+        // Set once the walk steps through a worn container, so a later Equipped hop can be
+        // labelled correctly: the backpack is worn, not the item inside it, so ending up here
+        // by way of apparel reads as "carried" rather than "equipped".
+        var passedWorn = false;
 
         var kind = start.Kind;
         var key = start.Key;
@@ -264,7 +221,8 @@ public sealed class HoldingResolver
                 }
 
                 case InventoryKind.Equipped:
-                    chain.Add(new HoldingLink(kind, "", "equipped on your character"));
+                    chain.Add(new HoldingLink(
+                        kind, "", passedWorn ? "carried on your character" : "equipped on your character"));
                     return chain;
 
                 case InventoryKind.World:
@@ -285,6 +243,7 @@ public sealed class HoldingResolver
                     // often than it is seen worn — with an attachment sighting as a backstop.
                     var worn = IsApparel(info?.ClassName) || _wornContainers.Contains(key);
                     if (!worn) chain.Add(new HoldingLink(kind, key, label));
+                    else passedWorn = true;
 
                     // A container that contains itself would loop forever.
                     if (!seen.Add(key))
@@ -314,7 +273,10 @@ public sealed class HoldingResolver
                     // a "place" for every wreck and crate ever looted, most never named by
                     // the game, which is what fills the browse list with "Unknown system".
                     // Lootable containers are therefore never tracked as a place at all.
-                    if (!lootable && info?.LastLocationId is { } seenAt)
+                    // Worn apparel gets no such fallback either: where the player last opened
+                    // their own backpack is just wherever they happened to be standing at the
+                    // time, not where the backpack — or anything in it — actually lives.
+                    if (!worn && !lootable && info?.LastLocationId is { } seenAt)
                     {
                         score *= 0.8;
                         caveats.Add($"'{label}' was placed by where you last opened it, not by a recorded move");
@@ -323,13 +285,18 @@ public sealed class HoldingResolver
                         continue;
                     }
 
-                    // A worn container we never pinned leaves the item with no place at all,
-                    // rather than the bare backpack it used to show. Say so instead of dropping
-                    // it silently.
+                    // A worn container with no ledger placement of its own — never stored,
+                    // never seen equipped — has nothing real to point to, and unlike a box or
+                    // crate it gets no opened-here fallback either. The obvious default is that
+                    // it is still on the player, so say that plainly with a moderate penalty
+                    // rather than either asserting a place or dropping the item's location
+                    // entirely.
                     if (worn)
                     {
-                        score *= 0.6;
-                        caveats.Add("worn apparel whose current location was never recorded");
+                        score *= 0.8;
+                        caveats.Add(
+                            "in worn apparel that was never seen being stored anywhere, so assumed still carried");
+                        chain.Add(new HoldingLink(InventoryKind.Equipped, "", "carried on your character"));
                         return chain;
                     }
 
@@ -465,15 +432,6 @@ public sealed class HoldingResolver
     /// </summary>
     private static bool IsLootable(string? className) =>
         className is not null && className.Contains("lootable", StringComparison.OrdinalIgnoreCase);
-
-    /// <summary>
-    /// Whatever put an item in the backpack — dragged from a location, another container,
-    /// or straight out of hand — says nothing about where the player actually is, so it is
-    /// never worth recording as a placement. Recognised by class name, the same reliable
-    /// signal <see cref="IsApparel"/> uses.
-    /// </summary>
-    private static bool IsBackpack(string? className) =>
-        className is not null && className.Contains("backpack", StringComparison.OrdinalIgnoreCase);
 
     private static InventoryKind ParseKind(string s) =>
         Enum.TryParse<InventoryKind>(s, out var k) ? k : InventoryKind.Unknown;

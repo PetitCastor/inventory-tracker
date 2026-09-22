@@ -177,13 +177,25 @@ public sealed class LogWatchService(
             var stats = new LogIngestor(db, options.LogDir, options.InceptionDate).IngestAll();
 
             // Re-resolving is cheap, but pushing a no-op update to every open page is noise.
+            // An UnrecognisedMove counts too: it means the game's log grammar just drifted,
+            // and the health snapshot the UI reads needs to reflect that as soon as possible
+            // rather than waiting for some unrelated change to trigger the next rebuild.
             if (stats.MovesInserted > 0 ||
                 stats.ContainersIdentified > 0 ||
+                stats.UnrecognisedMoves > 0 ||
                 state.Current.BuiltAt == DateTimeOffset.MinValue)
             {
                 state.Rebuild();
                 log.LogInformation(
                     "Ingested {Moves} moves from {Files} file(s)", stats.MovesInserted, stats.FilesParsed);
+            }
+
+            if (stats.UnrecognisedMoves > 0)
+            {
+                log.LogWarning(
+                    "{Count} log line(s) looked like inventory move requests but matched none of the " +
+                    "parser's patterns. The game's log format has probably changed; tracking is incomplete.",
+                    stats.UnrecognisedMoves);
             }
         }
         catch (IOException ex)

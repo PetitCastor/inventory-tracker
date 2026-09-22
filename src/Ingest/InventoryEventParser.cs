@@ -8,6 +8,13 @@ namespace InventoryTracker.Ingest;
 /// Turns a <see cref="LogLine"/> into a typed <see cref="InventoryEvent"/>.
 /// Every pattern here was verified against post-4.9 logs; pre-4.9 files use a
 /// different event vocabulary entirely and must be excluded before parsing.
+/// <para>
+/// Build 12519617 (late Aug 2026) reshaped two of those patterns' anchors — see
+/// <see cref="QueuedRequest"/>'s dispatch in <see cref="Parse"/> and the comment on
+/// <see cref="AddMove"/> — without touching anything else in either line. Both eras parse
+/// side by side; <see cref="LooksLikeRequest"/> and <see cref="UnrecognisedMove"/> exist so
+/// the *next* such change is a counter going up rather than a silent parse failure.
+/// </para>
 /// </summary>
 public static partial class InventoryEventParser
 {
@@ -37,8 +44,12 @@ public static partial class InventoryEventParser
     // ItemClass is matched up to the following StoredEntity[ rather than to the first ']',
     // because a multi-select drag writes it as a bracketed list: ItemClass[[a] [b] [c] ].
     // Stopping at the first ']' would silently truncate that to "[a".
+    //
+    // "New [Rr]equest[" rather than a literal "New request[": build 12519617 capitalised it
+    // to "New Request[" without changing anything else on the line. Everything past that
+    // token stays case-sensitive — only the one word the game actually changed is loosened.
     [GeneratedRegex(
-        @"^New request\[(?<req>\d+)\] Player\[[^\]]*\] Type\[(?<type>[^\]]*)\] " +
+        @"^New [Rr]equest\[(?<req>\d+)\] Player\[[^\]]*\] Type\[(?<type>[^\]]*)\] " +
         @"SourceInventory\[(?<srcinv>[^\]]*)\] TargetInventory\[(?<tgtinv>[^\]]*)\] " +
         @"ItemClass\[(?<class>.*?)\] StoredEntity\[.*?Caller\[(?<caller>[^\]]*)\]",
         RegexOptions.CultureInvariant)]
@@ -46,11 +57,23 @@ public static partial class InventoryEventParser
 
     /// <summary>Fallback for an Add-move line that does not carry the StoredEntity anchor.</summary>
     [GeneratedRegex(
-        @"^New request\[(?<req>\d+)\] Player\[[^\]]*\] Type\[(?<type>[^\]]*)\] " +
+        @"^New [Rr]equest\[(?<req>\d+)\] Player\[[^\]]*\] Type\[(?<type>[^\]]*)\] " +
         @"SourceInventory\[(?<srcinv>[^\]]*)\] TargetInventory\[(?<tgtinv>[^\]]*)\] " +
         @"ItemClass\[(?<class>[^\]]*)\].*?Caller\[(?<caller>[^\]]*)\]",
         RegexOptions.CultureInvariant)]
     private static partial Regex AddMoveLoose();
+
+    /// <summary>
+    /// The canary for grammar drift: any line that carries every visible sign of being an
+    /// inventory move request — the "Queued Request[" / "New request[" or "New Request["
+    /// prefix — regardless of which event tag it hangs off or how the rest of the line has
+    /// changed underneath us. Case-insensitive because the one confirmed drift so far
+    /// (build 12519617) was exactly a capitalisation change to this token.
+    /// </summary>
+    [GeneratedRegex(
+        @"^(?:Queued|New) request\[\d+\]",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex LooksLikeRequest();
 
     /// <summary>One entry of a bracketed ItemClass list.</summary>
     [GeneratedRegex(@"\[(?<cls>[^\[\]]+)\]", RegexOptions.CultureInvariant)]
@@ -118,7 +141,7 @@ public static partial class InventoryEventParser
     {
         var ev = line.EventName switch
         {
-            "InventoryManagementRequest" => ParseQueued(line),
+            "InventoryManagementRequest" or "Inventory Mgmt Request Queued" => ParseQueued(line),
             "Add Inventory Management Move" => ParseAddMove(line),
             "Player Inventory Request Complete" => ParseComplete(line, PlayerRequestComplete()),
             "Inventory Request Completed" => ParseComplete(line, RequestCompleted()),
@@ -130,6 +153,12 @@ public static partial class InventoryEventParser
             "OnInventoryStoreItem" => ParseInventoryStore(line),
             "AttachmentReceived" => ParseAttachment(line),
             "Calculate Route" => ParseRouteStart(line),
+
+            // An event tag we have never seen dispatch to a move parser at all — most likely
+            // the queued-tag rename happening again under a name this build doesn't know
+            // about yet. Only worth flagging when the body still looks like a request line;
+            // an unrelated new tag is just an unrelated new tag.
+            _ when LooksLikeRequest().IsMatch(line.Rest) => new UnrecognisedMove(line.Timestamp, line.EventName),
             _ => null,
         };
 
@@ -167,7 +196,11 @@ public static partial class InventoryEventParser
         if (!line.Rest.StartsWith("Queued Request[", StringComparison.Ordinal)) return null;
 
         var m = QueuedRequest().Match(line.Rest);
-        if (!m.Success) return null;
+
+        // The prefix matched but the body didn't: something inside the line changed shape.
+        // This is the case that matters most — a Queued line is the authoritative move
+        // record, so silently dropping it here is exactly how items go missing.
+        if (!m.Success) return new UnrecognisedMove(line.Timestamp, line.EventName);
 
         var moveType = m.Groups["type"].Value;
         if (IsNonRelocating(moveType)) return null;
@@ -203,7 +236,15 @@ public static partial class InventoryEventParser
     {
         var m = AddMove().Match(line.Rest);
         if (!m.Success) m = AddMoveLoose().Match(line.Rest);
-        if (!m.Success) return null;
+        if (!m.Success)
+        {
+            // Both shapes failed. If the line still opens with "New request[" / "New
+            // Request[" it is a request line whose body changed underneath us, not some
+            // unrelated line dispatched here by mistake.
+            return LooksLikeRequest().IsMatch(line.Rest)
+                ? new UnrecognisedMove(line.Timestamp, line.EventName)
+                : null;
+        }
 
         var moveType = m.Groups["type"].Value;
         if (IsNonRelocating(moveType)) return null;
