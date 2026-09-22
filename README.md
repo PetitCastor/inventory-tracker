@@ -29,7 +29,7 @@ dotnet test InventoryTracker.slnx
 .\publish.ps1
 ```
 
-`publish.ps1` produces a single self-contained `dist\InventoryTracker.exe` with no .NET prerequisite. The version comes from the `VERSION` file — bump it in the same PR as the change it ships, and CI cuts the matching GitHub Release on merge to `main`.
+`publish.ps1` produces a single self-contained `dist\InventoryTracker.exe` with no .NET prerequisite, using the version in the `VERSION` file. Every merge to `main` cuts a new GitHub Release regardless of whether that PR touched `VERSION`: CI releases whatever's in the file if it's ahead of the latest published release (a deliberate minor/major bump), otherwise it patch-bumps past the latest release on its own.
 
 ## Layout
 
