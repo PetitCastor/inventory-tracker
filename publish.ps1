@@ -18,8 +18,9 @@
 
 .PARAMETER Version
     Version to stamp into the assembly. Defaults to the contents of the VERSION
-    file, which is also what CI publishes, so a local build and a released one
-    report the same number.
+    file. CI always passes its own computed version explicitly instead (see
+    ci.yml) — it may be ahead of VERSION when a merge didn't bump the file — so
+    a local build without -Version can lag one patch behind the latest release.
 
 .EXAMPLE
     .\publish.ps1

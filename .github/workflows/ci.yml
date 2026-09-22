@@ -52,46 +52,60 @@ jobs:
           dotnet-version: '10.0.x'
           dotnet-quality: preview
 
-      # The version comes from the VERSION file, bumped in the same PR as the change
-      # it ships. github.run_number was previously used to avoid committing a bump into
-      # a protected branch, but it counts pull-request runs too, so released versions
-      # skipped numbers and would collide if the workflow were ever renamed.
+      # The version comes from the VERSION file. A PR can bump it by hand for a
+      # deliberate minor/major release; github.run_number was previously used instead,
+      # but it counts pull-request runs too, so released versions skipped numbers and
+      # would collide if the workflow were ever renamed.
       - name: Read version
         id: version
         shell: bash
         run: echo "version=$(tr -d '[:space:]' < VERSION)" >> "$GITHUB_OUTPUT"
 
-      # A merge that does not bump VERSION must not fail the build; it just has nothing
-      # new to release.
-      - name: Check whether this version is already released
-        id: released
+      # Every merge to main ships a release, whether or not the PR bumped VERSION.
+      # main requires PRs and has enforce_admins on (no direct pushes, even from this
+      # job's own token), so there is nowhere to commit an auto-bump back to — instead
+      # this compares VERSION against the latest actual release and, if VERSION is not
+      # already ahead of it (i.e. the PR didn't bump it), patch-bumps past that release
+      # for this run only. A PR that did bump VERSION past the latest release is used
+      # as committed.
+      - name: Determine release version
+        id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "v${{ steps.version.outputs.version }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "v${{ steps.version.outputs.version }} already released; skipping."
+          committed="${{ steps.version.outputs.version }}"
+          latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName 2>/dev/null || echo v0.0.0)"
+          latest="${latest#v}"
+
+          num() { IFS='.' read -r a b c <<< "$1"; echo $(( a * 1000000 + b * 1000 + c )); }
+
+          if [ "$(num "$committed")" -gt "$(num "$latest")" ]; then
+            version="$committed"
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            IFS='.' read -r major minor patch <<< "$latest"
+            version="$major.$minor.$((patch + 1))"
+            echo "VERSION ($committed) is not ahead of the latest release (v$latest); releasing v$version instead."
           fi
 
-      # Same script developers run locally, so the two cannot drift.
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # Same script developers run locally, so the two cannot drift. The version stamped
+      # into the exe is whatever Determine release version settled on, which may be ahead
+      # of the VERSION file committed in the repo — see that step's comment.
       - name: Publish
-        if: steps.released.outputs.exists == 'false'
         shell: pwsh
         run: |
-          ./publish.ps1 -Version '${{ steps.version.outputs.version }}'
+          ./publish.ps1 -Version '${{ steps.release.outputs.version }}'
 
           Rename-Item -LiteralPath 'dist\InventoryTracker.exe' `
-            -NewName "InventoryTracker-v${{ steps.version.outputs.version }}.exe"
+            -NewName "InventoryTracker-v${{ steps.release.outputs.version }}.exe"
 
       # Pinned to a commit rather than the mutable v2 tag: this step runs with a
       # write-capable token.
       - name: Create release
-        if: steps.released.outputs.exists == 'false'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
-          files: dist/InventoryTracker-v${{ steps.version.outputs.version }}.exe
+          tag_name: v${{ steps.release.outputs.version }}
+          name: v${{ steps.release.outputs.version }}
+          files: dist/InventoryTracker-v${{ steps.release.outputs.version }}.exe
