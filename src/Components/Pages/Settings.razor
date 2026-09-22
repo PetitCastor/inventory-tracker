@@ -1,11 +1,13 @@
 @page "/settings"
 @rendermode InteractiveServer
 @implements IDisposable
+@using InventoryTracker.App
 @using InventoryTracker.Ingest
 @inject TrackerState State
 @inject TrackerOptions Options
 @inject LogWatchService Watcher
 @inject InventoryTracker.App.DesktopShell Shell
+@inject UpdateService Updates
 
 <PageTitle>Settings — Star Citizen inventory</PageTitle>
 
@@ -76,6 +78,28 @@
     }
 </div>
 
+<h2>Updates</h2>
+<div class="settings-actions">
+    <button @onclick="CheckForUpdate" disabled="@(_checkingUpdate || _downloadingUpdate)">Check for updates</button>
+    @if (_checkingUpdate)
+    {
+        <span class="rebuild-status"><span class="spinner"></span> Checking…</span>
+    }
+    else if (_downloadingUpdate)
+    {
+        <span class="rebuild-status"><span class="spinner"></span> @(_updateStatus ?? $"Downloading… {(int)_updateProgress}%")</span>
+    }
+    else if (_updateError is { } uerr)
+    {
+        <span class="rebuild-status error">@uerr</span>
+    }
+    else if (_updateStatus is { } ustatus)
+    {
+        <span class="rebuild-status done">@ustatus</span>
+    }
+</div>
+<p class="subtle">Running v@(_currentVersion).</p>
+
 <h2>Confidence spread</h2>
 <ul>
     @foreach (var group in _holdings.GroupBy(h => h.Holding.Confidence).OrderByDescending(g => g.Key))
@@ -127,6 +151,13 @@
     private bool _namesRefreshed;
     private string? _namesProgress;
     private string? _namesError;
+
+    private readonly string _currentVersion = UpdateService.CurrentVersion.ToString(3);
+    private bool _checkingUpdate;
+    private bool _downloadingUpdate;
+    private double _updateProgress;
+    private string? _updateStatus;
+    private string? _updateError;
 
     private async Task BrowseFolder()
     {
@@ -242,6 +273,69 @@
         finally
         {
             _refreshingNames = false;
+        }
+    }
+
+    /// <summary>
+    /// One button drives the whole pipeline: check, and if something newer exists, download
+    /// it and restart straight into it. There is no separate confirm step — same behaviour
+    /// as the launch-time check in <c>TrayHost</c>, just triggered by hand instead of on
+    /// startup.
+    /// </summary>
+    private async Task CheckForUpdate()
+    {
+        _updateError = null;
+        _updateStatus = null;
+        _checkingUpdate = true;
+        StateHasChanged();
+
+        UpdateInfo? info;
+        try
+        {
+            info = await Updates.CheckForUpdateAsync();
+        }
+        catch (Exception ex)
+        {
+            _updateError = $"Could not check for updates: {ex.Message}";
+            _checkingUpdate = false;
+            return;
+        }
+
+        if (info is null)
+        {
+            _updateStatus = $"Up to date (v{_currentVersion}).";
+            _checkingUpdate = false;
+            return;
+        }
+
+        _checkingUpdate = false;
+        _downloadingUpdate = true;
+        _updateProgress = 0;
+        StateHasChanged();
+
+        try
+        {
+            var progress = new Progress<double>(p =>
+            {
+                _updateProgress = p;
+                InvokeAsync(StateHasChanged);
+            });
+
+            var path = await Updates.DownloadAsync(info, progress);
+
+            _updateStatus = $"Restarting into {info.TagName}…";
+            StateHasChanged();
+            await Task.Delay(300);
+
+            // Nothing after this should run: InstallAndRestart hands off to a helper that
+            // waits for this process to exit, so exiting now is the handoff.
+            UpdateService.InstallAndRestart(path);
+            Environment.Exit(0);
+        }
+        catch (Exception ex)
+        {
+            _updateError = $"Could not install {info.TagName}: {ex.Message}";
+            _downloadingUpdate = false;
         }
     }
 }
