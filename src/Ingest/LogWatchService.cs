@@ -36,6 +36,12 @@ public sealed class LogWatchService(
     private readonly SemaphoreSlim _ingestLock = new(1, 1);
     private FileSystemWatcher? _watcher;
 
+    /// <summary>
+    /// Kept across passes because it carries the live file's parse state from one to the
+    /// next — see <see cref="LogIngestor"/>. Guarded by <see cref="_ingestLock"/>.
+    /// </summary>
+    private LogIngestor? _ingestor;
+
     /// <summary>Nudges the service to ingest now — used by the tray's "Rescan" command.</summary>
     public void RequestScan()
     {
@@ -64,6 +70,11 @@ public sealed class LogWatchService(
         try
         {
             db.ResetIngest();
+
+            // Session ids restart once the table is emptied, so carried state could
+            // otherwise land on an unrelated new session with the same id.
+            _ingestor = null;
+            state.ResetHealth();
             IngestLocked();
         }
         finally
@@ -174,7 +185,16 @@ public sealed class LogWatchService(
     {
         try
         {
-            var stats = new LogIngestor(db, options.LogDir, options.InceptionDate).IngestAll();
+            // A settings change swaps the source out from under the carried state; start over.
+            if (_ingestor is null
+                || _ingestor.LogDir != options.LogDir
+                || _ingestor.FromDate != options.InceptionDate)
+            {
+                _ingestor = new LogIngestor(db, options.LogDir, options.InceptionDate);
+            }
+
+            var stats = _ingestor.IngestAll();
+            ReportDrift(stats);
 
             // Re-resolving is cheap, but pushing a no-op update to every open page is noise.
             if (stats.MovesInserted > 0 ||
@@ -195,6 +215,27 @@ public sealed class LogWatchService(
         catch (Exception ex)
         {
             log.LogError(ex, "Ingest pass failed");
+        }
+    }
+
+    private void ReportDrift(IngestStats stats)
+    {
+        if (stats.UnparsedRequestLines == 0 && stats.FallbackRequestLines == 0) return;
+
+        state.RecordDrift(stats);
+
+        var tags = string.Join(", ", stats.DriftTags.Select(kv => $"<{kv.Key}> x{kv.Value}"));
+        if (stats.UnparsedRequestLines > 0)
+        {
+            log.LogWarning(
+                "{Count} inventory move lines could not be parsed ({Tags}); the game's log format has changed",
+                stats.UnparsedRequestLines, tags);
+        }
+        else
+        {
+            log.LogInformation(
+                "{Count} inventory move lines were read under unrecognised tags ({Tags})",
+                stats.FallbackRequestLines, tags);
         }
     }
 

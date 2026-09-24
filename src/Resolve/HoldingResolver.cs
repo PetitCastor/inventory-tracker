@@ -50,6 +50,12 @@ public sealed class HoldingResolver
 
     private readonly LedgerReplay _ledger;
 
+    /// <summary>The moment ages are measured against: now, unless a replay study pins it.</summary>
+    private readonly DateTimeOffset _asOf;
+
+    /// <summary>What the replay did with every move, for measuring its reliability.</summary>
+    public LedgerReplay.ReplayStats ReplayStats => _ledger.Stats;
+
     /// <summary>Systems and place names as a player would recognise them.</summary>
     public PlaceCatalog Places { get; }
 
@@ -61,8 +67,10 @@ public sealed class HoldingResolver
         Dictionary<string, string> locationNames,
         Dictionary<string, ContainerInfo> containers,
         HashSet<string> wornContainers,
-        PlaceCatalog places)
+        PlaceCatalog places,
+        DateTimeOffset asOf)
     {
+        _asOf = asOf;
         _moves = moves;
         _locationNames = locationNames;
         _containers = containers;
@@ -91,12 +99,16 @@ public sealed class HoldingResolver
     }
 
     /// <summary>The whole move history is only a few thousand rows, so resolve in memory.</summary>
-    public static HoldingResolver Load(TrackerDb db)
+    /// <param name="asOf">
+    /// When to measure staleness from. Defaults to now; a replay study passes the end of its
+    /// corpus so its scores do not drift with the calendar.
+    /// </param>
+    public static HoldingResolver Load(TrackerDb db, DateTimeOffset? asOf = null)
     {
         using var cn = db.Open();
         return new HoldingResolver(
             LoadMoves(cn), LoadWorn(cn), LoadLocationNames(cn), LoadContainers(cn),
-            LoadWornContainers(cn), PlaceCatalog.Load(cn, db));
+            LoadWornContainers(cn), PlaceCatalog.Load(cn, db), asOf ?? DateTimeOffset.UtcNow);
     }
 
     /// <summary>
@@ -191,7 +203,7 @@ public sealed class HoldingResolver
             caveats.Add("dropped as a loose world entity — these despawn");
         }
 
-        var age = DateTimeOffset.UtcNow - since;
+        var age = _asOf - since;
         if (age > StaleAfter)
         {
             score *= 0.8;

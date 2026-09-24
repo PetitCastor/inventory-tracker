@@ -1,3 +1,4 @@
+using InventoryTracker.Ingest;
 using Microsoft.Data.Sqlite;
 
 namespace InventoryTracker.Data;
@@ -56,25 +57,39 @@ public sealed class TrackerDb
     /// logs are the source of truth — so a mismatch is resolved by rebuilding rather
     /// than by writing migrations.
     /// </summary>
-    private const int SchemaVersion = 8;
+    private const int SchemaVersion = 9;
 
     public void Initialize()
     {
         using var cn = Open();
 
         // A store built before versioning existed reports null, which is still a mismatch.
-        if (HasTable(cn, "move") && ReadSchemaVersion(cn) != SchemaVersion)
+        if (HasTable(cn, "move") && ReadMeta(cn, "schema_version") != SchemaVersion)
         {
             Execute(cn, DropAll);
         }
 
         Execute(cn, Schema);
+        WriteMeta(cn, "schema_version", SchemaVersion);
 
+        // Same tables, different extraction: what an older parser left behind is missing
+        // whatever the newer one learned to read, and completed files are never reopened
+        // on their own. Re-ingesting is the only way the fix reaches existing history.
+        if (ReadMeta(cn, "parser_version") != InventoryEventParser.Version)
+        {
+            Execute(cn, ClearIngest);
+            WriteMeta(cn, "parser_version", InventoryEventParser.Version);
+        }
+    }
+
+    private static void WriteMeta(SqliteConnection cn, string key, int value)
+    {
         using var stamp = cn.CreateCommand();
         stamp.CommandText =
-            "INSERT INTO meta(key, value) VALUES('schema_version', $v) " +
+            "INSERT INTO meta(key, value) VALUES($k, $v) " +
             "ON CONFLICT(key) DO UPDATE SET value = $v";
-        stamp.Parameters.AddWithValue("$v", SchemaVersion.ToString());
+        stamp.Parameters.AddWithValue("$k", key);
+        stamp.Parameters.AddWithValue("$v", value.ToString());
         stamp.ExecuteNonQuery();
     }
 
@@ -86,12 +101,13 @@ public sealed class TrackerDb
         return probe.ExecuteScalar() is not null;
     }
 
-    private static int? ReadSchemaVersion(SqliteConnection cn)
+    private static int? ReadMeta(SqliteConnection cn, string key)
     {
         if (!HasTable(cn, "meta")) return null;
 
         using var probe = cn.CreateCommand();
-        probe.CommandText = "SELECT value FROM meta WHERE key = 'schema_version'";
+        probe.CommandText = "SELECT value FROM meta WHERE key = $k";
+        probe.Parameters.AddWithValue("$k", key);
         return probe.ExecuteScalar() is string s && int.TryParse(s, out var v) ? v : null;
     }
 
@@ -99,15 +115,17 @@ public sealed class TrackerDb
     public void ResetIngest()
     {
         using var cn = Open();
-        Execute(cn, """
-            DELETE FROM move;
-            DELETE FROM session;
-            DELETE FROM location_name;
-            DELETE FROM container_class;
-            DELETE FROM attachment;
-            DELETE FROM place_evidence;
-            """);
+        Execute(cn, ClearIngest);
     }
+
+    private const string ClearIngest = """
+        DELETE FROM move;
+        DELETE FROM session;
+        DELETE FROM location_name;
+        DELETE FROM container_class;
+        DELETE FROM attachment;
+        DELETE FROM place_evidence;
+        """;
 
     private static void Execute(SqliteConnection cn, string sql)
     {
@@ -123,7 +141,12 @@ public sealed class TrackerDb
             first_ts     TEXT,
             last_ts      TEXT,
             byte_offset  INTEGER NOT NULL DEFAULT 0,
-            complete     INTEGER NOT NULL DEFAULT 0
+            complete     INTEGER NOT NULL DEFAULT 0,
+            -- Where the player stood at byte_offset. The game writes it once, on arrival,
+            -- so a pass that resumes mid-file has no other way to know it — and without
+            -- it every container opened afterwards goes unplaced.
+            cur_loc_id    TEXT,
+            cur_loc_since TEXT
         );
 
         -- One row per item relocation.

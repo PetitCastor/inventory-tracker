@@ -15,6 +15,28 @@ public static partial class InventoryEventParser
     public static readonly DateTimeOffset Cutoff = new(2026, 7, 16, 0, 0, 0, TimeSpan.Zero);
 
     /// <summary>
+    /// Bump whenever a change here would extract something different from a log already
+    /// ingested. Rotated files are never reopened once complete, so without this a parser
+    /// fix would only ever apply to lines written after the upgrade — see
+    /// <see cref="Data.TrackerDb.Initialize"/>.
+    /// </summary>
+    public const int Version = 2;
+
+    /// <summary>
+    /// The tags a move request has been written under. Build 12519617 (2026-08-26) renamed
+    /// <c>&lt;InventoryManagementRequest&gt;</c> to <c>&lt;Inventory Mgmt Request Queued&gt;</c>
+    /// without touching the line itself, which silently dropped every move for a month.
+    /// </summary>
+    private static readonly HashSet<string> QueuedTags =
+        new(StringComparer.Ordinal) { "InventoryManagementRequest", "Inventory Mgmt Request Queued" };
+
+    private const string AddMoveTag = "Add Inventory Management Move";
+
+    /// <summary>True for a tag this parser dispatches move requests on by name.</summary>
+    public static bool IsKnownRequestTag(string eventName) =>
+        eventName == AddMoveTag || QueuedTags.Contains(eventName);
+
+    /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
     /// re-organise operations whose source and target inventory are the same grid.
     /// </summary>
@@ -34,11 +56,13 @@ public static partial class InventoryEventParser
         RegexOptions.CultureInvariant)]
     private static partial Regex QueuedRequest();
 
+    // "New request[" became "New Request[" in build 12519617 (2026-08-26), hence the
+    // case-insensitive group: nothing else on the line changed.
     // ItemClass is matched up to the following StoredEntity[ rather than to the first ']',
     // because a multi-select drag writes it as a bracketed list: ItemClass[[a] [b] [c] ].
     // Stopping at the first ']' would silently truncate that to "[a".
     [GeneratedRegex(
-        @"^New request\[(?<req>\d+)\] Player\[[^\]]*\] Type\[(?<type>[^\]]*)\] " +
+        @"^New (?i:request)\[(?<req>\d+)\] Player\[[^\]]*\] Type\[(?<type>[^\]]*)\] " +
         @"SourceInventory\[(?<srcinv>[^\]]*)\] TargetInventory\[(?<tgtinv>[^\]]*)\] " +
         @"ItemClass\[(?<class>.*?)\] StoredEntity\[.*?Caller\[(?<caller>[^\]]*)\]",
         RegexOptions.CultureInvariant)]
@@ -46,7 +70,7 @@ public static partial class InventoryEventParser
 
     /// <summary>Fallback for an Add-move line that does not carry the StoredEntity anchor.</summary>
     [GeneratedRegex(
-        @"^New request\[(?<req>\d+)\] Player\[[^\]]*\] Type\[(?<type>[^\]]*)\] " +
+        @"^New (?i:request)\[(?<req>\d+)\] Player\[[^\]]*\] Type\[(?<type>[^\]]*)\] " +
         @"SourceInventory\[(?<srcinv>[^\]]*)\] TargetInventory\[(?<tgtinv>[^\]]*)\] " +
         @"ItemClass\[(?<class>[^\]]*)\].*?Caller\[(?<caller>[^\]]*)\]",
         RegexOptions.CultureInvariant)]
@@ -106,6 +130,16 @@ public static partial class InventoryEventParser
         RegexOptions.CultureInvariant)]
     private static partial Regex DragCapacity();
 
+    /// <summary>
+    /// The shape every move request line shares whatever tag it is filed under, used to
+    /// notice when the game renames or rewords one. Deliberately looser than the parsing
+    /// patterns: it has to recognise lines those patterns have stopped matching.
+    /// </summary>
+    [GeneratedRegex(
+        @"^(?<kind>New|Queued) Request\[(?<req>\d+)\].*?Type\[(?<type>[^\]]*)\]",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex RequestShape();
+
     [GeneratedRegex(
         @"Landing \[\d+\] -> \[(?<landing>\d+)\]\. Location \[\d+\] -> \[(?<location>\d+)\]",
         RegexOptions.CultureInvariant)]
@@ -118,8 +152,8 @@ public static partial class InventoryEventParser
     {
         var ev = line.EventName switch
         {
-            "InventoryManagementRequest" => ParseQueued(line),
-            "Add Inventory Management Move" => ParseAddMove(line),
+            _ when QueuedTags.Contains(line.EventName) => ParseQueued(line),
+            AddMoveTag => ParseAddMove(line),
             "Player Inventory Request Complete" => ParseComplete(line, PlayerRequestComplete()),
             "Inventory Request Completed" => ParseComplete(line, RequestCompleted()),
             "Inventory Token Flow" => ParseTokenFlow(line),
@@ -130,13 +164,53 @@ public static partial class InventoryEventParser
             "OnInventoryStoreItem" => ParseInventoryStore(line),
             "AttachmentReceived" => ParseAttachment(line),
             "Calculate Route" => ParseRouteStart(line),
-            _ => null,
+            _ => ParseRequestByShape(line),
         };
 
         // Asset paths are not tied to one event: the same socpak shows up under a dozen
         // streaming and error tags, several of which have unparseable "<lambda_1>" names.
         // Only lines nothing else claimed are worth the scan.
         return ev ?? ParseAssetPath(line);
+    }
+
+    /// <summary>
+    /// A move request filed under a tag this parser does not know. The game has renamed
+    /// these tags before while leaving the line itself alone, so the body is recognised on
+    /// its own — the full parsing patterns are specific enough that nothing else matches.
+    /// The ingestor still reports these lines, so a rename is visible even once healed.
+    /// </summary>
+    private static InventoryEvent? ParseRequestByShape(LogLine line)
+    {
+        if (line.Rest.StartsWith("Queued Request[", StringComparison.Ordinal)) return ParseQueued(line);
+        if (line.Rest.StartsWith("New request[", StringComparison.OrdinalIgnoreCase)) return ParseAddMove(line);
+        return null;
+    }
+
+    /// <summary>What <see cref="ReadRequestShape"/> saw on a move request line.</summary>
+    /// <param name="IsAddMove">The "New Request" half of the handshake rather than "Queued Request".</param>
+    /// <param name="IsDegenerate">
+    /// A Queued line that carries neither a class nor an entity. Multi-select drags leave
+    /// their Queued half like this; the Add-move half is the one that says what moved.
+    /// </param>
+    public readonly record struct RequestShapeInfo(
+        int RequestNo, string MoveType, bool IsAddMove, bool IsDegenerate);
+
+    /// <summary>
+    /// Recognises a move request line by its body alone, whatever tag it carries and
+    /// whether or not <see cref="Parse"/> can still read it. Used to measure how much of
+    /// the log the parser is actually capturing.
+    /// </summary>
+    public static RequestShapeInfo? ReadRequestShape(LogLine line)
+    {
+        var m = RequestShape().Match(line.Rest);
+        if (!m.Success || !int.TryParse(m.Groups["req"].Value, out var requestNo)) return null;
+
+        var isAddMove = m.Groups["kind"].Value.Equals("New", StringComparison.OrdinalIgnoreCase);
+        var degenerate = !isAddMove
+            && line.Rest.Contains("Source[NULL]", StringComparison.Ordinal)
+            && line.Rest.Contains("Item[NONE]", StringComparison.Ordinal);
+
+        return new RequestShapeInfo(requestNo, m.Groups["type"].Value, isAddMove, degenerate);
     }
 
     /// <summary>
@@ -175,15 +249,26 @@ public static partial class InventoryEventParser
         // Store names the exact entity; every other type reports only a class in Source[].
         string itemClass;
         string? geid = null;
-        if (EntityId.TrySplit(m.Groups["item"].Value, out var cls, out var g))
+        var item = m.Groups["item"].Value;
+        if (EntityId.TrySplit(item, out var cls, out var g))
         {
             itemClass = cls;
             geid = g;
         }
-        else
+        else if (!IsBlank(m.Groups["srcitem"].Value))
         {
             itemClass = m.Groups["srcitem"].Value;
-            if (itemClass is "" or "NULL" or "NONE" or "null") return null;
+        }
+        else if (!IsBlank(item))
+        {
+            // A Store of an entity the game never gave an id — a tool attachment picked off
+            // a ship's fittings, say — writes the bare class into Item[] and nothing into
+            // Source[]. It still went into the target; which one it was is simply unknown.
+            itemClass = item;
+        }
+        else
+        {
+            return null;
         }
 
         return new ItemMoved(
@@ -198,6 +283,9 @@ public static partial class InventoryEventParser
             geid,
             int.Parse(m.Groups["srcamt"].Value));
     }
+
+    private static bool IsBlank(string value) =>
+        value is "" or "NULL" or "NONE" or "null" or "none";
 
     private static InventoryEvent? ParseAddMove(LogLine line)
     {

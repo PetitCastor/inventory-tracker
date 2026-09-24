@@ -1,6 +1,7 @@
 @inherits LayoutComponentBase
 @inject InventoryTracker.App.TrackerOptions Options
 @inject NavigationManager Nav
+@inject InventoryTracker.App.TrackerState State
 
 <header>
     <nav>
@@ -9,6 +10,15 @@
         <NavLink href="settings">Settings</NavLink>
     </nav>
 </header>
+
+@if (State.Drift is { UnparsedLines: > 0 } drift)
+{
+    <div class="drift-banner" role="alert">
+        Star Citizen changed its log format: @drift.UnparsedLines inventory move line(s) could not be read
+        (@string.Join(", ", drift.Tags.Keys.Select(t => $"<{t}>"))). Item locations may be out of date until
+        the tracker is updated.
+    </div>
+}
 
 <main>
     @Body

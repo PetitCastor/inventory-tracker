@@ -48,6 +48,64 @@ public sealed class LedgerReplay
         public Anonymous? Loose { get; set; }
     }
 
+    /// <summary>
+    /// What happened to every delta during the fold. None of this changes the result; it is
+    /// what makes the replay's reliability measurable rather than a matter of opinion — see
+    /// docs/reliability.
+    /// </summary>
+    public sealed class ReplayStats
+    {
+        /// <summary>Moves the game said failed, never applied.</summary>
+        public int FailedSkipped { get; internal set; }
+
+        /// <summary>Moves whose target is not somewhere an item can be held.</summary>
+        public int UnrealTargetSkipped { get; internal set; }
+
+        /// <summary>Moves into a backpack, deliberately left out of the ledger.</summary>
+        public int BackpackSkipped { get; internal set; }
+
+        /// <summary>Moves that named the exact entity.</summary>
+        public int NamedMoves { get; internal set; }
+
+        /// <summary>Moves that only named a class.</summary>
+        public int ClassMoves { get; internal set; }
+
+        /// <summary>Units the class-level moves asked for.</summary>
+        public int ClassUnits { get; internal set; }
+
+        /// <summary>Units found at the source as a named instance.</summary>
+        public int UnitsFromNamed { get; internal set; }
+
+        /// <summary>Units found at the source as an anonymous count.</summary>
+        public int UnitsFromLoose { get; internal set; }
+
+        /// <summary>
+        /// Units the source could not account for, credited to the target as a guess. Each
+        /// one is history the ledger never saw, and a potential duplicate of an item still
+        /// recorded somewhere else.
+        /// </summary>
+        public int UnitsInferred { get; internal set; }
+
+        /// <summary>Class-level moves whose source held a real holding the ledger knew nothing about.</summary>
+        public int SourceUnknown { get; internal set; }
+
+        /// <summary>Anonymous units absorbed by a named entity turning up where they were.</summary>
+        public int AnonymousReconciled { get; internal set; }
+
+        /// <summary>Attachment sightings applied.</summary>
+        public int WornSightings { get; internal set; }
+
+        /// <summary>
+        /// Share of class-level units found where the move said they came from. The single
+        /// best measure of how complete the ledger's history is: every miss is a unit that
+        /// arrived somewhere the replay never saw it go.
+        /// </summary>
+        public double SourceHitRate =>
+            ClassUnits == 0 ? 1.0 : (double)(UnitsFromNamed + UnitsFromLoose) / ClassUnits;
+    }
+
+    public ReplayStats Stats { get; } = new();
+
     private readonly Dictionary<Holding, Dictionary<string, Slot>> _contents = [];
     private readonly Dictionary<string, Holding> _instanceAt = [];
 
@@ -119,20 +177,33 @@ public sealed class LedgerReplay
     private void Apply(MoveRecord move)
     {
         // The game said this one did not happen, so the world never changed.
-        if (move.Failed) return;
+        if (move.Failed)
+        {
+            Stats.FailedSkipped++;
+            return;
+        }
 
         var target = new Holding(move.TargetKind, move.TargetKey);
-        if (!target.IsReal) return;
+        if (!target.IsReal)
+        {
+            Stats.UnrealTargetSkipped++;
+            return;
+        }
 
         // Wherever it came from, landing in the backpack says nothing about where the
         // player is, so it never happened as far as the ledger is concerned — the item
         // stays put at its last real placement until it moves somewhere else.
-        if (target.Kind == InventoryKind.Container && _backpackKeys.Contains(target.Key)) return;
+        if (target.Kind == InventoryKind.Container && _backpackKeys.Contains(target.Key))
+        {
+            Stats.BackpackSkipped++;
+            return;
+        }
 
         var source = new Holding(move.SourceKind, move.SourceKey);
 
         if (move.ItemGeid is { } geid)
         {
+            Stats.NamedMoves++;
             PlaceInstance(geid, move.ItemClass, target, move.Timestamp, move.MoveType, move.Succeeded, inferred: false);
             return;
         }
@@ -142,6 +213,8 @@ public sealed class LedgerReplay
 
     private void ApplyWorn(WornSighting sighting)
     {
+        Stats.WornSightings++;
+
         // An attachment line is proof the item is on the player right now, which no move
         // line can give. It supersedes whatever the ledger believed until something later
         // moves the item off again.
@@ -161,6 +234,9 @@ public sealed class LedgerReplay
         var wanted = move.Units;
         var taken = 0;
 
+        Stats.ClassMoves++;
+        Stats.ClassUnits += wanted;
+
         if (source.IsReal && SlotFor(source, move.ItemClass, create: false) is { } from)
         {
             var candidates = from.Named.Count;
@@ -177,14 +253,20 @@ public sealed class LedgerReplay
                     pick.Geid, move.ItemClass, target, move.Timestamp, move.MoveType,
                     move.Succeeded, inferred: false, ambiguous: candidates > 1 || pick.IdentityAmbiguous);
                 taken++;
+                Stats.UnitsFromNamed++;
             }
 
             while (taken < wanted && from.Loose is { Quantity: > 0 } loose)
             {
                 from.Loose = loose.Quantity > 1 ? loose with { Quantity = loose.Quantity - 1 } : null;
                 taken++;
+                Stats.UnitsFromLoose++;
                 AddAnonymous(target, move.ItemClass, 1, move.Timestamp, move.MoveType, move.Succeeded, inferred: false);
             }
+        }
+        else if (source.IsReal)
+        {
+            Stats.SourceUnknown++;
         }
 
         // Whatever the source could not account for still arrived at the target: the units
@@ -192,6 +274,7 @@ public sealed class LedgerReplay
         // keeps a place's contents honest when its history starts mid-stream.
         if (taken < wanted)
         {
+            Stats.UnitsInferred += wanted - taken;
             AddAnonymous(
                 target, move.ItemClass, wanted - taken, move.Timestamp, move.MoveType,
                 move.Succeeded, inferred: true);
@@ -245,6 +328,7 @@ public sealed class LedgerReplay
         if (inferredOnly && !loose.Inferred) return false;
 
         slot.Loose = loose.Quantity > 1 ? loose with { Quantity = loose.Quantity - 1 } : null;
+        Stats.AnonymousReconciled++;
         return true;
     }
 

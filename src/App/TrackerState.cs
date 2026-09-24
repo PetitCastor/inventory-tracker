@@ -38,6 +38,43 @@ public sealed class TrackerState(TrackerDb db, WikiNameService names)
 
     public WikiNameService Names => names;
 
+    /// <summary>
+    /// Move request lines the parser missed or only caught by shape since launch (or since
+    /// the last rebuild), by tag. Non-empty unparsed counts mean the game changed its log
+    /// format and item positions are going stale — the layout shows a banner for it.
+    /// </summary>
+    public sealed record LogDrift(int UnparsedLines, int FallbackLines, IReadOnlyDictionary<string, int> Tags)
+    {
+        public static readonly LogDrift None = new(0, 0, new Dictionary<string, int>());
+    }
+
+    private LogDrift _drift = LogDrift.None;
+
+    public LogDrift Drift
+    {
+        get { lock (_gate) return _drift; }
+    }
+
+    public void RecordDrift(Ingest.IngestStats stats)
+    {
+        lock (_gate)
+        {
+            var tags = new Dictionary<string, int>(_drift.Tags, StringComparer.Ordinal);
+            foreach (var (tag, count) in stats.DriftTags) tags[tag] = tags.GetValueOrDefault(tag) + count;
+
+            _drift = new LogDrift(
+                _drift.UnparsedLines + stats.UnparsedRequestLines,
+                _drift.FallbackLines + stats.FallbackRequestLines,
+                tags);
+        }
+    }
+
+    /// <summary>A rebuild re-reads everything, which would count every line twice.</summary>
+    public void ResetHealth()
+    {
+        lock (_gate) _drift = LogDrift.None;
+    }
+
     /// <summary>Re-reads the store and re-resolves every item, then notifies subscribers.</summary>
     public void Rebuild()
     {
