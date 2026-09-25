@@ -20,8 +20,26 @@ public class CliTests
         ]).ToList();
 
         Assert.Contains("  Area18 [2273540638]  (3)", lines);
-        Assert.Contains(lines, l => l.StartsWith("    2× slaver_armor_heavy_helmet_01_9tails_01 ", StringComparison.Ordinal));
-        Assert.Contains(lines, l => l.StartsWith("    grin_utility_medium_helmet_01_01_01 ", StringComparison.Ordinal));
+        var two = lines.Single(l => l.Contains("slaver_armor_heavy_helmet_01_9tails_01", StringComparison.Ordinal));
+        var one = lines.Single(l => l.Contains("grin_utility_medium_helmet_01_01_01", StringComparison.Ordinal));
+        Assert.StartsWith("    2×  slaver_armor_heavy_helmet_01_9tails_01 ", two);
+        Assert.StartsWith("        grin_utility_medium_helmet_01_01_01 ", one);
+
+        // The count has a column of its own: the rest of both rows lines up.
+        Assert.Equal(two.IndexOf("Area18", StringComparison.Ordinal), one.IndexOf("Area18", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Groups_are_ordered_by_units_not_by_lines()
+    {
+        var lines = Cli.FormatGroups([
+            Row("behr_rifle_ballistic_03_mag", 5, InventoryKind.Location, "2273540638", "Area18"),
+            Row("a", 1, InventoryKind.Location, "4005457614", "Lorville"),
+            Row("b", 1, InventoryKind.Location, "4005457614", "Lorville"),
+            Row("c", 1, InventoryKind.Location, "4005457614", "Lorville"),
+        ]).Where(l => l.StartsWith("  ", StringComparison.Ordinal) && !l.StartsWith("   ", StringComparison.Ordinal)).ToList();
+
+        Assert.Equal(["  Area18 [2273540638]  (5)", "  Lorville [4005457614]  (3)"], lines);
     }
 
     [Fact]

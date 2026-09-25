@@ -197,8 +197,9 @@ internal static class Cli
 
             foreach (var h in group.OrderBy(h => h.ItemClass))
             {
-                var item = h.Quantity > 1 ? $"{h.Quantity}× {h.ItemClass}" : h.ItemClass;
-                yield return $"    {item,-44} {h.Where,-52} {h.Confidence,-6} {h.LastMove:yyyy-MM-dd HH:mm}";
+                // A column of its own, so a count never pushes the rest of the row out of line.
+                var count = h.Quantity > 1 ? $"{h.Quantity}×" : "";
+                yield return $"    {count,-4}{h.ItemClass,-44} {h.Where,-52} {h.Confidence,-6} {h.LastMove:yyyy-MM-dd HH:mm}";
 
                 foreach (var caveat in h.Caveats)
                 {
