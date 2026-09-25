@@ -36,6 +36,12 @@ public sealed class LogWatchService(
     private readonly SemaphoreSlim _ingestLock = new(1, 1);
     private FileSystemWatcher? _watcher;
 
+    /// <summary>
+    /// Kept across passes because it carries the live file's parse state from one to the
+    /// next — see <see cref="LogIngestor"/>. Guarded by <see cref="_ingestLock"/>.
+    /// </summary>
+    private LogIngestor? _ingestor;
+
     /// <summary>Nudges the service to ingest now — used by the tray's "Rescan" command.</summary>
     public void RequestScan()
     {
@@ -64,6 +70,10 @@ public sealed class LogWatchService(
         try
         {
             db.ResetIngest();
+
+            // Session ids restart once the table is emptied, so carried state could
+            // otherwise land on an unrelated new session with the same id.
+            _ingestor = null;
             IngestLocked();
         }
         finally
@@ -174,7 +184,15 @@ public sealed class LogWatchService(
     {
         try
         {
-            var stats = new LogIngestor(db, options.LogDir, options.InceptionDate).IngestAll();
+            // A settings change swaps the source out from under the carried state; start over.
+            if (_ingestor is null
+                || _ingestor.LogDir != options.LogDir
+                || _ingestor.FromDate != options.InceptionDate)
+            {
+                _ingestor = new LogIngestor(db, options.LogDir, options.InceptionDate);
+            }
+
+            var stats = _ingestor.IngestAll();
 
             // Re-resolving is cheap, but pushing a no-op update to every open page is noise.
             // An UnrecognisedMove counts too: it means the game's log grammar just drifted,

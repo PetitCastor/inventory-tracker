@@ -84,6 +84,27 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
     public string LogDir { get; } = logDir;
 
+    /// <summary>The inception date this ingestor was built with.</summary>
+    public DateTimeOffset? FromDate { get; } = fromDate;
+
+    /// <summary>
+    /// Parse state for the live file, carried from one pass to the next.
+    /// <para>
+    /// The watcher runs a pass every second or so while the game is writing, and most of
+    /// what correlates lines — where the player is standing, the caller an Add-move line
+    /// stashed for its Queued half, the entity spawn that lands just after a completion —
+    /// spans more than one pass. Rebuilding it from scratch each time left 12 of 15
+    /// containers in a real session unplaced and lost geids at pass boundaries.
+    /// </para>
+    /// <para>
+    /// Keyed by session and tagged with the offset it is valid at: a state is only reused
+    /// by the pass that resumes exactly where it stopped. Any other resume — the first pass
+    /// after launch, a rotation, a pass that failed and rolled back — rebuilds it from the
+    /// store instead.
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<long, (long Offset, SessionState State)> _carried = [];
+
     /// <summary>Parses everything not yet ingested. Safe to call on a timer.</summary>
     public IngestStats IngestAll(CancellationToken ct = default)
     {
@@ -107,13 +128,17 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         var session = LoadOrCreateSession(cn, file.Path);
 
         // Rotated backups never change again, so once fully read they are never reopened.
-        if (session.Complete) return;
+        if (session.Complete)
+        {
+            _carried.Remove(session.Id);
+            return;
+        }
 
         session = DiscardIfRotated(cn, session, file);
 
         var reader = new ByteLineReader(session.Offset);
-        var state = new SessionState();
-        PreloadPendingRequests(cn, session.Id, state);
+        var state = TakeState(cn, session);
+        var restarted = false;
 
         using var tx = cn.BeginTransaction();
 
@@ -128,6 +153,14 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         foreach (var line in reader.ReadLines(file.Path))
         {
             stats.LinesRead++;
+
+            // The reader starts over when the file shrank under it; whatever the state knew
+            // about the old content no longer describes this one.
+            if (!restarted && line.StartOffset < session.Offset)
+            {
+                state = new SessionState();
+                restarted = true;
+            }
 
             if (!LogLine.TryParse(line.Text, out var log)) continue;
 
@@ -156,10 +189,32 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         var unrecognisedThisPass = stats.UnrecognisedMoves - unrecognisedBefore;
         SaveSession(
             cn, tx, session.Id, reader.Offset, firstTs, lastTs, newestLineTs, unrecognisedThisPass,
-            complete: !file.IsLive);
+            state.CurrentLocation, complete: !file.IsLive);
         tx.Commit();
 
+        // Only once committed: a pass that throws leaves no entry behind, so the next one
+        // rebuilds from what the store actually holds rather than from half-applied state.
+        if (file.IsLive) _carried[session.Id] = (reader.Offset, state);
+
         if (parsedAny) stats.FilesParsed++;
+    }
+
+    /// <summary>
+    /// The state to resume <paramref name="session"/> with: the one the previous pass left,
+    /// if it stopped exactly here, otherwise as much as the store can restore.
+    /// </summary>
+    private SessionState TakeState(SqliteConnection cn, SessionRow session)
+    {
+        // Removed rather than read, so a pass that fails part-way cannot hand its
+        // half-updated state to the next one.
+        if (_carried.Remove(session.Id, out var carried) && carried.Offset == session.Offset && session.Offset > 0)
+        {
+            return carried.State;
+        }
+
+        var state = new SessionState { CurrentLocation = session.CurrentLocation };
+        PreloadPendingRequests(cn, session.Id, state);
+        return state;
     }
 
     private void Apply(
@@ -438,13 +493,17 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         public PlayerLocation? CurrentLocation { get; set; }
     }
 
-    private sealed record SessionRow(long Id, long Offset, bool Complete, DateTimeOffset? FirstTs);
+    private sealed record SessionRow(
+        long Id, long Offset, bool Complete, DateTimeOffset? FirstTs, PlayerLocation? CurrentLocation);
 
     private static SessionRow LoadOrCreateSession(SqliteConnection cn, string path)
     {
         using (var sel = cn.CreateCommand())
         {
-            sel.CommandText = "SELECT id, byte_offset, complete, first_ts FROM session WHERE path = $p";
+            sel.CommandText = """
+                SELECT id, byte_offset, complete, first_ts, cur_loc_id, cur_loc_since
+                FROM session WHERE path = $p
+                """;
             sel.Parameters.AddWithValue("$p", path);
             using var r = sel.ExecuteReader();
             if (r.Read())
@@ -453,15 +512,20 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                     r.GetInt64(0),
                     r.GetInt64(1),
                     r.GetInt32(2) != 0,
-                    r.IsDBNull(3) ? null : DateTimeOffset.Parse(r.GetString(3), CultureInfo.InvariantCulture));
+                    r.IsDBNull(3) ? null : ParseIso(r.GetString(3)),
+                    r.IsDBNull(4) || r.IsDBNull(5)
+                        ? null
+                        : new PlayerLocation(r.GetString(4), ParseIso(r.GetString(5))));
             }
         }
 
         using var ins = cn.CreateCommand();
         ins.CommandText = "INSERT INTO session(path) VALUES($p); SELECT last_insert_rowid();";
         ins.Parameters.AddWithValue("$p", path);
-        return new SessionRow((long)ins.ExecuteScalar()!, 0, false, null);
+        return new SessionRow((long)ins.ExecuteScalar()!, 0, false, null, null);
     }
+
+    private static DateTimeOffset ParseIso(string s) => DateTimeOffset.Parse(s, CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Starts a session over when the file behind its path is not the one it was built from.
@@ -506,7 +570,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             reset.CommandText = """
                 UPDATE session
                 SET byte_offset = 0, first_ts = NULL, last_ts = NULL, complete = 0,
-                    unrecognised = 0, last_line_ts = NULL
+                    unrecognised = 0, last_line_ts = NULL, cur_loc_id = NULL, cur_loc_since = NULL
                 WHERE id = $s
                 """;
             reset.Parameters.AddWithValue("$s", session.Id);
@@ -515,7 +579,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
         tx.Commit();
 
-        return session with { Offset = 0, FirstTs = null };
+        return session with { Offset = 0, FirstTs = null, CurrentLocation = null };
     }
 
     /// <summary>
@@ -554,18 +618,21 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         DateTimeOffset? lastTs,
         DateTimeOffset? newestLineTs,
         int unrecognisedDelta,
+        PlayerLocation? currentLocation,
         bool complete)
     {
         using var cmd = cn.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText = """
             UPDATE session SET
-                byte_offset  = $o,
-                complete     = $c,
-                first_ts     = COALESCE(first_ts, $f),
-                last_ts      = COALESCE($l, last_ts),
-                last_line_ts = COALESCE($nl, last_line_ts),
-                unrecognised = unrecognised + $u
+                byte_offset   = $o,
+                complete      = $c,
+                first_ts      = COALESCE(first_ts, $f),
+                last_ts       = COALESCE($l, last_ts),
+                last_line_ts  = COALESCE($nl, last_line_ts),
+                unrecognised  = unrecognised + $u,
+                cur_loc_id    = $loc,
+                cur_loc_since = $locs
             WHERE id = $i
             """;
         cmd.Parameters.AddWithValue("$o", offset);
@@ -574,6 +641,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.Parameters.AddWithValue("$l", Iso(lastTs));
         cmd.Parameters.AddWithValue("$nl", Iso(newestLineTs));
         cmd.Parameters.AddWithValue("$u", unrecognisedDelta);
+        cmd.Parameters.AddWithValue("$loc", (object?)currentLocation?.LocationId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$locs", Iso(currentLocation?.Since));
         cmd.Parameters.AddWithValue("$i", id);
         cmd.ExecuteNonQuery();
     }

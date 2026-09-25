@@ -40,5 +40,6 @@ dotnet test InventoryTracker.slnx
 | `src/Naming` | Class names → human names, location ids → places |
 | `src/Components` | The Blazor UI |
 | `src/App` | Tray host, config, shared state |
-| `tests/` | Parser, ledger and reader tests |
+| `tests/` | Parser, ledger and reader tests, and the replay reliability study (`tests/InventoryTracker.Tests/Reliability`) |
 | `docs/domain` | Reverse-engineering notes on the log format |
+| `docs/reliability` | How trustworthy the replay is, measured per pipeline stage, and the plan to improve it |
