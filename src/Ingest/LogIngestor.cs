@@ -215,6 +215,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
         var state = new SessionState { CurrentLocation = session.CurrentLocation };
         PreloadPendingRequests(cn, session.Id, state);
+        PreloadLastBurst(cn, session.Id, state);
         return state;
     }
 
@@ -313,7 +314,12 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             }
 
             case AttachmentSeen worn:
-                UpsertAttachment(cn, tx, worn);
+                // A local line is the client predicting an equip still in flight; the
+                // persistent line for the real entity follows within seconds.
+                if (!worn.IsPersistent) break;
+
+                RecordSighting(cn, tx, sessionId, lineOffset, worn, state);
+                if (!worn.IsPlaceholder) UpsertAttachment(cn, tx, worn);
                 stats.AttachmentsSeen++;
                 break;
 
@@ -547,6 +553,98 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         /// <summary>The quantum destination last selected, and when the drive arrived at it.</summary>
         public string? QuantumTarget { get; set; }
         public DateTimeOffset? QuantumArrivedAt { get; set; }
+
+        /// <summary>The newest attachment line: when, and the burst it opened or joined.</summary>
+        public (DateTimeOffset At, long BurstId)? LastSighting { get; set; }
+
+        /// <summary>The newest line of the current burst that a sub-attachment could hang off.</summary>
+        public string? ParentCandidate { get; set; }
+    }
+
+    /// <summary>
+    /// Attachment lines closer together than this are one burst. A whole enumeration of the
+    /// body lands within two milliseconds; the next one is tens of seconds away at the least.
+    /// </summary>
+    private static readonly TimeSpan BurstGap = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Ports that hold a part of another item rather than something worn on the body. In every
+    /// burst of the 2026-09-25 playtest each comes right after the item it belongs to:
+    /// <c>Armor_Helmet</c> then <c>universal_necksock</c> and <c>helmet_visor</c>, and
+    /// <c>wep_stocked_N</c> then <c>magazine_attach</c>, <c>optics_attach</c>,
+    /// <c>barrel_attach</c> and <c>underbarrel_attach</c>. In the August logs a multitool
+    /// comes the same way, with its <c>magazine_attach</c>, <c>module_attach</c> and
+    /// <c>canister_attach</c>. <c>magazine_attach_N</c> is not a part: it is a magazine slot on
+    /// the armour as often as a multitool's canister.
+    /// </summary>
+    private static readonly HashSet<string> ChildPorts = new(StringComparer.Ordinal)
+    {
+        "helmet_visor", "universal_necksock",
+        "magazine_attach", "optics_attach", "barrel_attach", "underbarrel_attach",
+        "module_attach", "canister_attach",
+    };
+
+    /// <summary>
+    /// Stores one attachment line, with the burst it belongs to and, for a sub-attachment, the
+    /// item it hangs off.
+    /// </summary>
+    private static void RecordSighting(
+        SqliteConnection cn, SqliteTransaction tx, long sessionId, long lineOffset, AttachmentSeen worn,
+        SessionState state)
+    {
+        // A line stamped earlier than the one before it is not part of that burst either.
+        var burstId = state.LastSighting is { } last
+                      && worn.Timestamp >= last.At && worn.Timestamp - last.At < BurstGap
+            ? last.BurstId
+            : lineOffset;
+        if (burstId == lineOffset) state.ParentCandidate = null;
+        state.LastSighting = (worn.Timestamp, burstId);
+
+        string? parent = null;
+        if (ChildPorts.Contains(worn.Port)) parent = state.ParentCandidate;
+        else state.ParentCandidate = worn.Geid;
+
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT OR IGNORE INTO attachment_sighting(
+                session_id, line_offset, ts, geid, class_name, port, burst_id, parent_geid, placeholder)
+            VALUES($s, $o, $t, $g, $c, $p, $b, $parent, $ph)
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$o", lineOffset);
+        cmd.Parameters.AddWithValue("$t", Iso(worn.Timestamp));
+        cmd.Parameters.AddWithValue("$g", worn.Geid);
+        cmd.Parameters.AddWithValue("$c", worn.ClassName);
+        cmd.Parameters.AddWithValue("$p", worn.Port);
+        cmd.Parameters.AddWithValue("$b", burstId);
+        cmd.Parameters.AddWithValue("$parent", (object?)parent ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$ph", worn.IsPlaceholder ? 1 : 0);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Picks the burst tracking up where the store left it, so a burst split across two
+    /// watcher passes stays one burst and its children still find their parent.
+    /// </summary>
+    private static void PreloadLastBurst(SqliteConnection cn, long sessionId, SessionState state)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = """
+            SELECT ts, burst_id, geid, port FROM attachment_sighting
+            WHERE session_id = $s
+              AND burst_id = (SELECT burst_id FROM attachment_sighting
+                              WHERE session_id = $s ORDER BY line_offset DESC LIMIT 1)
+            ORDER BY line_offset
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            state.LastSighting = (DateTimeOffset.Parse(r.GetString(0), CultureInfo.InvariantCulture), r.GetInt64(1));
+            if (!ChildPorts.Contains(r.GetString(3))) state.ParentCandidate = r.GetString(2);
+        }
     }
 
     private sealed record SessionRow(
@@ -617,7 +715,10 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         using (var del = cn.CreateCommand())
         {
             del.Transaction = tx;
-            del.CommandText = "DELETE FROM move WHERE session_id = $s";
+            del.CommandText = """
+                DELETE FROM move WHERE session_id = $s;
+                DELETE FROM attachment_sighting WHERE session_id = $s;
+                """;
             del.Parameters.AddWithValue("$s", session.Id);
             del.ExecuteNonQuery();
         }

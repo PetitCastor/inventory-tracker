@@ -67,9 +67,9 @@ public sealed class TrackerDb
     /// </para>
     /// <para>9 -> 10 adds <c>session.cur_loc_id</c> / <c>cur_loc_since</c>; 10 -> 11 adds <c>move.action</c>;
     /// 11 -> 12 adds <c>session.build</c>; 12 -> 13 adds <c>session.first_loc_id</c> /
-    /// <c>first_loc_since</c>.</para>
+    /// <c>first_loc_since</c>; 13 -> 14 adds <c>attachment_sighting</c>.</para>
     /// </summary>
-    private const int SchemaVersion = 13;
+    private const int SchemaVersion = 14;
 
     public void Initialize()
     {
@@ -132,6 +132,7 @@ public sealed class TrackerDb
     }
 
     private const string ClearIngest = """
+        DELETE FROM attachment_sighting;
         DELETE FROM move;
         DELETE FROM session;
         DELETE FROM location_name;
@@ -248,13 +249,41 @@ public sealed class TrackerDb
         -- Ports worn on the player's body, from <AttachmentReceived>. Re-emitted on every
         -- spawn, so only the newest sighting per entity is kept. This is the only
         -- authoritative enumeration the game ever logs, and the only positive proof that
-        -- an item is on the player rather than sitting at a station.
+        -- an item is on the player rather than sitting at a station. The login placeholder
+        -- set is left out: none of it is ever the player's.
         CREATE TABLE IF NOT EXISTS attachment (
             geid       TEXT PRIMARY KEY,
             class_name TEXT NOT NULL,
             port       TEXT,
             last_seen  TEXT NOT NULL
         );
+
+        -- Every persistent <AttachmentReceived> line, in log order. The attachment table above
+        -- keeps only each entity's newest sighting; this keeps every enumeration of the body,
+        -- so an older one can still be read as what the player had on at that moment.
+        --   burst_id    line_offset of the first line of the burst this line belongs to: the
+        --               game writes a whole enumeration within a millisecond or two, and
+        --               lines less than a second apart are one burst.
+        --   parent_geid for a sub-attachment port (a helmet's visor, a weapon's magazine), the
+        --               item it hangs off. A burst lists a parent immediately before its
+        --               children, so it is the nearest preceding non-child line of the burst.
+        --   placeholder the stand-in set the game attaches on every login before the real
+        --               loadout arrives (geids 2000xxxxxxxx). Kept, since the burst still dates
+        --               the login, but never read as something the player has on.
+        CREATE TABLE IF NOT EXISTS attachment_sighting (
+            session_id  INTEGER NOT NULL REFERENCES session(id) ON DELETE CASCADE,
+            line_offset INTEGER NOT NULL,
+            ts          TEXT    NOT NULL,
+            geid        TEXT    NOT NULL,
+            class_name  TEXT    NOT NULL,
+            port        TEXT    NOT NULL,
+            burst_id    INTEGER NOT NULL,
+            parent_geid TEXT,
+            placeholder INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (session_id, line_offset)
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_sighting_geid ON attachment_sighting(geid, ts);
 
         -- Corroboration for what a location id actually is. The internal string the game
         -- pairs with the id ("RR_JP_NyxCastra") is a legacy asset name that matches neither
@@ -299,6 +328,7 @@ public sealed class TrackerDb
     /// not derived from anything a schema change would invalidate.
     /// </summary>
     private const string DropAll = """
+        DROP TABLE IF EXISTS attachment_sighting;
         DROP TABLE IF EXISTS move;
         DROP TABLE IF EXISTS session;
         DROP TABLE IF EXISTS location_name;

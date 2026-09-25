@@ -547,11 +547,20 @@ public sealed class HoldingResolver
     /// than believed, which leaves the item wherever its moves last put it instead of
     /// claiming it is still being worn months later.
     /// </para>
+    /// <para>
+    /// The login placeholder set is never read: it is not the player's.
+    /// </para>
     /// </summary>
     private static List<LedgerReplay.WornSighting> LoadWorn(SqliteConnection cn)
     {
         using var cmd = cn.CreateCommand();
-        cmd.CommandText = "SELECT geid, class_name, last_seen FROM attachment";
+
+        // SQLite takes the bare class_name from the row holding the MAX.
+        cmd.CommandText = """
+            SELECT geid, class_name, MAX(ts) FROM attachment_sighting
+            WHERE placeholder = 0
+            GROUP BY geid
+            """;
 
         var all = new List<LedgerReplay.WornSighting>();
         using (var r = cmd.ExecuteReader())

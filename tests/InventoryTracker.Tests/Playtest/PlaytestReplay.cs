@@ -96,6 +96,15 @@ internal sealed class PlaytestReplay : IDisposable
 
     public int TotalUnits => Holdings.Sum(h => h.Quantity);
 
+    /// <summary>The first column of the first row a query returns, as text.</summary>
+    public string? Scalar(string sql)
+    {
+        using var cn = Db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = sql;
+        return Convert.ToString(cmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+    }
+
     public void Dispose()
     {
         SqliteConnection.ClearAllPools();

@@ -26,8 +26,9 @@ public static partial class InventoryEventParser
     /// ingested. Rotated files are never reopened once complete, so without this a parser
     /// fix would only ever apply to lines written after the upgrade — see
     /// <see cref="Data.TrackerDb.Initialize"/>.
+    /// <para>3 -> 4: attachment lines keep their status, and every sighting is stored.</para>
     /// </summary>
-    public const int Version = 3;
+    public const int Version = 4;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -108,8 +109,10 @@ public static partial class InventoryEventParser
     private static partial Regex InventoryStore();
 
     // <AttachmentReceived> Player[X] Attachment[cls_geid, cls, geid] Status[persistent] Port[Armor_Undersuit]
+    // Any length of geid: a Status[local] line carries a short client-side one (10721), and it
+    // is the ingestor's call to ignore it, not an accident of this pattern.
     [GeneratedRegex(
-        @"^Player\[[^\]]*\] Attachment\[[^,]+, (?<cls>[^,]+), (?<geid>\d{6,})\] " +
+        @"^Player\[[^\]]*\] Attachment\[[^,]+, (?<cls>[^,]+), (?<geid>\d+)\] " +
         @"Status\[(?<status>[^\]]*)\] Port\[(?<port>[^\]]*)\]",
         RegexOptions.CultureInvariant)]
     private static partial Regex Attachment();
@@ -372,7 +375,8 @@ public static partial class InventoryEventParser
         if (!m.Success) return null;
 
         return new AttachmentSeen(
-            line.Timestamp, m.Groups["geid"].Value, m.Groups["cls"].Value, m.Groups["port"].Value);
+            line.Timestamp, m.Groups["geid"].Value, m.Groups["cls"].Value, m.Groups["port"].Value,
+            m.Groups["status"].Value);
     }
 
     private static InventoryEvent? ParseRouteStart(LogLine line)
