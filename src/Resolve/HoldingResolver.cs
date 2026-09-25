@@ -59,6 +59,7 @@ public sealed class HoldingResolver
     private HoldingResolver(
         List<MoveRecord> moves,
         List<LedgerReplay.WornSighting> worn,
+        LedgerReplay.BodyEnumeration? enumeration,
         Dictionary<string, string> locationNames,
         Dictionary<string, ContainerInfo> containers,
         HashSet<string> wornContainers,
@@ -77,7 +78,7 @@ public sealed class HoldingResolver
             .GroupBy(m => m.ItemGeid!)
             .ToDictionary(g => g.Key, g => g.OrderBy(m => m.Timestamp).ToList());
 
-        _ledger = LedgerReplay.Run(moves, worn);
+        _ledger = LedgerReplay.Run(moves, worn, enumeration);
     }
 
     /// <summary>The whole move history is only a few thousand rows, so resolve in memory.</summary>
@@ -89,7 +90,7 @@ public sealed class HoldingResolver
     {
         using var cn = db.Open();
         return new HoldingResolver(
-            LoadMoves(cn), LoadWorn(cn), LoadLocationNames(cn), LoadContainers(cn),
+            LoadMoves(cn), LoadWorn(cn), LoadBodyEnumeration(cn), LoadLocationNames(cn), LoadContainers(cn),
             LoadWornContainers(cn), PlaceCatalog.Load(cn, db), asOf ?? DateTimeOffset.UtcNow);
     }
 
@@ -161,6 +162,15 @@ public sealed class HoldingResolver
         {
             score *= 0.8;
             caveats.Add("we saw this arrive but never saw where it came from, so it may have been counted twice");
+        }
+
+        // Carried in hand is where eaten, drunk and handed-in items end up, and none of those
+        // endings is ever logged. An item that is still here because nothing moved it on is as
+        // likely gone as held; one stored back afterwards arrives by Store and is unaffected.
+        if (arrivedBy == "Carry")
+        {
+            score *= 0.5;
+            caveats.Add("last picked up in hand to use — food, drink and handed-in items are used up without a log line");
         }
 
         if (arrivedBy == "Drop")
@@ -333,7 +343,7 @@ public sealed class HoldingResolver
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
             SELECT id, ts, move_type, item_class, item_geid, amount,
-                   src_kind, src_key, tgt_kind, tgt_key, tgt_raw, result
+                   src_kind, src_key, tgt_kind, tgt_key, tgt_raw, result, action
             FROM move
             ORDER BY ts, id
             """;
@@ -354,7 +364,8 @@ public sealed class HoldingResolver
                 ParseKind(r.GetString(8)),
                 r.GetString(9),
                 r.GetString(10),
-                r.IsDBNull(11) ? null : r.GetString(11)));
+                r.IsDBNull(11) ? null : r.GetString(11),
+                r.IsDBNull(12) ? null : r.GetString(12)));
         }
         return rows;
     }
@@ -395,6 +406,49 @@ public sealed class HoldingResolver
 
         var newest = all.Max(w => w.Timestamp);
         return all.Where(w => newest - w.Timestamp <= WornBurst).ToList();
+    }
+
+    /// <summary>
+    /// The player's body entity sits on this port, and it is re-sent at the head of every
+    /// enumeration of what the player has on them — on spawn and whenever the character
+    /// streams back in — so its newest sighting dates the newest complete listing.
+    /// </summary>
+    private const string BodyPort = "Body_ItemPort";
+
+    /// <summary>
+    /// How long after the body line an enumeration's other lines keep arriving. They follow
+    /// it within a second or two; the margin only has to cover a slow stream-in.
+    /// </summary>
+    private static readonly TimeSpan EnumerationSpread = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// The newest complete listing of the player's body: everything sighted from the body
+    /// line on. The attachment table keeps only each entity's newest sighting, so anything
+    /// seen last before the body line was not part of that listing.
+    /// </summary>
+    private static LedgerReplay.BodyEnumeration? LoadBodyEnumeration(SqliteConnection cn)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT MAX(last_seen) FROM attachment WHERE port = $p";
+        cmd.Parameters.AddWithValue("$p", BodyPort);
+        if (cmd.ExecuteScalar() is not string newest) return null;
+
+        var at = DateTimeOffset.Parse(newest, CultureInfo.InvariantCulture);
+        var geids = new HashSet<string>(StringComparer.Ordinal);
+        var classes = new HashSet<string>(StringComparer.Ordinal);
+
+        using var list = cn.CreateCommand();
+        list.CommandText = "SELECT geid, class_name, last_seen FROM attachment";
+        using var r = list.ExecuteReader();
+        while (r.Read())
+        {
+            var seen = DateTimeOffset.Parse(r.GetString(2), CultureInfo.InvariantCulture);
+            if (seen < at || seen - at > EnumerationSpread) continue;
+            geids.Add(r.GetString(0));
+            classes.Add(r.GetString(1));
+        }
+
+        return new LedgerReplay.BodyEnumeration(at, geids, classes);
     }
 
     /// <summary>

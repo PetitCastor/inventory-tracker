@@ -65,9 +65,9 @@ public sealed class TrackerDb
     /// would never be given those bytes to re-read: it would resume exactly where the broken
     /// one left off, or skip the file entirely.
     /// </para>
-    /// <para>9 -> 10 adds <c>session.cur_loc_id</c> / <c>cur_loc_since</c>.</para>
+    /// <para>9 -> 10 adds <c>session.cur_loc_id</c> / <c>cur_loc_since</c>; 10 -> 11 adds <c>move.action</c>.</para>
     /// </summary>
-    private const int SchemaVersion = 10;
+    private const int SchemaVersion = 11;
 
     public void Initialize()
     {
@@ -201,6 +201,9 @@ public sealed class TrackerDb
             tgt_kind    TEXT,
             tgt_key     TEXT,
             caller      TEXT,
+            -- The Queued line's action[], when it is anything but None. Only "Carry" is seen:
+            -- an item picked into the player's hand, which the ledger treats as on the player.
+            action      TEXT,
             result      TEXT,
             UNIQUE(session_id, line_offset, item_ix)
         );

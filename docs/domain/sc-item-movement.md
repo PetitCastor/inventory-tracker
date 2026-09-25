@@ -15,7 +15,7 @@ A full item-movement ledger **is** extractable. Under the [[sc-parse-cutoff-49]]
 
 | Type | From | To | Note |
 |---|---|---|---|
-| `Interaction` | source inventory | body `Port[...]` | equipping |
+| `Interaction` | source inventory | body `Port[...]` | equipping; with `action[Carry]` on the Queued line, picking into the hand to eat, drink or hand in |
 | `Store` | Hands (`LocallyDetached[Yes]`) or body port | container/location | **`SourceInventory` on the Add-Move line is really the DESTINATION**; `TargetInventory` is `INVALID` |
 | `Move` | source inventory | target inventory | drag between containers |
 | `Drop` | source inventory | world | |

@@ -101,21 +101,60 @@ because each pass forgot where the player was standing, and it lost 3 geids at p
 boundaries. With parse state carried across passes and the player's location persisted
 per session, it places 15 of 15 and matches a single pass exactly (`live.parity` 100 %).
 
+### Carrying items in hand
+
+`Type[Interaction] action[Carry]` is the player taking an item out of a grid into their
+hand, usually to eat or drink it. The target is `INVALID` and the caller is
+`DoInventoryGridInteractionCB` rather than `AttachItem`, so the move used to be dropped.
+Those carries were all 13 uncaptured requests in the local corpus.
+
+Tracing all 13 carries in the local corpus showed two outcomes:
+
+- 8 were stored back into their container within about 15 s, by a `Store` that names the
+  entity.
+- 5 were never mentioned again: two snacks eaten, two drinks finished, and one mission
+  hard drive handed in. Each of the 5 is absent from every body enumeration afterwards,
+  while each enumeration re-lists everything the player still holds.
+
+What the tracker does now:
+
+- A carry is recorded as a move onto the player. `move.action` keeps the `Carry`.
+- The first named move of an entity takes one unnamed unit of its class out of its
+  source, so the crate no longer counts the drink the player is holding. Equips from a
+  station benefit the same way.
+- A carried item that is missing from the newest body enumeration after the carry is
+  treated as used up and leaves the ledger (`ledger.carried_used_up`). The newest
+  enumeration is the newest `Body_ItemPort` attachment line plus everything seen within
+  30 s of it.
+- An item carried after that enumeration stays on the player with a ×0.5 caveat, since
+  nothing has contradicted it yet.
+
+| | Before | After |
+|---|---:|---:|
+| `capture.request_rate` | 96.0 % | **100 %** |
+| `holdings.inferred_share` | 4.4 % | 3.0 % |
+| `holdings.high_share` | 80.5 % | 81.0 % |
+| `ledger.source_hit_rate` | 45.5 % | 44.6 % |
+
+The source-hit rate dips by one unit (62 inferred instead of 61). That fits the double count
+being removed: a crate no longer holds a drink that was carried out, so a later class-level
+move out of it finds one unit fewer. That particular unit has not been traced.
+
 ### Where the local corpus stands
 
 | Metric | Value | Target |
 |---|---:|---:|
-| `capture.request_rate` | 96.0 % | 98 % |
+| `capture.request_rate` | 100 % | 98 % |
 | `capture.unrecognised_lines` | 0 | 0 |
-| `enrich.geid_coverage` | 80.6 % | 85 % |
-| `enrich.confirmed_rate` | 91.0 % | 95 % |
-| `ledger.source_hit_rate` | 45.5 % | 80 % |
-| `holdings.high_share` | 80.5 % | 80 % |
-| `holdings.low_share` | 4.4 % | 5 % |
-| `holdings.mean_score` | 0.800 | 0.85 |
-| `holdings.inferred_share` | 4.4 % | 5 % |
+| `enrich.geid_coverage` | 81.3 % | 85 % |
+| `enrich.confirmed_rate` | 91.3 % | 95 % |
+| `ledger.source_hit_rate` | 44.6 % | 80 % |
+| `holdings.high_share` | 81.0 % | 80 % |
+| `holdings.low_share` | 4.5 % | 5 % |
+| `holdings.mean_score` | 0.802 | 0.85 |
+| `holdings.inferred_share` | 3.0 % | 5 % |
 | `live.parity` | 100 % | 100 % |
-| `live.cold_parity` | 82.8 % | 95 % |
+| `live.cold_parity` | 82.9 % | 95 % |
 
 ## Improvement plan
 
@@ -130,12 +169,9 @@ should move, so it can be verified by rerunning the study.
    - moves out of a crate whose contents were only ever credited by class.
 
    Moves: `ledger.source_hit_rate`.
-2. **Decide what `Type[Interaction] action[Carry]` means.** Picking an item into your hands
-   to eat or drink it accounts for all 13 uncaptured requests. The target is `INVALID` and
-   the caller is `DoInventoryGridInteractionCB` rather than `AttachItem`, so it is dropped,
-   and the item stays in its container forever. The item is most likely consumed, so the
-   move should at least take it out of its source.
-   Moves: `capture.request_rate` (to 100 %), `holdings.*`.
+2. ~~Decide what `Type[Interaction] action[Carry]` means.~~ Done: see "Carrying items in
+   hand" above. `<[ActorState] Place> … placed '<class>_<geid>' in lootable container` is a
+   related, unparsed signal: a carried mission item being handed in.
 3. **More geid sources.** In the current format, `<Player Inventory Request Complete> …
    Type[Interaction] … Item[<geid>]` names the equipped entity directly, and `<StoreItem>
    store '<class>_<geid>'` names each item of a batch store. Neither is parsed today; both

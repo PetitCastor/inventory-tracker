@@ -183,4 +183,89 @@ public class LedgerReplayTests
         Assert.Single(ledger.NamedIn(OtherStation, "rifle_01"));
         Assert.Empty(allLoose);
     }
+
+    private static readonly Holding OnPlayer = new(InventoryKind.Equipped, "");
+
+    /// <summary>An Interaction with action[Carry]: out of a grid into the player's hand.</summary>
+    private static MoveRecord Carry(Holding source, string itemClass, string geid, int minute) =>
+        Move(source, OnPlayer, itemClass, geid: geid, minute: minute, moveType: "Interaction") with { Action = "Carry" };
+
+    private static LedgerReplay.BodyEnumeration Enumerated(int minute, params string[] geids) =>
+        new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), geids.ToHashSet(), new HashSet<string>());
+
+    [Fact]
+    public void Carrying_a_counted_item_takes_it_out_of_its_container()
+    {
+        // The drinks went in by class; the one carried out is named. Without spending the
+        // unnamed unit, the crate would still count the drink the player is holding.
+        var ledger = Run(
+            Move(Nowhere, Crate, "Drink_bottle_cruz_01_a", amount: 2, minute: 1),
+            Carry(Crate, "Drink_bottle_cruz_01_a", "780590795163", minute: 2));
+
+        var (_, _, loose) = Assert.Single(ledger.Contents(Crate));
+        Assert.Equal(1, loose!.Quantity);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["780590795163"]);
+    }
+
+    [Fact]
+    public void A_carried_item_stored_back_is_in_its_container_once()
+    {
+        var ledger = Run(
+            Move(Nowhere, Crate, "Drink_bottle_cruz_01_a", minute: 1),
+            Carry(Crate, "Drink_bottle_cruz_01_a", "780590795163", minute: 2),
+            Move(Nowhere, Crate, "Drink_bottle_cruz_01_a", geid: "780590795163", minute: 3, moveType: "Store"));
+
+        var (_, named, loose) = Assert.Single(ledger.Contents(Crate));
+        Assert.Single(named);
+        Assert.Null(loose);
+        Assert.Empty(ledger.Contents(OnPlayer));
+    }
+
+    [Fact]
+    public void A_carried_item_missing_from_the_next_body_enumeration_was_used_up()
+    {
+        var ledger = LedgerReplay.Run(
+            [Carry(Crate, "Food_Grub_Seanut_1_Lemon", "750982316286", minute: 2)],
+            [],
+            Enumerated(minute: 10, "200000000218"));
+
+        Assert.Empty(ledger.Contents(OnPlayer));
+        Assert.False(ledger.InstanceAt.ContainsKey("750982316286"));
+        Assert.Equal(1, ledger.Stats.CarriedUsedUp);
+    }
+
+    [Fact]
+    public void A_carried_item_still_listed_on_the_body_stays_on_the_player()
+    {
+        var ledger = LedgerReplay.Run(
+            [Carry(Crate, "Drink_bottle_cruz_01_a", "780590795163", minute: 2)],
+            [],
+            Enumerated(minute: 10, "780590795163"));
+
+        Assert.Equal(OnPlayer, ledger.InstanceAt["780590795163"]);
+    }
+
+    [Fact]
+    public void A_carry_after_the_newest_enumeration_is_not_contradicted_yet()
+    {
+        var ledger = LedgerReplay.Run(
+            [Carry(Crate, "Drink_bottle_cruz_01_a", "780590795163", minute: 12)],
+            [],
+            Enumerated(minute: 10));
+
+        Assert.Equal(OnPlayer, ledger.InstanceAt["780590795163"]);
+    }
+
+    [Fact]
+    public void An_equipped_item_missing_from_the_enumeration_is_left_alone()
+    {
+        // Only carried items are ever used up. Absence of an equipped item has other
+        // explanations, and demoting those is a separate decision.
+        var ledger = LedgerReplay.Run(
+            [Move(Station, OnPlayer, "rsi_helmet_01", geid: "333333333333", minute: 2, moveType: "Interaction")],
+            [],
+            Enumerated(minute: 10));
+
+        Assert.Equal(OnPlayer, ledger.InstanceAt["333333333333"]);
+    }
 }
