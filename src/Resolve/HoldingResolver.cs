@@ -275,6 +275,22 @@ public sealed class HoldingResolver
             caveats.Add("last picked up in hand to use — food, drink and handed-in items are used up without a log line");
         }
 
+        // Food and drink can be used straight out of a backpack, and that is never logged: three
+        // cruz bottles stored in a backpack on 2026-08-23 and 08-25 were gone when the player
+        // opened it on 2026-09-25, with no line in between. A consumable put down to be used
+        // later is moved again within a day in every case in the logs (the longest, a medpen,
+        // after 19 hours), so one untouched for a week is as likely gone as there. One lying
+        // straight in a station's inventory is not doubted: every one taken out of a station
+        // in the logs was taken out by a move line.
+        // Carried in hand and dropped already say as much, and are scored for it below.
+        if (IsConsumable(itemClass) && arrivedBy is not ("Carry" or "Drop")
+            && where.Kind != InventoryKind.Location && _asOf - since > ConsumableShelf)
+        {
+            score *= 0.5;
+            caveats.Add("food, drink and medical items are used up without a log line, and this one has not moved in " +
+                        $"{(_asOf - since).TotalDays:F0} days — it may be gone");
+        }
+
         if (arrivedBy == "Drop")
         {
             score *= 0.3;
@@ -662,6 +678,19 @@ public sealed class HoldingResolver
         }
         return false;
     }
+
+    /// <summary>How long a consumable can sit untouched before it is doubted.</summary>
+    private static readonly TimeSpan ConsumableShelf = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// Food, drink and CureLife medical consumables (medpens are
+    /// <c>crlf_consumable_healing_01</c>). Not every <c>_consumable_</c> class: a mission hard
+    /// drive is <c>FPS_Consumable_HardDrive_Generic</c>, and it does not get used up.
+    /// </summary>
+    private static bool IsConsumable(string itemClass) =>
+        itemClass.StartsWith("Drink_", StringComparison.OrdinalIgnoreCase)
+        || itemClass.StartsWith("Food_", StringComparison.OrdinalIgnoreCase)
+        || itemClass.StartsWith("crlf_consumable_", StringComparison.OrdinalIgnoreCase);
 
     private static readonly string[] ApparelMarks =
         ["backpack", "undersuit", "_core_", "_legs_", "_arms_"];
