@@ -293,7 +293,10 @@ public sealed class LedgerReplay
             .Concat((enumerations ?? []).Select(e => new Entry(e.At, Body: e)))
             .Concat((relocations ?? Enumerable.Empty<Relocation>()).Select(r => new Entry(r.At, Update: r)));
 
-        // An update lands before anything logged in the build it starts.
+        // An update lands before anything logged in the build it starts. Otherwise ties keep
+        // the order above, which the sort preserves: at one instant the moves apply first, then
+        // the sightings, then the listing — so a listing sees the items and parts sighted in its
+        // own burst already in place.
         foreach (var entry in timeline.OrderBy(x => x.At).ThenBy(x => x.Update is null ? 1 : 0))
         {
             if (entry.Move is { } move) ledger.Apply(move);
@@ -450,6 +453,8 @@ public sealed class LedgerReplay
     /// </summary>
     private void ApplyEnumeration(BodyEnumeration body)
     {
+        DetachMissingParts(body);
+
         if (!_contents.TryGetValue(new Holding(InventoryKind.Equipped, ""), out var byClass)) return;
 
         foreach (var (itemClass, slot) in byClass)
@@ -531,14 +536,54 @@ public sealed class LedgerReplay
         // An attachment line is proof the item is on the player right now, which no move
         // line can give. It supersedes whatever the ledger believed until something later
         // moves the item off again.
-        PlaceInstance(
-            sighting.Geid, sighting.ItemClass, new Holding(InventoryKind.Equipped, ""),
-            sighting.Timestamp, "Worn", confirmed: true, inferred: false);
+        //
+        // A part — a helmet's visor, a weapon's magazine — goes inside the item it hangs off,
+        // so it follows that item wherever its moves take it: the game stores a helmet or a
+        // rifle with its parts on and logs a line for the item alone.
+        var target = new Holding(InventoryKind.Equipped, "");
+        if (sighting is { IsPart: true, ParentGeid: { } parent })
+        {
+            target = new Holding(InventoryKind.Container, parent);
+            _partParents.Add(parent);
+        }
+
+        PlaceInstance(sighting.Geid, sighting.ItemClass, target, sighting.Timestamp, "Worn", confirmed: true, inferred: false);
     }
+
+    /// <summary>Entities a part has been sighted on: helmets, weapons, multitools.</summary>
+    private readonly HashSet<string> _partParents = [];
+
+    /// <summary>Whether parts hang off this entity, so it is shown as what they are on.</summary>
+    public bool IsPartParent(string geid) => _partParents.Contains(geid);
 
     /// <summary>The port each entity was last sighted on, and the entity last sighted on each port.</summary>
     private readonly Dictionary<string, string> _portOf = [];
     private readonly Dictionary<string, string> _occupant = [];
+
+    /// <summary>
+    /// A listing names every part of every item it lists, so a part of a listed item that the
+    /// listing leaves out is no longer on it. Items the listing does not name — a rifle stored
+    /// at a station — keep their parts: nothing says otherwise.
+    /// </summary>
+    private void DetachMissingParts(BodyEnumeration body)
+    {
+        foreach (var parent in _partParents)
+        {
+            if (!body.Geids.Contains(parent)) continue;
+            if (!_contents.TryGetValue(new Holding(InventoryKind.Container, parent), out var byClass)) continue;
+
+            foreach (var (itemClass, slot) in byClass)
+            {
+                foreach (var part in slot.Named.Where(p => p.Since < body.At && !body.Geids.Contains(p.Geid)).ToList())
+                {
+                    slot.Named.Remove(part);
+                    SlotFor(LostTrack, itemClass, create: true)!.Named.Add(part);
+                    _instanceAt[part.Geid] = LostTrack;
+                    Stats.WornEvicted++;
+                }
+            }
+        }
+    }
 
     /// <summary>
     /// A new entity on a body port takes the place of the one last sighted there.
