@@ -158,6 +158,8 @@ public static class ReliabilityStudy
         report.Counts["ledger.units_duplicate_risk"] = s.UnitsDuplicateRisk;
         report.Counts["ledger.source_unknown"] = s.SourceUnknown;
         report.Counts["ledger.failed_skipped"] = s.FailedSkipped;
+        report.Counts["ledger.lost_skipped"] = s.LostSkipped;
+        report.Counts["ledger.units_credited_by_lost"] = s.UnitsCreditedByLost;
         report.Counts["ledger.unreal_target_skipped"] = s.UnrealTargetSkipped;
         report.Counts["ledger.anonymous_reconciled"] = s.AnonymousReconciled;
         report.Counts["ledger.worn_sightings"] = s.WornSightings;

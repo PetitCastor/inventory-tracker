@@ -77,6 +77,15 @@ public sealed class LedgerReplay
         /// <summary>Moves the game said failed, never applied.</summary>
         public int FailedSkipped { get; internal set; }
 
+        /// <summary>Moves the server never processed before the connection closed, never applied.</summary>
+        public int LostSkipped { get; internal set; }
+
+        /// <summary>
+        /// Units a lost move proved were at its source, credited there because the ledger had
+        /// none.
+        /// </summary>
+        public int UnitsCreditedByLost { get; internal set; }
+
         /// <summary>Moves whose target is not somewhere an item can be held.</summary>
         public int UnrealTargetSkipped { get; internal set; }
 
@@ -498,6 +507,21 @@ public sealed class LedgerReplay
             return;
         }
 
+        if (move.Lost)
+        {
+            Stats.LostSkipped++;
+            CreditLostSource(move);
+            return;
+        }
+
+        // The server is processing requests again: whatever the client predicted while it was
+        // stalled has been settled one way or the other.
+        if (move.Succeeded)
+        {
+            _predictedOut.Clear();
+            _predictedIn.Clear();
+        }
+
         var target = new Holding(move.TargetKind, move.TargetKey);
         if (!target.IsReal)
         {
@@ -521,6 +545,50 @@ public sealed class LedgerReplay
         }
 
         MoveAnonymous(move, source, target);
+    }
+
+    /// <summary>
+    /// Units the client showed leaving, and arriving at, each place through moves the server
+    /// then dropped. The client draws its inventory with its own pending moves applied, so a
+    /// later move out of a place counts on what earlier ones seemed to put there.
+    /// </summary>
+    private readonly Dictionary<(Holding, string), int> _predictedOut = [];
+    private readonly Dictionary<(Holding, string), int> _predictedIn = [];
+
+    /// <summary>
+    /// A move the server never processed changed nothing, but it does prove the player saw
+    /// the item at its source when they dragged it. When the ledger has fewer units there
+    /// than that implies, the missing ones are credited to the source.
+    /// <para>
+    /// On 2026-09-25 the player dragged an Aril helmet and then two Defiance helmets from
+    /// Area18 into the backpack, and the Aril back again, all while the server's queue was
+    /// stalled. All four moves were dropped and all three helmets were at Area18 after the
+    /// reconnect — but the ledger had never seen them there. The Aril's return trip starts in
+    /// the backpack only because the client showed it there, so what earlier dropped moves
+    /// seemed to deliver is not evidence of anything.
+    /// </para>
+    /// </summary>
+    private void CreditLostSource(MoveRecord move)
+    {
+        var source = new Holding(move.SourceKind, move.SourceKey);
+        if (!source.IsReal) return;
+
+        var key = (source, move.ItemClass);
+        var seen = _predictedOut.GetValueOrDefault(key) + move.Units - _predictedIn.GetValueOrDefault(key);
+        var held = SlotFor(source, move.ItemClass, create: false) is { } slot
+            ? slot.Named.Count + (slot.Loose?.Quantity ?? 0)
+            : 0;
+
+        if (seen > held)
+        {
+            AddAnonymous(source, move.ItemClass, seen - held, move.Timestamp, move.MoveType, confirmed: true, inferred: true);
+            Stats.UnitsCreditedByLost += seen - held;
+        }
+
+        _predictedOut[key] = _predictedOut.GetValueOrDefault(key) + move.Units;
+
+        var target = new Holding(move.TargetKind, move.TargetKey);
+        if (target.IsReal) _predictedIn[(target, move.ItemClass)] = _predictedIn.GetValueOrDefault((target, move.ItemClass)) + move.Units;
     }
 
     private void ApplyWorn(WornSighting sighting)

@@ -170,6 +170,18 @@ public class InventoryEventParserTests
     }
 
     [Fact]
+    public void Reads_a_closed_connection()
+    {
+        var ev = Event(
+            "<2026-09-25T15:53:23.744Z> [Notice] <Channel Disconnected> cause=30016 " +
+            "reason=\"Remote Disconnect - Player requested disconnect\" frame=2 isRemote=1 viewState=eCVS_InGame");
+
+        var closed = Assert.IsType<ChannelDisconnected>(ev);
+        Assert.Equal(30016, closed.Cause);
+        Assert.Equal("Remote Disconnect - Player requested disconnect", closed.Reason);
+    }
+
+    [Fact]
     public void Tells_the_login_placeholder_set_apart_by_its_geids()
     {
         var ev = Event(
