@@ -1,6 +1,7 @@
 using InventoryTracker.App;
 using InventoryTracker.Data;
 using InventoryTracker.Ingest;
+using InventoryTracker.Model;
 using InventoryTracker.Naming;
 using InventoryTracker.Resolve;
 using Microsoft.Data.Sqlite;
@@ -176,32 +177,49 @@ internal static class Cli
             ? $"-- holdings ({resolved.Sum(h => h.Quantity)} units in {resolved.Count} lines) --"
             : $"-- holdings matching '{filter}' ({resolved.Sum(h => h.Quantity)} units) --");
 
+        foreach (var line in FormatGroups(resolved)) Console.WriteLine(line);
+    }
+
+    /// <summary>
+    /// The holdings grouped by where they end up, one line per row, a count of units on each
+    /// group and on each row that stands for more than one.
+    /// </summary>
+    internal static IEnumerable<string> FormatGroups(IReadOnlyList<ItemHolding> resolved)
+    {
         // Group by the root's identity, not its label: several distinct SCU boxes share
         // the class name "Carryable_TBO_InventoryContainer_2SCU" and are different places.
         foreach (var group in resolved
                      .GroupBy(h => (h.Root?.Kind, h.Root?.Key))
-                     .OrderByDescending(g => g.Count()))
+                     .OrderByDescending(g => g.Sum(h => h.Quantity)))
         {
-            var root = group.First().Root;
-            var heading = root is null ? "unknown"
-                : root.Key.Length > 0 ? $"{root.Label} [{root.Key}]"
-                : root.Label;
-
-            Console.WriteLine();
-            Console.WriteLine($"  {heading}  ({group.Count()})");
+            yield return "";
+            yield return $"  {Heading(group.First().Root)}  ({group.Sum(h => h.Quantity)})";
 
             foreach (var h in group.OrderBy(h => h.ItemClass))
             {
-                Console.WriteLine(
-                    $"    {h.ItemClass,-44} {h.Where,-52} {h.Confidence,-6} {h.LastMove:yyyy-MM-dd HH:mm}");
+                var item = h.Quantity > 1 ? $"{h.Quantity}× {h.ItemClass}" : h.ItemClass;
+                yield return $"    {item,-44} {h.Where,-52} {h.Confidence,-6} {h.LastMove:yyyy-MM-dd HH:mm}";
 
                 foreach (var caveat in h.Caveats)
                 {
-                    Console.WriteLine($"      ! {caveat}");
+                    yield return $"      ! {caveat}";
                 }
             }
         }
     }
+
+    /// <summary>
+    /// A group's heading. Whatever ends on the player is one group, whether equipped or carried
+    /// in a backpack; each row's own chain says which. Taking the first row's label instead
+    /// made the heading flip with the sort order.
+    /// </summary>
+    private static string Heading(HoldingLink? root) => root switch
+    {
+        null => "unknown",
+        { Kind: InventoryKind.Equipped } => "on your character",
+        { Key.Length: > 0 } => $"{root.Label} [{root.Key}]",
+        _ => root.Label,
+    };
 
     private static void PrintUsage() => Console.WriteLine($"""
         Usage: InventoryTracker [--scan] [options]
