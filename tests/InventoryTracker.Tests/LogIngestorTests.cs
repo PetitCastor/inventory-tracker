@@ -1,5 +1,6 @@
 using InventoryTracker.Data;
 using InventoryTracker.Ingest;
+using InventoryTracker.Resolve;
 using Microsoft.Data.Sqlite;
 
 namespace InventoryTracker.Tests;
@@ -135,6 +136,67 @@ public sealed class LogIngestorTests : IDisposable
         Assert.Equal("750982306075", Scalar("SELECT item_geid FROM move"));
         Assert.Equal("Carry", Scalar("SELECT action FROM move"));
         Assert.Equal("Succeed", Scalar("SELECT result FROM move"));
+    }
+
+    /// <summary>Writes a rotated backup named for its build, as the game does.</summary>
+    private void Backup(int build, string stamp, params string[] lines)
+    {
+        var dir = Path.Combine(_dir, "logbackups");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, $"Game Build({build}) {stamp}.log"), string.Join("\n", lines) + "\n");
+    }
+
+    /// <summary>
+    /// A store at a named station, confirmed by the game: nothing about it costs score, so
+    /// whatever the resolver takes off is down to what the test is about.
+    /// </summary>
+    private static string[] ConfirmedStoreAtLorville() =>
+    [
+        "<2026-08-04T09:59:00.000Z> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
+        "Landing [0] -> [4005457614]. Location [0] -> [4005457614]. Pending [0]",
+        "<2026-08-04T09:59:00.500Z> [Notice] <RequestLocationInventory> Player[Pilot] requested inventory for Location[Stanton1_Lorville]",
+        StoreLine("2026-08-04T10:00:00.000Z", 1),
+        "<2026-08-04T10:00:00.400Z> [Notice] <Inventory Request Completed> Request[1] Player[Pilot] Result[succeed] Elapsed[0.4] PendingMoves[1]",
+    ];
+
+    [Fact]
+    public void A_placement_made_before_a_game_update_is_trusted_less_and_says_why()
+    {
+        // Updates move stored items server-side and log nothing, so a placement older than
+        // the newest update is a lead, not a fact. Age alone costs nothing.
+        Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
+        Backup(12519617, "26 Aug 26 (20 30 32)", "<2026-08-27T00:30:37.588Z> [Notice] <X> first line after the update");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.Equal(0.5, holding.Score, precision: 3);
+        Assert.Contains(holding.Caveats, c => c.Contains("game update to build 12519617"));
+    }
+
+    [Fact]
+    public void An_old_placement_within_one_build_keeps_its_score()
+    {
+        Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 10, 1, 0, 0, 0, TimeSpan.Zero));
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.Equal(1.0, holding.Score, precision: 3);
+        Assert.Contains(holding.Caveats, c => c.StartsWith("last seen"));
+    }
+
+    [Theory]
+    [InlineData(0, 0, 0.5)]   // nothing checked: the unverified default
+    [InlineData(4, 0, 0.5)]   // too few checks to go on
+    [InlineData(13, 0, 0.2)]  // everything moved: floored, the old place is still the best lead
+    [InlineData(10, 8, 0.8)]  // mostly survived
+    [InlineData(6, 6, 1.0)]   // all survived: the update is harmless
+    public void An_updates_weight_is_what_the_logs_showed_of_it(int checkedCount, int survived, double factor)
+    {
+        Assert.Equal(factor, new HoldingResolver.UpdateSurvival(checkedCount, survived).Factor, precision: 3);
     }
 
     [Fact]

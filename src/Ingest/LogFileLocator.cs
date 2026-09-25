@@ -148,6 +148,37 @@ public static partial class LogFileLocator
 
     private const int HeadScanLines = 200;
 
+    /// <summary>
+    /// The game build a log was written by: from a rotated backup's file name, or from the
+    /// live Game.log's own header, whose first line names the backup it will become
+    /// (<c>BackupNameAttachment=" Build(12660092) 26 Aug 26 ..."</c>). Null when neither says.
+    /// </summary>
+    public static int? BuildOf(string path)
+    {
+        var m = BuildId().Match(Path.GetFileName(path));
+        if (m.Success && int.TryParse(m.Groups["build"].Value, out var fromName)) return fromName;
+
+        try
+        {
+            var scanned = 0;
+            foreach (var line in new ByteLineReader().ReadLines(path))
+            {
+                var h = BuildId().Match(line.Text);
+                if (h.Success && int.TryParse(h.Groups["build"].Value, out var fromHeader)) return fromHeader;
+                if (++scanned > HeaderBuildLines) break;
+            }
+        }
+        catch (IOException)
+        {
+            // Rotated out from under us; the next pass tries again.
+        }
+
+        return null;
+    }
+
+    /// <summary>The build is on the first line; a few more cover a header that grows.</summary>
+    private const int HeaderBuildLines = 20;
+
     private static bool IsParseable(string path, DateTimeOffset cutoff)
     {
         var m = BuildId().Match(Path.GetFileName(path));

@@ -79,6 +79,36 @@ public sealed class LogFileLocatorTests : IDisposable
     }
 
     [Fact]
+    public void BuildOf_reads_a_backups_build_from_its_name()
+    {
+        var path = Path.Combine(_dir, "Game Build(12519617) 26 Aug 26 (20 30 32).log");
+        File.WriteAllText(path, "<2026-08-27T00:30:37.588Z> [Notice] <X> y\n");
+
+        Assert.Equal(12519617, LogFileLocator.BuildOf(path));
+    }
+
+    [Fact]
+    public void BuildOf_reads_the_live_logs_build_from_its_header()
+    {
+        // Game.log has no build in its name, but its first line names the backup it becomes.
+        var path = Path.Combine(_dir, "Game.log");
+        File.WriteAllText(path,
+            "<2026-09-19T10:44:04.000Z> BackupNameAttachment=\" Build(12660092) 19 Sep 26 (06 44 04)\"  -- used by backup system\n" +
+            "<2026-09-19T10:44:05.000Z> [Notice] <X> y\n");
+
+        Assert.Equal(12660092, LogFileLocator.BuildOf(path));
+    }
+
+    [Fact]
+    public void BuildOf_is_null_when_nothing_names_a_build()
+    {
+        var path = Path.Combine(_dir, "Game.log");
+        File.WriteAllText(path, "<2026-09-19T10:44:05.000Z> [Notice] <X> y\n");
+
+        Assert.Null(LogFileLocator.BuildOf(path));
+    }
+
+    [Fact]
     public void FirstTimestamp_reads_the_first_parseable_line()
     {
         var path = Path.Combine(_dir, "Game.log");

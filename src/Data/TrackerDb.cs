@@ -65,9 +65,10 @@ public sealed class TrackerDb
     /// would never be given those bytes to re-read: it would resume exactly where the broken
     /// one left off, or skip the file entirely.
     /// </para>
-    /// <para>9 -> 10 adds <c>session.cur_loc_id</c> / <c>cur_loc_since</c>; 10 -> 11 adds <c>move.action</c>.</para>
+    /// <para>9 -> 10 adds <c>session.cur_loc_id</c> / <c>cur_loc_since</c>; 10 -> 11 adds <c>move.action</c>;
+    /// 11 -> 12 adds <c>session.build</c>.</para>
     /// </summary>
-    private const int SchemaVersion = 11;
+    private const int SchemaVersion = 12;
 
     public void Initialize()
     {
@@ -169,7 +170,11 @@ public sealed class TrackerDb
             -- so a pass that resumes mid-file has no other way to know it — and without
             -- it every container opened afterwards goes unplaced.
             cur_loc_id    TEXT,
-            cur_loc_since TEXT
+            cur_loc_since TEXT,
+            -- The game build that wrote the file. A change of build is a game update, and
+            -- updates move stored items server-side without a single log line: after build
+            -- 12519617 every item checked had been moved to where the player next spawned.
+            build         INTEGER
         );
 
         -- One row per item relocation.

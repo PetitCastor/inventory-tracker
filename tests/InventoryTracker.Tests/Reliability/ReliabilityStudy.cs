@@ -163,6 +163,8 @@ public static class ReliabilityStudy
         report.Counts["ledger.worn_sightings"] = s.WornSightings;
         report.Counts["ledger.carried_used_up"] = s.CarriedUsedUp;
 
+        MeasurePlacements(s, resolver.Updates, resolver.UpdateSurvivals, report);
+
         foreach (var miss in s.Misses)
         {
             var units = miss.Wanted - miss.Found;
@@ -179,6 +181,96 @@ public static class ReliabilityStudy
                     (miss.CoveredByCarried ? "; found on the player]" : miss.ElsewhereAt is { } w ? $"; held at {w.Kind} {w.Key}]" : "]"));
             }
         }
+    }
+
+    private static readonly (string Label, TimeSpan Upto)[] AgeBuckets =
+    [
+        ("< 1 h", TimeSpan.FromHours(1)),
+        ("1 h – 1 d", TimeSpan.FromDays(1)),
+        ("1 – 7 d", TimeSpan.FromDays(7)),
+        ("7 – 30 d", TimeSpan.FromDays(30)),
+        ("> 30 d", TimeSpan.MaxValue),
+    ];
+
+    /// <summary>
+    /// Agreement between the ledger's belief and the game's named source, by how long the
+    /// belief had stood. If placements went stale with age, agreement would fall with it.
+    /// </summary>
+    private static void MeasurePlacements(
+        LedgerReplay.ReplayStats s, IReadOnlyList<HoldingResolver.GameUpdate> updates,
+        IReadOnlyDictionary<int, HoldingResolver.UpdateSurvival> survival, ReliabilityReport report)
+    {
+        var checks = s.PlacementChecks;
+        report.Counts["placement.checks"] = checks.Count;
+        report.Counts["placement.same_place"] = checks.Count(c => c.SamePlace);
+        report.Counts["game_updates"] = updates.Count;
+        if (checks.Count == 0) return;
+
+        bool Crossed(LedgerReplay.PlacementCheck c) => updates.Any(u => u.At > c.At - c.Age && u.At <= c.At);
+
+        var within = checks.Where(c => !Crossed(c)).ToList();
+        var across = checks.Where(Crossed).ToList();
+        report.Counts["placement.within_build"] = within.Count;
+        report.Counts["placement.across_update"] = across.Count;
+
+        // The calibration the resolver's scoring rests on: a placement within one build should
+        // hold whatever its age, and one across an update should not be trusted as much.
+        if (within.Count > 0) report.Metrics["placement.within_build_same_place"] = (double)within.Count(c => c.SamePlace) / within.Count;
+        if (across.Count > 0) report.Metrics["placement.across_update_same_place"] = (double)across.Count(c => c.SamePlace) / across.Count;
+
+        // Calibration: the trust the resolver's update weighting puts in each checked placement,
+        // against whether the game then confirmed it. Only the update factor is scored — it is
+        // the part of the score these checks can test. The factors are learned from these same
+        // checks, so this is in-sample until a new corpus arrives.
+        double Predicted(LedgerReplay.PlacementCheck c) =>
+            updates.Where(u => u.At > c.At - c.Age && u.At <= c.At)
+                .Select(u => survival[u.Build].Factor)
+                .DefaultIfEmpty(1.0)
+                .Min();
+
+        report.Metrics["placement.brier"] = checks.Average(c => Math.Pow(Predicted(c) - (c.SamePlace ? 1 : 0), 2));
+
+        string Bucket(TimeSpan age) => AgeBuckets.First(b => age < b.Upto).Label;
+        string Cell(IEnumerable<LedgerReplay.PlacementCheck> cs)
+        {
+            var list = cs.ToList();
+            return list.Count == 0 ? "—" : $"{list.Count(c => c.SamePlace)}/{list.Count}";
+        }
+
+        report.PlacementTable.Add("Same place, believed vs. the game's named source:");
+        report.PlacementTable.Add("");
+        report.PlacementTable.Add("| Age | Within one build | Across a game update |");
+        report.PlacementTable.Add("|---|---:|---:|");
+        foreach (var (label, _) in AgeBuckets)
+        {
+            report.PlacementTable.Add(
+                $"| {label} | {Cell(within.Where(c => Bucket(c.Age) == label))} | {Cell(across.Where(c => Bucket(c.Age) == label))} |");
+        }
+
+        report.PlacementTable.Add("");
+        report.PlacementTable.Add("Placements the game contradicted:");
+        report.PlacementTable.Add("");
+        foreach (var c in checks.Where(c => !c.SamePlace).OrderBy(c => c.At))
+        {
+            report.PlacementTable.Add(
+                $"- `{c.At:yyyy-MM-dd HH:mm} {c.ItemClass} {c.Geid}: believed {c.Believed.Kind} {c.Believed.Key} " +
+                $"(by {c.BelievedArrivedBy}, {c.Age.TotalDays:F1} d{(Crossed(c) ? ", across an update" : "")}), " +
+                $"moved from {c.Actual.Kind} {c.Actual.Key}`");
+        }
+
+        report.PlacementTable.Add("");
+        report.PlacementTable.Add("What the resolver learned about each update:");
+        report.PlacementTable.Add("");
+        foreach (var u in updates)
+        {
+            var r = survival[u.Build];
+            report.PlacementTable.Add(
+                $"- build {u.Build}, first played {u.At:yyyy-MM-dd}: {r.Survived}/{r.Checked} placements survived, " +
+                $"factor ×{r.Factor:0.##}{(r.Verified ? "" : " (unverified default)")}");
+        }
+
+        var oldest = checks.Max(c => c.Age);
+        report.Counts["placement.oldest_checked_hours"] = (long)oldest.TotalHours;
     }
 
     private static void MeasureHoldings(IReadOnlyList<ItemHolding> holdings, ReliabilityReport report)

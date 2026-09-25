@@ -189,7 +189,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         var unrecognisedThisPass = stats.UnrecognisedMoves - unrecognisedBefore;
         SaveSession(
             cn, tx, session.Id, reader.Offset, firstTs, lastTs, newestLineTs, unrecognisedThisPass,
-            state.CurrentLocation, complete: !file.IsLive);
+            state.CurrentLocation, session.Build ?? LogFileLocator.BuildOf(file.Path), complete: !file.IsLive);
         tx.Commit();
 
         // Only once committed: a pass that throws leaves no entry behind, so the next one
@@ -494,14 +494,15 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     }
 
     private sealed record SessionRow(
-        long Id, long Offset, bool Complete, DateTimeOffset? FirstTs, PlayerLocation? CurrentLocation);
+        long Id, long Offset, bool Complete, DateTimeOffset? FirstTs, PlayerLocation? CurrentLocation,
+        int? Build = null);
 
     private static SessionRow LoadOrCreateSession(SqliteConnection cn, string path)
     {
         using (var sel = cn.CreateCommand())
         {
             sel.CommandText = """
-                SELECT id, byte_offset, complete, first_ts, cur_loc_id, cur_loc_since
+                SELECT id, byte_offset, complete, first_ts, cur_loc_id, cur_loc_since, build
                 FROM session WHERE path = $p
                 """;
             sel.Parameters.AddWithValue("$p", path);
@@ -515,7 +516,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                     r.IsDBNull(3) ? null : ParseIso(r.GetString(3)),
                     r.IsDBNull(4) || r.IsDBNull(5)
                         ? null
-                        : new PlayerLocation(r.GetString(4), ParseIso(r.GetString(5))));
+                        : new PlayerLocation(r.GetString(4), ParseIso(r.GetString(5))),
+                    r.IsDBNull(6) ? null : r.GetInt32(6));
             }
         }
 
@@ -570,7 +572,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             reset.CommandText = """
                 UPDATE session
                 SET byte_offset = 0, first_ts = NULL, last_ts = NULL, complete = 0,
-                    unrecognised = 0, last_line_ts = NULL, cur_loc_id = NULL, cur_loc_since = NULL
+                    unrecognised = 0, last_line_ts = NULL, cur_loc_id = NULL, cur_loc_since = NULL,
+                    build = NULL
                 WHERE id = $s
                 """;
             reset.Parameters.AddWithValue("$s", session.Id);
@@ -579,7 +582,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
         tx.Commit();
 
-        return session with { Offset = 0, FirstTs = null, CurrentLocation = null };
+        return session with { Offset = 0, FirstTs = null, CurrentLocation = null, Build = null };
     }
 
     /// <summary>
@@ -619,6 +622,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         DateTimeOffset? newestLineTs,
         int unrecognisedDelta,
         PlayerLocation? currentLocation,
+        int? build,
         bool complete)
     {
         using var cmd = cn.CreateCommand();
@@ -632,7 +636,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 last_line_ts  = COALESCE($nl, last_line_ts),
                 unrecognised  = unrecognised + $u,
                 cur_loc_id    = $loc,
-                cur_loc_since = $locs
+                cur_loc_since = $locs,
+                build         = COALESCE(build, $b)
             WHERE id = $i
             """;
         cmd.Parameters.AddWithValue("$o", offset);
@@ -643,6 +648,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.Parameters.AddWithValue("$u", unrecognisedDelta);
         cmd.Parameters.AddWithValue("$loc", (object?)currentLocation?.LocationId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$locs", Iso(currentLocation?.Since));
+        cmd.Parameters.AddWithValue("$b", (object?)build ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$i", id);
         cmd.ExecuteNonQuery();
     }
