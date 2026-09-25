@@ -503,13 +503,6 @@ public sealed class LedgerReplay
 
     private void Apply(MoveRecord move)
     {
-        // The game said this one did not happen, so the world never changed.
-        if (move.Failed)
-        {
-            Stats.FailedSkipped++;
-            return;
-        }
-
         if (move.Lost)
         {
             Stats.LostSkipped++;
@@ -517,12 +510,19 @@ public sealed class LedgerReplay
             return;
         }
 
-        // The server is processing requests again: whatever the client predicted while it was
+        // The server is answering requests again: whatever the client predicted while it was
         // stalled has been settled one way or the other.
-        if (move.Succeeded)
+        if (move.Succeeded || move.Failed)
         {
             _predictedOut.Clear();
             _predictedIn.Clear();
+        }
+
+        // The game said this one did not happen, so the world never changed.
+        if (move.Failed)
+        {
+            Stats.FailedSkipped++;
+            return;
         }
 
         var target = new Holding(move.TargetKind, move.TargetKey);
@@ -575,6 +575,19 @@ public sealed class LedgerReplay
     {
         var source = new Holding(move.SourceKind, move.SourceKey);
         if (!source.IsReal) return;
+
+        // A named item the ledger has never placed was at the source; one it has placed is
+        // wherever the ledger already has it, which the dropped move did not change.
+        if (move.ItemGeid is { } geid)
+        {
+            if (!_instanceAt.ContainsKey(geid))
+            {
+                PlaceInstance(geid, move.ItemClass, source, move.Timestamp, move.MoveType, confirmed: true, inferred: true);
+                Stats.UnitsCreditedByLost++;
+            }
+
+            return;
+        }
 
         var key = (source, move.ItemClass);
         var seen = _predictedOut.GetValueOrDefault(key) + move.Units - _predictedIn.GetValueOrDefault(key);

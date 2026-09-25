@@ -410,6 +410,23 @@ public sealed class LogIngestorTests : IDisposable
     }
 
     [Fact]
+    public void A_completion_read_after_a_restart_overwrites_a_lost_mark()
+    {
+        // The disconnect voids the pending request; the tracker restarts; the completion
+        // that still turns up must be matched to it.
+        Append(
+            StoreLine("2026-09-25T15:44:48.161Z", 28),
+            "<2026-09-25T15:45:00.000Z> [Notice] <Channel Disconnected> cause=30016 reason=\"Remote Disconnect\"");
+        new LogIngestor(_db, _dir).IngestAll();
+        Assert.Equal("lost", Scalar("SELECT result FROM move"));
+
+        Append("<2026-09-25T15:45:30.000Z> [Notice] <Inventory Request Completed> Request[28] Player[Pilot] Result[succeed] Elapsed[42.0]");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("succeed", Scalar("SELECT result FROM move"));
+    }
+
+    [Fact]
     public void A_line_stamped_before_the_previous_one_starts_a_new_burst()
     {
         Append(
