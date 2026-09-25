@@ -293,7 +293,10 @@ public sealed class LedgerReplay
             .Concat((enumerations ?? []).Select(e => new Entry(e.At, Body: e)))
             .Concat((relocations ?? Enumerable.Empty<Relocation>()).Select(r => new Entry(r.At, Update: r)));
 
-        // An update lands before anything logged in the build it starts.
+        // An update lands before anything logged in the build it starts. Otherwise ties keep
+        // the order above, which the sort preserves: at one instant the moves apply first, then
+        // the sightings, then the listing — so a listing sees the items and parts sighted in its
+        // own burst already in place.
         foreach (var entry in timeline.OrderBy(x => x.At).ThenBy(x => x.Update is null ? 1 : 0))
         {
             if (entry.Move is { } move) ledger.Apply(move);

@@ -447,8 +447,9 @@ public sealed class HoldingResolver
                         return chain;
                     }
 
+                    // Find only returns an entity the ledger has placed.
                     passedContainer = key;
-                    if (!_ledger.InstanceAt.TryGetValue(key, out var holdingTheParent)) return chain;
+                    var holdingTheParent = _ledger.InstanceAt[key];
                     kind = holdingTheParent.Kind;
                     key = holdingTheParent.Key;
                     continue;
