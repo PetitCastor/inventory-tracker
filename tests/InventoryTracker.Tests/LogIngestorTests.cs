@@ -384,6 +384,10 @@ public sealed class LogIngestorTests : IDisposable
 
         Assert.Equal("0", Scalar("SELECT COUNT(*) FROM session"));
         Assert.Equal("0", Scalar("SELECT COUNT(*) FROM move"));
+
+        // Cleared is only half of it: the next pass must read the history again from the top.
+        new LogIngestor(_db, _dir).IngestAll();
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move"));
     }
 
     [Fact]
