@@ -174,6 +174,17 @@ public sealed record PlayerLocation(string LocationId, DateTimeOffset Since);
 /// <c>&lt;Update Inventory Location&gt;</c>. The ids here are numeric only; the human
 /// name arrives on the next <see cref="LocationNamed"/>.
 /// </summary>
+/// <summary>
+/// The player picked a quantum travel destination: a point the game names by its asset code
+/// (<c>ab_mine_stanton3_sml_003</c>, <c>rs_ext_nyx-castra_jp1</c>).
+/// </summary>
+public sealed record QuantumTargetSelected(
+    DateTimeOffset Timestamp,
+    string Point) : InventoryEvent(Timestamp);
+
+/// <summary>The quantum drive reached the final destination of the selected route.</summary>
+public sealed record QuantumArrived(DateTimeOffset Timestamp) : InventoryEvent(Timestamp);
+
 public sealed record LocationChanged(
     DateTimeOffset Timestamp,
     string NewLandingId,

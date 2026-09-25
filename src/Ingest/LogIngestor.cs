@@ -373,7 +373,20 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 {
                     state.CurrentLocation = new PlayerLocation(here, change.Timestamp);
                     state.FirstLocation ??= state.CurrentLocation;
+                    RecordArrival(cn, tx, here, change.Timestamp, state, stats);
                 }
+                break;
+
+            // A quantum jump names where it is going, and the location the player enters right
+            // on arrival is the place around that point. For a spot in open space — a mining
+            // site the player parked at and logged out — this is the only name there ever is.
+            case QuantumTargetSelected target:
+                state.QuantumTarget = target.Point;
+                state.QuantumArrivedAt = null;
+                break;
+
+            case QuantumArrived arrived:
+                state.QuantumArrivedAt = arrived.Timestamp;
                 break;
 
             // ...and the name in the next request, usually within a couple of seconds.
@@ -429,6 +442,34 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// How soon after a quantum arrival the location change that follows it belongs to it. On
+    /// the local corpus it comes within three seconds.
+    /// </summary>
+    private static readonly TimeSpan ArrivalPairingWindow = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Mission beacons are one-off points with a fresh name every time, so they name nothing
+    /// worth remembering.
+    /// </summary>
+    private const string MissionPointPrefix = "MISSION_";
+
+    /// <summary>Records the quantum point the player just arrived at as evidence for <paramref name="here"/>.</summary>
+    private static void RecordArrival(
+        SqliteConnection cn, SqliteTransaction tx, string here, DateTimeOffset at, SessionState state, IngestStats stats)
+    {
+        if (state.QuantumArrivedAt is not { } arrived || state.QuantumTarget is not { } point) return;
+
+        // Only the first location change after an arrival: the ones after it are the player
+        // moving on.
+        state.QuantumArrivedAt = null;
+        if (at - arrived > ArrivalPairingWindow) return;
+        if (point.StartsWith(MissionPointPrefix, StringComparison.OrdinalIgnoreCase)) return;
+
+        RecordPlaceEvidence(cn, tx, here, "arrival", point, at);
+        stats.PlaceEvidence++;
     }
 
     /// <summary>Inserts a move and registers it so a later completion line can resolve it.</summary>
@@ -502,6 +543,10 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         /// kept, so a pass that resumes mid-file cannot overwrite the spawn with a later stop.
         /// </summary>
         public PlayerLocation? FirstLocation { get; set; }
+
+        /// <summary>The quantum destination last selected, and when the drive arrived at it.</summary>
+        public string? QuantumTarget { get; set; }
+        public DateTimeOffset? QuantumArrivedAt { get; set; }
     }
 
     private sealed record SessionRow(

@@ -27,7 +27,7 @@ public static partial class InventoryEventParser
     /// fix would only ever apply to lines written after the upgrade — see
     /// <see cref="Data.TrackerDb.Initialize"/>.
     /// </summary>
-    public const int Version = 2;
+    public const int Version = 3;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -120,6 +120,10 @@ public static partial class InventoryEventParser
         RegexOptions.CultureInvariant)]
     private static partial Regex RouteStart();
 
+    // <Player Selected Quantum Target - Local> ...|Player has selected point ab_mine_stanton3_sml_003 as their destination, routing locally
+    [GeneratedRegex(@"has selected point (?<point>\S+) as their destination", RegexOptions.CultureInvariant)]
+    private static partial Regex QuantumTarget();
+
     // <Player Inventory Request Complete> Request[N] for 'X' [id] Type[..] Result[Succeed] ...
     [GeneratedRegex(
         @"^Request\[(?<req>\d+)\] for '[^']*' \[\d+\] Type\[[^\]]*\] Result\[(?<result>[^\]]*)\]",
@@ -169,6 +173,8 @@ public static partial class InventoryEventParser
             "OnInventoryStoreItem" => ParseInventoryStore(line),
             "AttachmentReceived" => ParseAttachment(line),
             "Calculate Route" => ParseRouteStart(line),
+            "Player Selected Quantum Target - Local" => ParseQuantumTarget(line),
+            "Quantum Drive Arrived - Arrived at Final Destination" => new QuantumArrived(line.Timestamp),
 
             // An event tag we have never seen dispatch to a move parser at all — most likely
             // the queued-tag rename happening again under a name this build doesn't know
@@ -376,6 +382,12 @@ public static partial class InventoryEventParser
 
         var name = m.Groups["name"].Value.Trim();
         return name.Length == 0 ? null : new PlaceNamed(line.Timestamp, name);
+    }
+
+    private static InventoryEvent? ParseQuantumTarget(LogLine line)
+    {
+        var m = QuantumTarget().Match(line.Rest);
+        return m.Success ? new QuantumTargetSelected(line.Timestamp, m.Groups["point"].Value) : null;
     }
 
     private static InventoryEvent? ParseAssetPath(LogLine line)

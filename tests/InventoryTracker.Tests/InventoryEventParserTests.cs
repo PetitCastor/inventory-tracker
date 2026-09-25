@@ -200,6 +200,30 @@ public class InventoryEventParserTests
     }
 
     [Fact]
+    public void Reads_the_quantum_point_the_player_selected()
+    {
+        var ev = Event(
+            "<2026-09-12T13:09:16.701Z> [Notice] <Player Selected Quantum Target - Local> [ItemNavigation][CL][28252] " +
+            "| NOT AUTH | ARGO_MOLE_820451216807[820451216807]|CSCItemNavigation::OnPlayerSelectedQuantumTarget|" +
+            "Player has selected point ab_mine_stanton3_sml_003 as their destination, routing locally " +
+            "[Team_CGP4][QuantumTravel]");
+
+        Assert.Equal("ab_mine_stanton3_sml_003", Assert.IsType<QuantumTargetSelected>(ev).Point);
+    }
+
+    [Fact]
+    public void Reads_a_quantum_arrival()
+    {
+        var ev = Event(
+            "<2026-09-12T13:09:37.597Z> [Notice] <Quantum Drive Arrived - Arrived at Final Destination> " +
+            "[ItemNavigation][CL][28252] | NOT AUTH | ARGO_MOLE_820451216807[820451216807]|" +
+            "CSCItemNavigation::OnQuantumDriveArrived|Quantum Drive has arrived at final destination " +
+            "[Team_CGP4][QuantumTravel]");
+
+        Assert.IsType<QuantumArrived>(ev);
+    }
+
+    [Fact]
     public void Reads_the_system_from_a_streamed_object_container_path()
     {
         var ev = Event(

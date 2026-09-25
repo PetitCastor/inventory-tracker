@@ -39,7 +39,11 @@ public sealed class HoldingResolver
     /// <param name="Spawn">
     /// The location the player first arrived at in the new build, if the logs say.
     /// </param>
-    public readonly record struct GameUpdate(DateTimeOffset At, int Build, string? Spawn = null);
+    /// <param name="LeftFrom">
+    /// Where the player last was before the update, if the logs say.
+    /// </param>
+    public readonly record struct GameUpdate(
+        DateTimeOffset At, int Build, string? Spawn = null, string? LeftFrom = null);
 
     private readonly List<GameUpdate> _updates;
 
@@ -142,15 +146,30 @@ public sealed class HoldingResolver
             .Concat(wornContainers)
             .ToHashSet(StringComparer.Ordinal);
 
-        // An update with a known spawn moves the player's belongings there; one without is
-        // only weighed.
+        // An update that sent the player somewhere new moves their belongings there with them.
+        // One the player resumed from where they had logged out, or one with no logout place on
+        // record, is only weighed: nothing says it moved anything. Of the three updates in the local corpus, only 12519617 changed
+        // the spawn, and it is the one every checked item was moved by.
         var relocations = updates
-            .Where(u => u.Spawn is not null)
+            .Where(MovedThePlayer)
             .Select(u => new LedgerReplay.Relocation(u.At, u.Build, new Holding(InventoryKind.Location, u.Spawn!)));
 
         _ledger = LedgerReplay.Run(moves, worn, enumeration, carried, relocations);
         _survival = MeasureSurvival(_ledger.Stats.PlacementChecks, updates);
     }
+
+    /// <summary>Whether two location ids are the same place, allowing for the ids the game re-issues.</summary>
+    private static bool SamePlace(PlaceCatalog places, string a, string b) =>
+        a == b || (places.ByLocationId(a)?.Id is { } pa && pa == places.ByLocationId(b)?.Id);
+
+    /// <summary>
+    /// Whether an update sent the player somewhere other than where they logged out. Not when
+    /// the logs lack either end: an unknown logout place is no evidence of a move, and moving
+    /// belongings on it would repeat the relocation to a parked ship that the spawn check exists
+    /// to prevent.
+    /// </summary>
+    public bool MovedThePlayer(GameUpdate update) =>
+        update is { Spawn: { } spawn, LeftFrom: { } leftFrom } && !SamePlace(Places, spawn, leftFrom);
 
     /// <summary>The whole move history is only a few thousand rows, so resolve in memory.</summary>
     /// <param name="asOf">
@@ -279,7 +298,7 @@ public sealed class HoldingResolver
             score *= _survival[worst.Build].Factor;
 
             if (movedByUpdate is { } moved) caveats.Add(MovedCaveat(moved, _survival[moved]));
-            if (worst.Build != movedByUpdate) caveats.Add(UpdateCaveat(worst.Build, _survival[worst.Build]));
+            if (worst.Build != movedByUpdate) caveats.Add(UpdateCaveat(worst, _survival[worst.Build], MovedThePlayer(worst)));
         }
 
         var age = _asOf - since;
@@ -321,11 +340,18 @@ public sealed class HoldingResolver
         : $"assumed moved here by the game update to build {build}, which no log line records — an earlier " +
           "update moved every stored item checked to where the player first spawned after it";
 
-    private static string UpdateCaveat(int build, UpdateSurvival record) => record.Verified
-        ? $"placed before the game update to build {build}, after which {record.Checked - record.Survived} " +
-          $"of {record.Checked} items checked were not where the ledger had them"
-        : $"placed before the game update to build {build} — updates have been seen to move " +
-          "stored items to wherever the player next spawns";
+    private static string UpdateCaveat(GameUpdate update, UpdateSurvival record, bool movedThePlayer) =>
+        record.Verified
+            ? $"placed before the game update to build {update.Build}, after which {record.Checked - record.Survived} " +
+              $"of {record.Checked} items checked were not where the ledger had them"
+            : movedThePlayer || update.Spawn is null
+                ? $"placed before the game update to build {update.Build} — updates have been seen to move " +
+                  "stored items to wherever the player next spawns"
+            : update.LeftFrom is null
+                ? $"placed before the game update to build {update.Build}, which no later move has checked — the " +
+                  "logs do not say where the player logged out before it, so nothing says whether it moved anything"
+                : $"placed before the game update to build {update.Build}, which no later move has checked — the " +
+                  "player picked up where they had logged out, so nothing says whether it moved anything";
 
     /// <summary>
     /// Walks from where the item sits outward: an item is in a backpack, and the backpack is
@@ -356,6 +382,15 @@ public sealed class HoldingResolver
                     if (place is not null)
                     {
                         chain.Add(new HoldingLink(kind, key, place.Name));
+
+                        // Where the item is does not depend on the label, so it costs nothing,
+                        // but the label is our guess and says so.
+                        if (place.QuantumPoint is { } point)
+                        {
+                            caveats.Add(
+                                $"this place is named after the quantum destination the player arrived at ({point}), " +
+                                "not by the game");
+                        }
                     }
                     else if (_locationNames.TryGetValue(key, out var raw))
                     {
@@ -654,14 +689,15 @@ public sealed class HoldingResolver
     {
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
-            SELECT build, COALESCE(first_ts, last_line_ts) AS since, first_loc_id
+            SELECT build, COALESCE(first_ts, last_line_ts) AS since, first_loc_id, cur_loc_id
             FROM session
             WHERE build IS NOT NULL AND COALESCE(first_ts, last_line_ts) IS NOT NULL
             ORDER BY since
             """;
 
-        var firstPlayed = new List<(int Build, DateTimeOffset At)>();
+        var firstPlayed = new List<(int Build, DateTimeOffset At, string? LeftFrom)>();
         var spawn = new Dictionary<int, string>();
+        string? lastSeen = null;
         using (var r = cmd.ExecuteReader())
         {
             while (r.Read())
@@ -669,20 +705,25 @@ public sealed class HoldingResolver
                 var build = r.GetInt32(0);
                 if (!firstPlayed.Exists(b => b.Build == build))
                 {
-                    firstPlayed.Add((build, DateTimeOffset.Parse(r.GetString(1), CultureInfo.InvariantCulture)));
+                    firstPlayed.Add((build, DateTimeOffset.Parse(r.GetString(1), CultureInfo.InvariantCulture), lastSeen));
                 }
 
                 // A session that never reached a location — a crash at the menu, say — says
                 // nothing; the build's next one still spawned after the update.
                 if (!r.IsDBNull(2)) spawn.TryAdd(build, r.GetString(2));
+                if (!r.IsDBNull(3)) lastSeen = r.GetString(3);
             }
         }
 
         var updates = new List<GameUpdate>();
         int? newest = null;
-        foreach (var (build, at) in firstPlayed)
+        foreach (var (build, at, leftFrom) in firstPlayed)
         {
-            if (newest is not null && build > newest) updates.Add(new GameUpdate(at, build, spawn.GetValueOrDefault(build)));
+            if (newest is not null && build > newest)
+            {
+                updates.Add(new GameUpdate(at, build, spawn.GetValueOrDefault(build), leftFrom));
+            }
+
             if (newest is null || build > newest) newest = build;
         }
 

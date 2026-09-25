@@ -1,5 +1,6 @@
 using InventoryTracker.Data;
 using InventoryTracker.Ingest;
+using InventoryTracker.Naming;
 using InventoryTracker.Resolve;
 using Microsoft.Data.Sqlite;
 
@@ -214,6 +215,129 @@ public sealed class LogIngestorTests : IDisposable
 
         Assert.Equal("2273540638", Scalar("SELECT first_loc_id FROM session"));
         Assert.Equal("4005457614", Scalar("SELECT cur_loc_id FROM session"));
+    }
+
+    [Fact]
+    public void An_update_the_player_resumed_from_where_they_logged_out_moves_nothing()
+    {
+        // 12572603 and 12660092 both spawned the player exactly where they had logged out.
+        // Nothing says those updates moved anything, so the item stays put, only weighed.
+        Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
+        Backup(12519617, "26 Aug 26 (20 30 32)",
+            "<2026-08-27T00:30:37.588Z> [Notice] <X> first line after the update",
+            "<2026-08-27T00:39:21.956Z> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
+            "Landing [0] -> [4005457614]. Location [0] -> [4005457614]. Pending [0]");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.Equal("4005457614", holding.Chain[^1].Key);
+        Assert.False(resolver.MovedThePlayer(Assert.Single(resolver.Updates)));
+        Assert.Contains(holding.Caveats, c => c.Contains("picked up where they had logged out"));
+    }
+
+    [Fact]
+    public void An_update_that_respawns_the_player_under_a_reissued_id_moves_nothing()
+    {
+        // The game re-issues ids for the same station. Lorville under a new id is still where
+        // the player logged out, which the internal inventory name shows.
+        Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
+        Backup(12519617, "26 Aug 26 (20 30 32)",
+            "<2026-08-27T00:30:37.588Z> [Notice] <X> first line after the update",
+            "<2026-08-27T00:39:21.956Z> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
+            "Landing [0] -> [1234567890]. Location [0] -> [1234567890]. Pending [0]",
+            "<2026-08-27T00:39:22.500Z> [Notice] <RequestLocationInventory> Player[Pilot] requested inventory for Location[Stanton1_Lorville]");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var update = Assert.Single(resolver.Updates);
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.Equal("1234567890", update.Spawn);
+        Assert.Equal("4005457614", update.LeftFrom);
+        Assert.False(resolver.MovedThePlayer(update));
+        Assert.Equal("4005457614", holding.Chain[^1].Key);
+        Assert.Contains(holding.Caveats, c => c.Contains("picked up where they had logged out"));
+    }
+
+    [Fact]
+    public void An_update_with_no_logout_place_on_record_moves_nothing()
+    {
+        // The old build's logs never place the player: no <Update Inventory Location> at all.
+        // Where they logged out is unknown, so the spawn is no evidence the update moved them.
+        Backup(12344265, "04 Aug 26 (10 17 03)",
+            "<2026-08-04T09:59:00.500Z> [Notice] <RequestLocationInventory> Player[Pilot] requested inventory for Location[Stanton1_Lorville]",
+            StoreLine("2026-08-04T10:00:00.000Z", 1),
+            "<2026-08-04T10:00:00.400Z> [Notice] <Inventory Request Completed> Request[1] Player[Pilot] Result[succeed] Elapsed[0.4] PendingMoves[1]");
+        Backup(12519617, "26 Aug 26 (20 30 32)", SpawnAtArea18());
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var update = Assert.Single(resolver.Updates);
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.Equal("2273540638", update.Spawn);
+        Assert.Null(update.LeftFrom);
+        Assert.False(resolver.MovedThePlayer(update));
+        Assert.Equal("4005457614", holding.Chain[^1].Key);
+        Assert.DoesNotContain(holding.Caveats, c => c.Contains("moved here by the game update"));
+        Assert.Contains(holding.Caveats, c => c.Contains("do not say where the player logged out"));
+    }
+
+    /// <summary>A quantum jump to <paramref name="point"/>, arriving, then entering <paramref name="location"/>.</summary>
+    private static string[] QuantumTo(string point, string location, int minute, double enterAfterSeconds = 2.5)
+    {
+        var at = new DateTimeOffset(2026, 9, 12, 13, minute, 0, TimeSpan.Zero);
+        string Ts(DateTimeOffset t) => t.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture);
+        return
+        [
+            $"<{Ts(at)}> [Notice] <Player Selected Quantum Target - Local> [ItemNavigation] | NOT AUTH | " +
+            $"SHIP_1[1]|CSCItemNavigation::OnPlayerSelectedQuantumTarget|Player has selected point {point} as their destination, routing locally",
+            $"<{Ts(at.AddSeconds(30))}> [Notice] <Quantum Drive Arrived - Arrived at Final Destination> [ItemNavigation] | " +
+            "NOT AUTH | SHIP_1[1]|CSCItemNavigation::OnQuantumDriveArrived|Quantum Drive has arrived at final destination",
+            $"<{Ts(at.AddSeconds(30 + enterAfterSeconds))}> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
+            $"Landing [0] -> [0]. Location [1902223495] -> [{location}]. Pending [0]",
+        ];
+    }
+
+    [Fact]
+    public void A_spot_in_open_space_is_named_after_the_quantum_point_the_player_arrived_at()
+    {
+        // The player parked a mining ship by an asteroid field and logged out there. No
+        // station inventory, no route plotted from it: the jump is the only name it gets.
+        File.WriteAllText(LivePath, string.Join("\n", QuantumTo("ab_mine_stanton3_sml_003", "3108822724", minute: 9)) + "\n");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var place = PlaceCatalog.Load(_db).ByLocationId("3108822724");
+
+        Assert.NotNull(place);
+        Assert.Equal("near ab_mine_stanton3_sml_003", place.Name);
+        Assert.Equal("Stanton", place.System);
+        Assert.Equal("ab_mine_stanton3_sml_003", place.QuantumPoint);
+    }
+
+    [Fact]
+    public void A_location_reached_on_the_way_to_several_points_is_not_named_after_any()
+    {
+        // A system's open space is entered on the way to everything in it.
+        File.WriteAllText(LivePath, string.Join("\n",
+            QuantumTo("rs_asmbl_keeger_02", "126935608", minute: 1)
+                .Concat(QuantumTo("rs_ext_nyx-pyro_jp1", "126935608", minute: 5))) + "\n");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Null(PlaceCatalog.Load(_db).ByLocationId("126935608"));
+    }
+
+    [Theory]
+    [InlineData("MISSION_QT_Bounty_Beacon_732995237455", 2.5)] // a one-off beacon
+    [InlineData("ab_mine_stanton3_sml_003", 45)]                 // entered long after arriving
+    public void Only_a_lasting_point_entered_right_on_arrival_names_a_place(string point, double enterAfterSeconds)
+    {
+        File.WriteAllText(LivePath, string.Join("\n", QuantumTo(point, "3108822724", minute: 9, enterAfterSeconds)) + "\n");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("0", Scalar("SELECT COUNT(*) FROM place_evidence WHERE kind = 'arrival'"));
     }
 
     [Fact]
