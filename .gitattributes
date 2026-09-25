@@ -1,2 +1,5 @@
 # Replay study corpus: byte-exact, so the baseline's size fingerprint matches on every checkout.
 tests/InventoryTracker.Tests/Reliability/Corpus/** -text
+
+# Playtest fixtures: kept byte-exact too, so a checkout never rewrites the lines the tests read.
+tests/InventoryTracker.Tests/Fixtures/** -text
