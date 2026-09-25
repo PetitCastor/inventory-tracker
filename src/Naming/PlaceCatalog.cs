@@ -20,6 +20,10 @@ public sealed class PlaceOverride
 /// game issues a fresh id for the same station from time to time, and items stored under
 /// each would otherwise show up as two separate places.</param>
 /// <param name="RawName">The internal string the game paired with the id, kept for diagnostics.</param>
+/// <param name="QuantumPoint">
+/// The quantum destination the name comes from, when nothing better names the place: the
+/// point the player jumped to right before entering it.
+/// </param>
 public sealed record Place(
     string Id,
     IReadOnlyList<string> AliasIds,
@@ -27,7 +31,8 @@ public sealed record Place(
     string System,
     string? RawName,
     bool NameVerified,
-    bool SystemVerified)
+    bool SystemVerified,
+    string? QuantumPoint = null)
 {
     public const string UnknownSystem = "Unknown system";
 }
@@ -81,12 +86,14 @@ public sealed partial class PlaceCatalog
             LoadRawNames(cn),
             LoadEvidence(cn, "name"),
             LoadEvidence(cn, "system"),
+            LoadEvidence(cn, "arrival"),
             LoadOverrides(OverridePathFor(db)));
 
     private static PlaceCatalog Build(
         Dictionary<string, (string Raw, int Evidence)> rawNames,
         Dictionary<string, List<(string Value, int Hits)>> nameVotes,
         Dictionary<string, List<(string Value, int Hits)>> systemVotes,
+        Dictionary<string, List<(string Value, int Hits)>> arrivalVotes,
         Dictionary<string, PlaceOverride> overrides)
     {
         // Sightings also attach to the pseudo-ids the client uses in open space ("Hurston",
@@ -96,6 +103,7 @@ public sealed partial class PlaceCatalog
             .Concat(overrides.Keys)
             .Concat(nameVotes.Keys)
             .Concat(systemVotes.Keys)
+            .Concat(arrivalVotes.Keys)
             .Distinct(StringComparer.Ordinal)
             .ToList();
 
@@ -123,6 +131,12 @@ public sealed partial class PlaceCatalog
             var name = over?.Name ?? Winner(aliases, nameVotes);
             var nameVerified = name is not null;
             name ??= raw;
+
+            // The last resort: the quantum point the player arrived at. It is the only name a
+            // spot in open space ever gets. Where the game also paired an id with its inventory
+            // name, the two agreed for all 7 stations on the local corpus.
+            var point = name is null ? ClearWinner(aliases, arrivalVotes) : null;
+            if (point is not null) name = $"near {point}";
             if (string.IsNullOrWhiteSpace(name)) continue;
 
             // The internal string beats streamed assets here, which is the opposite of how
@@ -133,10 +147,11 @@ public sealed partial class PlaceCatalog
             var system = over?.System
                 ?? (raw is null ? null : SystemFromRaw(raw))
                 ?? Winner(aliases, systemVotes)
+                ?? (point is null ? null : SystemFromRaw(point))
                 ?? Place.UnknownSystem;
 
             var place = new Place(
-                canonical, aliases, name, system, raw, nameVerified, system != Place.UnknownSystem);
+                canonical, aliases, name, system, raw, nameVerified, system != Place.UnknownSystem, point);
 
             places.Add(place);
 
@@ -178,6 +193,26 @@ public sealed partial class PlaceCatalog
         return tally.Count == 0
             ? null
             : tally.OrderByDescending(kv => kv.Value).ThenBy(kv => kv.Key, StringComparer.Ordinal).First().Key;
+    }
+
+    /// <summary>
+    /// Below this share of the votes a quantum point does not name a place. A location
+    /// reached on the way to several destinations is a region — the Nyx system's open space
+    /// collected arrivals for five different points — not somewhere around one of them.
+    /// </summary>
+    private const double ClearMajority = 0.75;
+
+    /// <summary>The most-sighted value, but only when it holds a clear majority of the votes.</summary>
+    private static string? ClearWinner(
+        IEnumerable<string> aliases, Dictionary<string, List<(string Value, int Hits)>> votes)
+    {
+        var rows = aliases.SelectMany(id => votes.GetValueOrDefault(id) ?? []).ToList();
+        var total = rows.Sum(r => r.Hits);
+        if (total == 0) return null;
+
+        var winner = Winner(aliases, votes)!;
+        var hits = rows.Where(r => string.Equals(r.Value, winner, StringComparison.OrdinalIgnoreCase)).Sum(r => r.Hits);
+        return (double)hits / total >= ClearMajority ? winner : null;
     }
 
     // "RR_JP_NyxCastra" is the Nyx-side stop of the Nyx<->Castra jump point; "RR_JP_PyroNyx"

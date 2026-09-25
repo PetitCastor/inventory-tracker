@@ -164,7 +164,7 @@ public static class ReliabilityStudy
         report.Counts["ledger.carried_used_up"] = s.CarriedUsedUp;
         report.Counts["ledger.relocated_by_update"] = s.RelocatedByUpdate;
 
-        MeasurePlacements(s, resolver.Updates, resolver.UpdateSurvivals, report);
+        MeasurePlacements(s, resolver, report);
 
         foreach (var miss in s.Misses)
         {
@@ -198,9 +198,10 @@ public static class ReliabilityStudy
     /// belief had stood. If placements went stale with age, agreement would fall with it.
     /// </summary>
     private static void MeasurePlacements(
-        LedgerReplay.ReplayStats s, IReadOnlyList<HoldingResolver.GameUpdate> updates,
-        IReadOnlyDictionary<int, HoldingResolver.UpdateSurvival> survival, ReliabilityReport report)
+        LedgerReplay.ReplayStats s, HoldingResolver resolver, ReliabilityReport report)
     {
+        var updates = resolver.Updates;
+        var survival = resolver.UpdateSurvivals;
         var checks = s.PlacementChecks;
         report.Counts["placement.checks"] = checks.Count;
         report.Counts["placement.same_place"] = checks.Count(c => c.SamePlace);
@@ -267,10 +268,14 @@ public static class ReliabilityStudy
         {
             var r = survival[u.Build];
             report.PlacementTable.Add(
-                $"- build {u.Build}, first played {u.At:yyyy-MM-dd}, spawned at {u.Spawn ?? "unknown"}: " +
+                $"- build {u.Build}, first played {u.At:yyyy-MM-dd}, left from {Label(u.LeftFrom)}, spawned at {Label(u.Spawn)}" +
+                $"{(resolver.MovedThePlayer(u) ? " (moved the player: belongings relocated)" : " (resumed where left: not relocated)")}: " +
                 $"{r.Survived}/{r.Checked} placements held, " +
                 $"factor ×{r.Factor:0.##}{(r.Verified ? "" : " (unverified default)")}");
         }
+
+        string Label(string? id) =>
+            id is null ? "unknown" : resolver.Places.ByLocationId(id) is { } p ? $"{p.Name} ({id})" : id;
 
         var oldest = checks.Max(c => c.Age);
         report.Counts["placement.oldest_checked_hours"] = (long)oldest.TotalHours;

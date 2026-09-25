@@ -290,12 +290,66 @@ this corpus's belongings now sit at the spawn station of 12660092, which costs t
 - that update is unverified (×0.5);
 - the station's id was never paired with a name (×0.7, on 140 rows).
 
-Both change with the next corpus: one named move out of that station verifies the update,
-and one route plotted from it names it.
-
 The Brier score of 0 is in-sample, as before, and rests on one update. If a later update
 does not move belongings, its checks will show that. Its factor will fall toward ×0.2, and
 the caveat will say how many items were not where the ledger moved them.
+
+### Naming the spawn, and when an update moves the player
+
+Trying to name the spawn of 12660092 showed that it is not a station at all. Id
+3108822724 is open space by an asteroid mining site. The player quantum-jumped there in a
+mining ship on 2026-09-12, logged out in it, and has spawned there in every session since,
+before and after the update. The logs name the place in only one way: the quantum point
+the player jumped to right before entering it, `ab_mine_stanton3_sml_003`.
+
+**Naming by quantum arrival.** The parser now reads the selected quantum point and the
+drive's arrival. The first location entered within 10 seconds of arriving gets that point
+as `arrival` evidence. `PlaceCatalog` uses it only as a last resort, after a hand-written
+override, a route name and the game's inventory name. The name reads "near
+ab_mine_stanton3_sml_003", and the holding says the name is ours, not the game's.
+
+The check against the corpus: for every id the game also paired with an inventory name,
+the arrival pointed to the same place, 7 stations out of 7. Arrivals go wrong in two ways,
+and both are filtered:
+
+- Mission beacons (`MISSION_QT_…`) are one-off points and are never recorded.
+- A system's open space is entered on the way to many destinations: Nyx's collected
+  arrivals for 5 different points. A point needs 75 % of an id's arrivals to name it.
+
+One id (ArcCorp's orbit) got an arrival for a mining site on its way there. A route
+plotted from it names it "ArcCorp", which takes precedence.
+
+**Relocating only when an update moved the player.** Naming the spawns made them readable:
+
+| Update | Last place before | First place after | Items checked |
+|---|---|---|---:|
+| 12519617 | Stanton Gateway | **Area18** | 13, all moved to Area18 |
+| 12572603 | Orison | Orison | none |
+| 12660092 | near `ab_mine_stanton3_sml_003` | same | none |
+
+Only 12519617 put the player somewhere new. After the other two, the player picked up
+where they had logged out, and nothing says those updates moved anything. Relocating to
+"the spawn" there meant moving every stored item to wherever the player happened to log
+out, here a mining ship in open space.
+
+Now each update records where the player last was before it (`GameUpdate.LeftFrom`, from
+the latest session's `cur_loc_id`). Belongings are relocated only when the spawn differs.
+An update that did not move the player is weighed as unverified. Its caveat says the player
+picked up where they had logged out, so nothing says whether it moved anything.
+
+| | Relocate to any spawn (#17) | Only when the player was moved, spawns named |
+|---|---:|---:|
+| `holdings.low_share` | 76.1 % | **5.1 %** |
+| `holdings.mean_score` | 0.422 | **0.529** |
+| `holdings.high_share` | 11.7 % | 11.7 % |
+| `ledger.relocated_by_update` | 303 units | 93 units |
+| rows at an unnamed station | 140 | **0** |
+| `placement.across_update_same_place` | 100 % | 100 % |
+
+`holdings.high_share` is now held down by one thing: 174 rows cross 12572603 or 12660092,
+and an unverified update costs ×0.5. Nothing in this corpus says whether an update that
+leaves the player in place moves stored items. The next corpus can say so as soon as one
+item comes out of a station it was stored at before 12572603.
 
 ## Improvement plan
 
@@ -305,9 +359,12 @@ should move, so it can be verified by rerunning the study.
 1. ~~Find out why class-level units miss their source.~~ Done: see "Units not found at
    their source" above. ~~Test the staleness penalty.~~ Done: see "Age, and game updates".
    ~~Relocate instead of only demoting.~~ Done: see "Moving belongings to the spawn
-   station". Next: name the spawn stations. 140 rows sit at a station whose id no log line
-   paired with a name. Its asset paths or a later arrival may be enough.
-   Moves: `holdings.mean_score`, `holdings.low_share`.
+   station". ~~Name the spawn stations.~~ Done: see "Naming the spawn, and when an update
+   moves the player". Next, a decision for the next corpus: what an update that leaves the
+   player in place costs. It is ×0.5 today, on no evidence either way, and it holds
+   `holdings.high_share` at 11.7 %. One item taken out of a station it was stored at before
+   12572603 would settle it.
+   Moves: `holdings.high_share`, `holdings.mean_score`.
 2. ~~Decide what `Type[Interaction] action[Carry]` means.~~ Done: see "Carrying items in
    hand" above. `<[ActorState] Place> … placed '<class>_<geid>' in lootable container` is a
    related, unparsed signal: a carried mission item being handed in.
