@@ -33,8 +33,10 @@ public static class ReliabilityMetrics
         new("enrich.confirmed_rate", "Moves the game confirmed succeeded", true, 0.95, null, true,
             "An unconfirmed move halves the confidence of whatever it placed."),
 
-        new("ledger.source_hit_rate", "Class-level units found at their source", true, 0.80, null, true,
-            "Every miss is a unit that arrived somewhere the replay never saw it leave — history the ledger lacks, and a likely duplicate."),
+        new("ledger.accounted_rate", "Class-level units the ledger can account for", true, 0.95, null, true,
+            "Found at the source, found on the player, or the class's first appearance. The rest are duplicate risks."),
+        new("ledger.duplicate_risk_rate", "Class-level units that may be counted twice", false, 0.02, null, true,
+            "Credited without a source while the same class was still recorded elsewhere: one of the two is wrong."),
 
         new("holdings.high_share", "Holdings rated High confidence", true, 0.80, null, true,
             "What the user sees: the share of rows worth trusting outright."),
@@ -42,8 +44,10 @@ public static class ReliabilityMetrics
             "Rows the tracker itself does not believe."),
         new("holdings.mean_score", "Mean holding score", true, 0.85, null, false,
             "Overall confidence, weighted the way the resolver weighs its caveats."),
-        new("holdings.inferred_share", "Holdings resting on an inferred arrival", false, 0.05, null, true,
-            "Counts the ledger credited without seeing their source — the phantom-duplicate risk."),
+        new("holdings.inferred_share", "Holdings that may be counted twice", false, 0.05, null, true,
+            "Counts credited without a source while the same class was recorded elsewhere — the phantom-duplicate risk."),
+        new("holdings.first_seen_share", "Holdings first seen without a known source", false, 0.15, null, true,
+            "Loot, purchases and pre-existing stock: real, but with no history before the move that revealed them."),
 
         new("live.parity", "Live tailing matches a single pass", true, 1.0, 1.0, true,
             "Following Game.log as it grows must reach the same answer as reading it once. Anything less is a bug."),

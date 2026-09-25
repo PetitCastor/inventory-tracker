@@ -143,20 +143,42 @@ public static class ReliabilityStudy
     {
         var s = resolver.ReplayStats;
 
-        report.Metrics["ledger.source_hit_rate"] = s.SourceHitRate;
+        report.Metrics["ledger.accounted_rate"] = s.AccountedRate;
+        report.Metrics["ledger.duplicate_risk_rate"] = s.ClassUnits == 0 ? 0 : (double)s.UnitsDuplicateRisk / s.ClassUnits;
+        report.Counts["ledger.source_hit_permille"] = (long)Math.Round(s.SourceHitRate * 1000);
 
         report.Counts["ledger.named_moves"] = s.NamedMoves;
         report.Counts["ledger.class_moves"] = s.ClassMoves;
         report.Counts["ledger.class_units"] = s.ClassUnits;
         report.Counts["ledger.units_from_named"] = s.UnitsFromNamed;
         report.Counts["ledger.units_from_loose"] = s.UnitsFromLoose;
+        report.Counts["ledger.units_from_carried"] = s.UnitsFromCarried;
         report.Counts["ledger.units_inferred"] = s.UnitsInferred;
+        report.Counts["ledger.units_first_seen"] = s.UnitsFirstSeen;
+        report.Counts["ledger.units_duplicate_risk"] = s.UnitsDuplicateRisk;
         report.Counts["ledger.source_unknown"] = s.SourceUnknown;
         report.Counts["ledger.failed_skipped"] = s.FailedSkipped;
         report.Counts["ledger.unreal_target_skipped"] = s.UnrealTargetSkipped;
         report.Counts["ledger.anonymous_reconciled"] = s.AnonymousReconciled;
         report.Counts["ledger.worn_sightings"] = s.WornSightings;
         report.Counts["ledger.carried_used_up"] = s.CarriedUsedUp;
+
+        foreach (var miss in s.Misses)
+        {
+            var units = miss.Wanted - miss.Found;
+            var key = miss.CoveredByCarried
+                ? $"{miss.Cause}, found on the player instead"
+                : $"{miss.Cause}, {(miss.ElsewhereAt is { } e ? $"class held elsewhere ({e.Kind}): duplicate risk" : "class nowhere else: first seen")}";
+            report.MissCauses[key] = report.MissCauses.GetValueOrDefault(key) + units;
+
+            if (report.MissExamples.Count < 40)
+            {
+                report.MissExamples.Add(
+                    $"{miss.At:yyyy-MM-dd HH:mm:ss} {miss.ItemClass} x{units}: {miss.Source.Kind} {miss.Source.Key} -> " +
+                    $"{miss.Target.Kind} {miss.Target.Key} [{miss.Cause}" +
+                    (miss.CoveredByCarried ? "; found on the player]" : miss.ElsewhereAt is { } w ? $"; held at {w.Kind} {w.Key}]" : "]"));
+            }
+        }
     }
 
     private static void MeasureHoldings(IReadOnlyList<ItemHolding> holdings, ReliabilityReport report)
@@ -171,6 +193,7 @@ public static class ReliabilityStudy
         report.Metrics["holdings.low_share"] = Share(h => h.Confidence == Confidence.Low);
         report.Metrics["holdings.mean_score"] = n == 0 ? 1.0 : holdings.Average(h => h.Score);
         report.Metrics["holdings.inferred_share"] = Share(h => h.Caveats.Any(c => c.StartsWith("we saw this arrive", StringComparison.Ordinal)));
+        report.Metrics["holdings.first_seen_share"] = Share(h => h.Caveats.Any(c => c.StartsWith("first seen", StringComparison.Ordinal)));
 
         // Caveats are prose with names and numbers spliced in; fold those out so the same
         // cause is counted as one row of the histogram.

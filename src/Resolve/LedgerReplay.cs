@@ -33,13 +33,23 @@ public sealed class LedgerReplay
         bool Inferred);
 
     /// <summary>An unnamed quantity of one class, with the newest arrival that contributed to it.</summary>
+    /// <param name="Inferred">
+    /// Some of these units were credited without being found at their source.
+    /// </param>
+    /// <param name="DuplicateRisk">
+    /// Some of those inferred units arrived while the ledger still held the same class
+    /// somewhere else — so they may be that item, counted twice. Without this, an inferred
+    /// unit is simply the first time the item was seen: looted, bought, or there before the
+    /// logs begin.
+    /// </param>
     public sealed record Anonymous(
         string ItemClass,
         int Quantity,
         DateTimeOffset Since,
         string ArrivedBy,
         bool Confirmed,
-        bool Inferred);
+        bool Inferred,
+        bool DuplicateRisk = false);
 
     /// <summary>What one holding contains, by item class.</summary>
     private sealed class Slot
@@ -77,11 +87,29 @@ public sealed class LedgerReplay
         public int UnitsFromLoose { get; internal set; }
 
         /// <summary>
-        /// Units the source could not account for, credited to the target as a guess. Each
-        /// one is history the ledger never saw, and a potential duplicate of an item still
-        /// recorded somewhere else.
+        /// Units the source could not account for, found instead on the player — in a
+        /// backpack, worn apparel or equipped. What the player carries travels with them
+        /// without a move line, so that is where a missing unit most likely came from.
+        /// </summary>
+        public int UnitsFromCarried { get; internal set; }
+
+        /// <summary>
+        /// Units nobody could account for, credited to the target as a guess:
+        /// <see cref="UnitsFirstSeen"/> plus <see cref="UnitsDuplicateRisk"/>.
         /// </summary>
         public int UnitsInferred { get; internal set; }
+
+        /// <summary>
+        /// Inferred units of a class the ledger held nowhere else: the item's first
+        /// appearance — looted, bought, or already there before the logs begin. Not an error.
+        /// </summary>
+        public int UnitsFirstSeen { get; internal set; }
+
+        /// <summary>
+        /// Inferred units of a class the ledger still held somewhere else. Either that copy
+        /// is stale or this one is a double count — the ledger lost track either way.
+        /// </summary>
+        public int UnitsDuplicateRisk { get; internal set; }
 
         /// <summary>Class-level moves whose source was a real holding the ledger knew nothing about.</summary>
         public int SourceUnknown { get; internal set; }
@@ -95,6 +123,9 @@ public sealed class LedgerReplay
         /// <summary>Items carried in hand that a later body enumeration left out — used up.</summary>
         public int CarriedUsedUp { get; internal set; }
 
+        /// <summary>Every class-level move whose source fell short, and why.</summary>
+        public List<SourceMiss> Misses { get; } = [];
+
         /// <summary>
         /// Share of class-level units found where the move said they came from. The single
         /// best measure of how complete the ledger's history is: every miss is a unit that
@@ -102,9 +133,45 @@ public sealed class LedgerReplay
         /// </summary>
         public double SourceHitRate =>
             ClassUnits == 0 ? 1.0 : (double)(UnitsFromNamed + UnitsFromLoose) / ClassUnits;
+
+        /// <summary>
+        /// Share of class-level units the ledger can account for: found at the source, found
+        /// on the player, or the class's first appearance. The rest are duplicate risks.
+        /// </summary>
+        public double AccountedRate =>
+            ClassUnits == 0 ? 1.0 : 1.0 - (double)UnitsDuplicateRisk / ClassUnits;
     }
 
     public ReplayStats Stats { get; } = new();
+
+    /// <summary>Why a class-level move's source could not supply what it asked for.</summary>
+    public enum MissCause
+    {
+        /// <summary>The move named no source at all — a Store from the hands, say.</summary>
+        NoSource,
+
+        /// <summary>Nothing had ever been placed at the source: its history predates what we saw.</summary>
+        SourceNeverSeen,
+
+        /// <summary>The source had held things, but never anything of this class.</summary>
+        ClassNeverAtSource,
+
+        /// <summary>This class had been at the source, and had already been taken out again.</summary>
+        AlreadyTaken,
+    }
+
+    /// <summary>
+    /// A class-level move that found fewer units at its source than it moved.
+    /// </summary>
+    /// <param name="ElsewhereAt">
+    /// Another holding the ledger had this class at when the move happened, if any — the
+    /// sign that the item was really somewhere the ledger lost track of, rather than never
+    /// seen at all.
+    /// </param>
+    /// <param name="CoveredByCarried">The shortfall was found on the player instead.</param>
+    public sealed record SourceMiss(
+        DateTimeOffset At, string ItemClass, Holding Source, Holding Target,
+        int Wanted, int Found, MissCause Cause, Holding? ElsewhereAt, bool CoveredByCarried = false);
 
     private readonly Dictionary<Holding, Dictionary<string, Slot>> _contents = [];
     private readonly Dictionary<string, Holding> _instanceAt = [];
@@ -139,10 +206,15 @@ public sealed class LedgerReplay
     /// Folds the whole move history. Moves must arrive oldest first; the caller's ordering
     /// is the ledger's ordering, since a delta stream only means anything in sequence.
     /// </summary>
+    /// <param name="carriedContainers">
+    /// Containers that travel with the player: backpacks and worn apparel. A class-level move
+    /// whose source falls short draws the rest from these before guessing.
+    /// </param>
     public static LedgerReplay Run(
-        IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn, BodyEnumeration? enumeration = null)
+        IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn, BodyEnumeration? enumeration = null,
+        IReadOnlySet<string>? carriedContainers = null)
     {
-        var ledger = new LedgerReplay();
+        var ledger = new LedgerReplay { _carriedContainers = carriedContainers ?? new HashSet<string>() };
 
         // Attachment sightings are enumerations of the player's body rather than moves, so
         // they are merged into the same timeline and applied by timestamp like anything else.
@@ -177,6 +249,8 @@ public sealed class LedgerReplay
         DateTimeOffset At, IReadOnlySet<string> Geids, IReadOnlySet<string> Classes);
 
     private const string CarryArrival = "Carry";
+
+    private IReadOnlySet<string> _carriedContainers = new HashSet<string>();
 
     /// <summary>
     /// Entities last put on the player by being carried in hand, and not moved anywhere since.
@@ -275,6 +349,11 @@ public sealed class LedgerReplay
     /// </summary>
     private void MoveAnonymous(MoveRecord move, Holding source, Holding target)
     {
+        // A Store never names its source because it is always the player: the item leaves the
+        // hand or a body port for a grid. Left INVALID, a class-level Store could never find
+        // what it takes, and the canister put away would stay equipped as well.
+        if (!source.IsReal && move.MoveType == "Store") source = new Holding(InventoryKind.Equipped, "");
+
         var wanted = move.Units;
         var taken = 0;
 
@@ -313,16 +392,104 @@ public sealed class LedgerReplay
             Stats.SourceUnknown++;
         }
 
-        // Whatever the source could not account for still arrived at the target: the units
-        // existed, we simply never saw them get there. Crediting the destination is what
-        // keeps a place's contents honest when its history starts mid-stream.
+        // Only a move that names a real source can be short of it. One with no source at all
+        // says nothing about where the item was, and raiding the backpack for it would empty
+        // the backpack on the strength of nothing.
+        var fromSource = taken;
+        if (taken < wanted && source.IsReal) taken += TakeFromCarried(move, source, target, wanted - taken);
+
+        // Whatever nothing could account for still arrived at the target: the units existed,
+        // we simply never saw them get there. Crediting the destination is what keeps a
+        // place's contents honest when its history starts mid-stream.
         if (taken < wanted)
         {
-            Stats.UnitsInferred += wanted - taken;
+            var miss = DescribeMiss(move, source, target, wanted, taken);
+            Stats.Misses.Add(miss);
+
+            // Only a class the ledger still holds elsewhere can be counted twice. Anything
+            // else is the item's first appearance, which is information, not an error.
+            var duplicateRisk = miss.ElsewhereAt is not null;
+            var units = wanted - taken;
+            Stats.UnitsInferred += units;
+            if (duplicateRisk) Stats.UnitsDuplicateRisk += units;
+            else Stats.UnitsFirstSeen += units;
+
             AddAnonymous(
-                target, move.ItemClass, wanted - taken, move.Timestamp, move.ArrivedBy,
-                move.Succeeded, inferred: true);
+                target, move.ItemClass, units, move.Timestamp, move.ArrivedBy,
+                move.Succeeded, inferred: true, duplicateRisk);
         }
+        else if (taken > fromSource && source.IsReal)
+        {
+            Stats.Misses.Add(DescribeMiss(move, source, target, wanted, fromSource) with { CoveredByCarried = true });
+        }
+    }
+
+    /// <summary>
+    /// Draws units a class-level move's source could not supply from what the player carries:
+    /// equipped, or inside a backpack or worn apparel. Magazines are the typical case — they
+    /// ride along in a backpack or on armour and turn up in a station stack with no move line
+    /// in between. Named instances first, like at the source.
+    /// </summary>
+    private int TakeFromCarried(MoveRecord move, Holding source, Holding target, int wanted)
+    {
+        var taken = 0;
+        foreach (var carrier in CarriedHoldings())
+        {
+            if (taken == wanted) break;
+            if (carrier == source || carrier == target) continue;
+            if (SlotFor(carrier, move.ItemClass, create: false) is not { } slot) continue;
+
+            while (taken < wanted && slot.Named.Count > 0)
+            {
+                var pick = slot.Named[^1];
+                slot.Named.RemoveAt(slot.Named.Count - 1);
+                PlaceInstance(
+                    pick.Geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy,
+                    move.Succeeded, inferred: false, ambiguous: true);
+                taken++;
+            }
+
+            while (taken < wanted && slot.Loose is { Quantity: > 0 } loose)
+            {
+                slot.Loose = loose.Quantity > 1 ? loose with { Quantity = loose.Quantity - 1 } : null;
+                AddAnonymous(target, move.ItemClass, 1, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false);
+                taken++;
+            }
+        }
+
+        Stats.UnitsFromCarried += taken;
+        return taken;
+    }
+
+    private IEnumerable<Holding> CarriedHoldings()
+    {
+        yield return new Holding(InventoryKind.Equipped, "");
+        foreach (var key in _carriedContainers)
+        {
+            var holding = new Holding(InventoryKind.Container, key);
+            if (_contents.ContainsKey(holding)) yield return holding;
+        }
+    }
+
+    private SourceMiss DescribeMiss(MoveRecord move, Holding source, Holding target, int wanted, int found)
+    {
+        var cause = !source.IsReal ? MissCause.NoSource
+            : !_contents.TryGetValue(source, out var byClass) ? MissCause.SourceNeverSeen
+            : !byClass.ContainsKey(move.ItemClass) ? MissCause.ClassNeverAtSource
+            : MissCause.AlreadyTaken;
+
+        Holding? elsewhere = null;
+        foreach (var (where, classes) in _contents)
+        {
+            if (where == source || where == target) continue;
+            if (classes.TryGetValue(move.ItemClass, out var slot) && (slot.Named.Count > 0 || slot.Loose is not null))
+            {
+                elsewhere = where;
+                break;
+            }
+        }
+
+        return new SourceMiss(move.Timestamp, move.ItemClass, source, target, wanted, found, cause, elsewhere);
     }
 
     private void PlaceInstance(
@@ -385,7 +552,7 @@ public sealed class LedgerReplay
 
     private void AddAnonymous(
         Holding target, string itemClass, int quantity, DateTimeOffset at, string moveType,
-        bool confirmed, bool inferred)
+        bool confirmed, bool inferred, bool duplicateRisk = false)
     {
         if (quantity <= 0) return;
 
@@ -398,8 +565,9 @@ public sealed class LedgerReplay
                 ArrivedBy = moveType,
                 Confirmed = existing.Confirmed && confirmed,
                 Inferred = existing.Inferred || inferred,
+                DuplicateRisk = existing.DuplicateRisk || duplicateRisk,
             }
-            : new Anonymous(itemClass, quantity, at, moveType, confirmed, inferred);
+            : new Anonymous(itemClass, quantity, at, moveType, confirmed, inferred, duplicateRisk);
     }
 
     private Slot? SlotFor(Holding where, string itemClass, bool create)

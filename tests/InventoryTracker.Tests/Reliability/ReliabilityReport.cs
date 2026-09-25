@@ -17,6 +17,8 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
     public List<string> MissedExamples { get; } = [];
     public Dictionary<string, int> Caveats { get; } = new(StringComparer.Ordinal);
     public List<string> LiveDiffs { get; } = [];
+    public Dictionary<string, int> MissCauses { get; } = new(StringComparer.Ordinal);
+    public List<string> MissExamples { get; } = [];
 
     /// <summary>
     /// How far a metric may slip before the ratchet calls it a regression. Covers rounding
@@ -94,6 +96,8 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
             sb.AppendLine($"- `{key}`: {value:N0}");
         }
 
+        Section(sb, "Class-level units not found at their source, by cause", MissCauses.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Value} × {kv.Key}"));
+        Section(sb, "Examples of source misses", MissExamples.Select(l => $"`{l}`"));
         Section(sb, "Relocating requests never captured, by type", MissedByType.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Key}: {kv.Value}"));
         Section(sb, "Examples of missed requests", MissedExamples.Select(l => $"`{l}`"));
         Section(sb, "Caveats on holdings", Caveats.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Value} × {kv.Key}"));
@@ -134,7 +138,7 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
         m.IsRate ? $"{v * 100:F1} %" : v.ToString("0.###", CultureInfo.InvariantCulture);
 
     public string ToJson() => JsonSerializer.Serialize(
-        new { Corpus, Files, Bytes, Metrics, Counts, MissedByType, Caveats },
+        new { Corpus, Files, Bytes, Metrics, Counts, MissedByType, Caveats, MissCauses },
         new JsonSerializerOptions { WriteIndented = true });
 }
 
