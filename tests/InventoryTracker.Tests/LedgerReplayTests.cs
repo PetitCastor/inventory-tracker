@@ -382,6 +382,34 @@ public class LedgerReplayTests
     }
 
     [Fact]
+    public void An_unnamed_item_on_the_player_whose_class_the_listing_leaves_out_is_no_longer_there()
+    {
+        var ledger = LedgerReplay.Run(
+            [Move(Station, OnPlayer, "behr_rifle_ballistic_03_mag", amount: 2, minute: 2, moveType: "Interaction")],
+            [],
+            [new(new DateTimeOffset(2026, 7, 16, 12, 10, 0, TimeSpan.Zero), new HashSet<string>(), new HashSet<string> { "hdtc_undersuit_01_01_20" })]);
+
+        Assert.Empty(ledger.Contents(OnPlayer));
+        var (_, _, loose) = Assert.Single(ledger.Contents(LedgerReplay.LostTrack));
+        Assert.Equal(2, loose!.Quantity);
+        Assert.Equal(2, ledger.Stats.WornEvicted);
+    }
+
+    [Fact]
+    public void A_new_item_on_a_body_port_replaces_the_old_one_even_at_the_same_instant()
+    {
+        var ledger = LedgerReplay.Run(
+            [],
+            [
+                Worn(minute: 1, "784862306922", "qrt_utility_heavy_backpack_01_01_03") with { Port = "backpack" },
+                Worn(minute: 1, "845736965831", "qrt_utility_heavy_backpack_01_01_03") with { Port = "backpack" },
+            ]);
+
+        Assert.Equal(LedgerReplay.LostTrack, ledger.InstanceAt["784862306922"]);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["845736965831"]);
+    }
+
+    [Fact]
     public void What_is_inside_a_backpack_the_body_no_longer_lists_goes_with_it()
     {
         var ledger = LedgerReplay.Run(
