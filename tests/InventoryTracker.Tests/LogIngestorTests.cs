@@ -112,6 +112,32 @@ public sealed class LogIngestorTests : IDisposable
     }
 
     [Fact]
+    public void Records_a_carry_into_the_hand_with_the_entity_its_spawn_names()
+    {
+        // A real sequence: drinking from a crate, lines as the game wrote them.
+        Append(
+            "<2026-08-04T14:58:39.486Z> [Notice] <Add Inventory Management Move> New request[49] Player[Pilot] " +
+            "Type[Interaction] SourceInventory[746335892394:Container:0] TargetInventory[INVALID] " +
+            "ItemClass[Drink_bottle_smoothie_02_a] StoredEntity[NULL] LocallyDetached[No] LocalAttached[NULL, ] " +
+            "PendingMoves[1, ] Caller[CSCLocalPlayerPersonalThoughtComponent::DoInventoryGridInteractionCB]",
+            "<2026-08-04T14:58:39.488Z> [Notice] <InventoryManagementRequest> Queued Request[49] Type[Interaction] " +
+            "for 'Pilot' [204821708183] Source Inventory[746335892394:Container:0] Target Inventory[INVALID]. " +
+            "Source[Drink_bottle_smoothie_02_a] amount[1] rank[amqwjuurwtehx]. Target[NULL] amount[0] rank[]. " +
+            "Item[NONE] action[Carry]. RequestInProgress[0] CurrentProcess[]",
+            "<2026-08-04T14:58:41.207Z> [Notice] <Player Inventory Request Complete> Request[49] for 'Pilot' " +
+            "[204821708183] Type[Interaction] Result[Succeed] Item[750982306075] CanLockQueue[Yes].",
+            "<2026-08-04T14:58:41.589Z> [Notice] <UnstowPendingEntities> Unstow Request[49] for 'Pilot' [204821708183] " +
+            "finalized spawn of 'Drink_bottle_smoothie_02_a_750982306075' [750982306075], 4 remaining");
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("Equipped", Scalar("SELECT tgt_kind FROM move"));
+        Assert.Equal("750982306075", Scalar("SELECT item_geid FROM move"));
+        Assert.Equal("Carry", Scalar("SELECT action FROM move"));
+        Assert.Equal("Succeed", Scalar("SELECT result FROM move"));
+    }
+
+    [Fact]
     public void A_parser_upgrade_re_ingests_history_that_was_read_by_the_old_one()
     {
         // Rotated files are never reopened once complete, so without this a parser fix would

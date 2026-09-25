@@ -662,9 +662,9 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             INSERT OR IGNORE INTO move(
                 session_id, line_offset, item_ix, request_no, ts, player, player_id, move_type,
                 item_class, item_geid, amount,
-                src_raw, src_kind, src_key, tgt_raw, tgt_kind, tgt_key, caller)
+                src_raw, src_kind, src_key, tgt_raw, tgt_kind, tgt_key, caller, action)
             VALUES($s, $o, $ix, $r, $ts, $p, $pid, $mt, $ic, $ig, $amt,
-                   $sr, $sk, $skey, $tr, $tk, $tkey, $c);
+                   $sr, $sk, $skey, $tr, $tk, $tkey, $c, $act);
             SELECT CASE WHEN changes() = 0 THEN NULL ELSE last_insert_rowid() END;
             """;
         cmd.Parameters.AddWithValue("$s", sessionId);
@@ -685,6 +685,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.Parameters.AddWithValue("$tk", move.Target.Kind.ToString());
         cmd.Parameters.AddWithValue("$tkey", move.Target.HoldingKey);
         cmd.Parameters.AddWithValue("$c", (object?)caller ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$act", (object?)move.Action ?? DBNull.Value);
 
         var result = cmd.ExecuteScalar();
         return result is null or DBNull ? null : Convert.ToInt64(result);

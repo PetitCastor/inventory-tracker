@@ -27,7 +27,7 @@ public static partial class InventoryEventParser
     /// fix would only ever apply to lines written after the upgrade — see
     /// <see cref="Data.TrackerDb.Initialize"/>.
     /// </summary>
-    public const int Version = 1;
+    public const int Version = 2;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -35,6 +35,14 @@ public static partial class InventoryEventParser
     /// </summary>
     public static bool IsNonRelocating(string moveType) =>
         moveType is "QueryInventory" or "OpenNestedInventory" or "Sort" or "StackAll";
+
+    /// <summary>
+    /// The one non-trivial <c>action[]</c> a Queued line carries: an Interaction that picks an
+    /// item out of a grid into the player's hand — to eat, drink, or hand it in. Its target
+    /// is INVALID and its caller is a grid callback rather than AttachItem, so without this it
+    /// was dropped, and the item stayed in its container forever.
+    /// </summary>
+    public const string CarryAction = "Carry";
 
     /// <summary>Callers that mean the item went onto the player's body rather than into a grid.</summary>
     private static bool IsAttachCaller(string? caller) =>
@@ -45,7 +53,7 @@ public static partial class InventoryEventParser
         @"Source Inventory\[(?<srcinv>[^\]]*)\] Target Inventory\[(?<tgtinv>[^\]]*)\]\. " +
         @"Source\[(?<srcitem>[^\]]*)\] amount\[(?<srcamt>\d+)\] rank\[[^\]]*\]\. " +
         @"Target\[(?<tgtitem>[^\]]*)\] amount\[\d+\] rank\[[^\]]*\]\. " +
-        @"Item\[(?<item>[^\]]*)\] action\[[^\]]*\]",
+        @"Item\[(?<item>[^\]]*)\] action\[(?<action>[^\]]*)\]",
         RegexOptions.CultureInvariant)]
     private static partial Regex QueuedRequest();
 
@@ -182,8 +190,9 @@ public static partial class InventoryEventParser
     /// </summary>
     public static ItemMoved? Normalize(ItemMoved move, string? caller)
     {
-        // Equipping leaves Target Inventory as INVALID; the destination is the player.
-        if (move.Target.Kind == InventoryKind.Invalid && IsAttachCaller(caller))
+        // Equipping leaves Target Inventory as INVALID; the destination is the player. So does
+        // carrying an item in hand: it is on the player until it is stored, dropped or used up.
+        if (move.Target.Kind == InventoryKind.Invalid && (IsAttachCaller(caller) || move.Action == CarryAction))
         {
             return move with { Target = InventoryRef.Equipped };
         }
@@ -248,7 +257,8 @@ public static partial class InventoryEventParser
             InventoryRef.Parse(m.Groups["tgtinv"].Value),
             itemClass,
             geid,
-            int.Parse(m.Groups["srcamt"].Value));
+            int.Parse(m.Groups["srcamt"].Value),
+            m.Groups["action"].Value is "" or "None" ? null : m.Groups["action"].Value);
     }
 
     private static bool IsBlank(string value) =>

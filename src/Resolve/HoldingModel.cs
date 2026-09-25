@@ -15,7 +15,8 @@ public sealed record MoveRecord(
     InventoryKind TargetKind,
     string TargetKey,
     string TargetRaw,
-    string? Result)
+    string? Result,
+    string? Action = null)
 {
     /// <summary>False only when the game explicitly said the move failed.</summary>
     public bool Failed =>
@@ -24,6 +25,13 @@ public sealed record MoveRecord(
     /// <summary>True when the game confirmed the move landed.</summary>
     public bool Succeeded =>
         Result is not null && Result.Equals("succeed", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// What to call the way this move delivered its item. A carry is an Interaction like an
+    /// equip, but what happens next is very different — a drink is drunk, not worn — so it is
+    /// told apart for scoring.
+    /// </summary>
+    public string ArrivedBy => Action == Ingest.InventoryEventParser.CarryAction ? "Carry" : MoveType;
 
     /// <summary>How many units moved. Only a stacked Type[Move] ever carries more than one.</summary>
     public int Units => ItemGeid is not null ? 1 : Math.Max(Amount, 1);

@@ -156,6 +156,7 @@ public static class ReliabilityStudy
         report.Counts["ledger.unreal_target_skipped"] = s.UnrealTargetSkipped;
         report.Counts["ledger.anonymous_reconciled"] = s.AnonymousReconciled;
         report.Counts["ledger.worn_sightings"] = s.WornSightings;
+        report.Counts["ledger.carried_used_up"] = s.CarriedUsedUp;
     }
 
     private static void MeasureHoldings(IReadOnlyList<ItemHolding> holdings, ReliabilityReport report)

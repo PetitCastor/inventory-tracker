@@ -333,6 +333,41 @@ public class InventoryEventParserTests
         Assert.Null(ev);
     }
 
+    [Fact]
+    public void Reads_a_carry_into_the_hand_as_a_move_onto_the_player()
+    {
+        // Eating or drinking from a container: Interaction, target INVALID, a grid callback
+        // rather than AttachItem. Only action[Carry] says the item left the grid.
+        var ev = Event(
+            "<2026-08-04T14:58:39.488Z> [Notice] <InventoryManagementRequest> Queued Request[49] Type[Interaction] " +
+            "for 'Pilot' [204821708183] Source Inventory[746335892394:Container:0] Target Inventory[INVALID]. " +
+            "Source[Drink_bottle_smoothie_02_a] amount[1] rank[amqwjuurwtehx]. Target[NULL] amount[0] rank[]. " +
+            "Item[NONE] action[Carry]. RequestInProgress[0] CurrentProcess[]");
+
+        var move = Assert.IsType<ItemMoved>(ev);
+        Assert.Equal(InventoryEventParser.CarryAction, move.Action);
+
+        var normalized = InventoryEventParser.Normalize(
+            move, "CSCLocalPlayerPersonalThoughtComponent::DoInventoryGridInteractionCB");
+        Assert.NotNull(normalized);
+        Assert.Equal(InventoryKind.Equipped, normalized.Target.Kind);
+        Assert.Equal("746335892394", normalized.Source.HoldingKey);
+    }
+
+    [Fact]
+    public void Leaves_an_ordinary_interaction_without_an_action()
+    {
+        var ev = Event(
+            "<2026-08-27T00:41:57.775Z> [Notice] <Inventory Mgmt Request Queued> Queued Request[11] Type[Interaction] " +
+            "for 'Pilot' [204821708183] Source Inventory[204821708183:Location:2273540638] Target Inventory[INVALID]. " +
+            "Source[cds_combat_superheavy_suit_01_04_01] amount[1] rank[a]. Target[NULL] amount[0] rank[]. " +
+            "Item[NONE] action[None]. RequestInProgress[0] CurrentProcess[]");
+
+        var move = Assert.IsType<ItemMoved>(ev);
+        Assert.Null(move.Action);
+        Assert.Null(InventoryEventParser.Normalize(move, caller: null));
+    }
+
     [Theory]
     [InlineData("<Add Inventory Management Move> New Request[29] Player[Pilot] Type[Interaction] SourceInventory[x]", 29, "Interaction", true)]
     [InlineData("<Add Inventory Management Move> New request[3] Player[Pilot] Type[Drop] SourceInventory[x]", 3, "Drop", true)]

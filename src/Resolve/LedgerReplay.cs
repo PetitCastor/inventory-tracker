@@ -92,6 +92,9 @@ public sealed class LedgerReplay
         /// <summary>Attachment sightings applied.</summary>
         public int WornSightings { get; internal set; }
 
+        /// <summary>Items carried in hand that a later body enumeration left out — used up.</summary>
+        public int CarriedUsedUp { get; internal set; }
+
         /// <summary>
         /// Share of class-level units found where the move said they came from. The single
         /// best measure of how complete the ledger's history is: every miss is a unit that
@@ -136,21 +139,27 @@ public sealed class LedgerReplay
     /// Folds the whole move history. Moves must arrive oldest first; the caller's ordering
     /// is the ledger's ordering, since a delta stream only means anything in sequence.
     /// </summary>
-    public static LedgerReplay Run(IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn)
+    public static LedgerReplay Run(
+        IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn, BodyEnumeration? enumeration = null)
     {
         var ledger = new LedgerReplay();
 
         // Attachment sightings are enumerations of the player's body rather than moves, so
         // they are merged into the same timeline and applied by timestamp like anything else.
         var timeline = moves
-            .Select(m => (m.Timestamp, Move: (MoveRecord?)m, Worn: (WornSighting?)null))
-            .Concat(worn.Select(w => (w.Timestamp, Move: (MoveRecord?)null, Worn: (WornSighting?)w)))
-            .OrderBy(x => x.Timestamp);
+            .Select(m => (At: m.Timestamp, Move: (MoveRecord?)m, Worn: (WornSighting?)null, Body: (BodyEnumeration?)null))
+            .Concat(worn.Select(w => (At: w.Timestamp, Move: (MoveRecord?)null, Worn: (WornSighting?)w, Body: (BodyEnumeration?)null)));
 
-        foreach (var entry in timeline)
+        if (enumeration is not null)
+        {
+            timeline = timeline.Append((At: enumeration.At, Move: null, Worn: null, Body: enumeration));
+        }
+
+        foreach (var entry in timeline.OrderBy(x => x.At))
         {
             if (entry.Move is { } move) ledger.Apply(move);
             else if (entry.Worn is { } sighting) ledger.ApplyWorn(sighting);
+            else if (entry.Body is { } body) ledger.UseUpCarried(body);
         }
 
         return ledger;
@@ -158,6 +167,60 @@ public sealed class LedgerReplay
 
     /// <summary>An entity observed attached to the player's body at a point in time.</summary>
     public readonly record struct WornSighting(DateTimeOffset Timestamp, string Geid, string ItemClass);
+
+    /// <summary>
+    /// The newest complete listing of what the player has on them — the burst of attachment
+    /// lines the game writes whenever the character streams in — as the entities and classes
+    /// it named.
+    /// </summary>
+    public sealed record BodyEnumeration(
+        DateTimeOffset At, IReadOnlySet<string> Geids, IReadOnlySet<string> Classes);
+
+    private const string CarryArrival = "Carry";
+
+    /// <summary>
+    /// Entities last put on the player by being carried in hand, and not moved anywhere since.
+    /// A worn sighting does not clear this: the hand and pocket ports are exactly where a
+    /// carried item is sighted.
+    /// </summary>
+    private readonly HashSet<string> _carried = [];
+
+    /// <summary>
+    /// Removes what was carried in hand before <paramref name="body"/> but is missing from it.
+    /// <para>
+    /// Food, drink and mission items picked up to be used vanish without any line saying so.
+    /// Every one of the 5 items carried and never stored back in the local corpus is absent
+    /// from every enumeration afterwards, while an enumeration re-lists anything still held.
+    /// So absence is the evidence that it was used up. An item carried after the enumeration
+    /// has not been contradicted yet and stays.
+    /// </para>
+    /// </summary>
+    private void UseUpCarried(BodyEnumeration body)
+    {
+        if (!_contents.TryGetValue(new Holding(InventoryKind.Equipped, ""), out var byClass)) return;
+
+        foreach (var (itemClass, slot) in byClass)
+        {
+            foreach (var instance in slot.Named.ToList())
+            {
+                if (!_carried.Contains(instance.Geid)) continue;
+                if (instance.Since >= body.At || body.Geids.Contains(instance.Geid)) continue;
+
+                slot.Named.Remove(instance);
+                _carried.Remove(instance.Geid);
+                _instanceAt.Remove(instance.Geid);
+                Stats.CarriedUsedUp++;
+            }
+
+            // A carry the log never named: its class is all there is to look for.
+            if (slot.Loose is { ArrivedBy: CarryArrival } loose
+                && loose.Since < body.At && !body.Classes.Contains(itemClass))
+            {
+                Stats.CarriedUsedUp += loose.Quantity;
+                slot.Loose = null;
+            }
+        }
+    }
 
     private void Apply(MoveRecord move)
     {
@@ -180,7 +243,12 @@ public sealed class LedgerReplay
         if (move.ItemGeid is { } geid)
         {
             Stats.NamedMoves++;
-            PlaceInstance(geid, move.ItemClass, target, move.Timestamp, move.MoveType, move.Succeeded, inferred: false);
+            if (move.ArrivedBy == CarryArrival) _carried.Add(geid);
+            else _carried.Remove(geid);
+
+            PlaceInstance(
+                geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false,
+                source: source);
             return;
         }
 
@@ -226,7 +294,7 @@ public sealed class LedgerReplay
                 // would make the move look like a first sighting and spend an unrelated
                 // unnamed unit to pay for it.
                 PlaceInstance(
-                    pick.Geid, move.ItemClass, target, move.Timestamp, move.MoveType,
+                    pick.Geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy,
                     move.Succeeded, inferred: false, ambiguous: candidates > 1 || pick.IdentityAmbiguous);
                 taken++;
                 Stats.UnitsFromNamed++;
@@ -237,7 +305,7 @@ public sealed class LedgerReplay
                 from.Loose = loose.Quantity > 1 ? loose with { Quantity = loose.Quantity - 1 } : null;
                 taken++;
                 Stats.UnitsFromLoose++;
-                AddAnonymous(target, move.ItemClass, 1, move.Timestamp, move.MoveType, move.Succeeded, inferred: false);
+                AddAnonymous(target, move.ItemClass, 1, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false);
             }
         }
         else if (source.IsReal)
@@ -252,18 +320,25 @@ public sealed class LedgerReplay
         {
             Stats.UnitsInferred += wanted - taken;
             AddAnonymous(
-                target, move.ItemClass, wanted - taken, move.Timestamp, move.MoveType,
+                target, move.ItemClass, wanted - taken, move.Timestamp, move.ArrivedBy,
                 move.Succeeded, inferred: true);
         }
     }
 
     private void PlaceInstance(
         string geid, string itemClass, Holding target, DateTimeOffset at, string moveType,
-        bool confirmed, bool inferred, bool ambiguous = false)
+        bool confirmed, bool inferred, bool ambiguous = false, Holding? source = null)
     {
         if (_instanceAt.TryGetValue(geid, out var was) && SlotFor(was, itemClass, create: false) is { } old)
         {
             old.Named.RemoveAll(i => i.Geid == geid);
+        }
+        else if (source is { IsReal: true } from && SpendAnonymous(from, itemClass))
+        {
+            // First sighting, on its way out of somewhere that held an unnamed unit of its
+            // class: that unit is this entity, now named. Leaving it behind would count the
+            // item twice — a drink carried out of a crate would still be in the crate too.
+            _reconciled.Add(geid);
         }
         else
         {
