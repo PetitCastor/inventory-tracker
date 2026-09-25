@@ -66,6 +66,9 @@ Each stage has its own metrics, so a regression points at the stage that caused 
 | | `holdings.mean_score` | 0.85 | Mean resolver score. |
 | | `holdings.inferred_share` | 5 % | Rows that may be counted twice: an arrival with no source while the class was recorded elsewhere. |
 | | `holdings.first_seen_share` | 15 % | Rows whose history starts with the move that revealed them: loot, purchases, stock already there. Real, just without a past. |
+| Placement | `placement.within_build_same_place` | 95 % | Named moves whose source is where the ledger had the item, when no game update lies in between. Checks the ledger itself. |
+| | `placement.brier` | 0.05 | Calibration: mean squared gap between the trust the resolver puts in a placement (through its update weighting) and whether the game then confirmed it. 0 is perfect. |
+| | `placement.across_update_same_place` | context | The same agreement across a game update. It is what the resolver's update weighting is learned from. |
 | Live | `live.parity` | **100 %** (invariant) | Replaying the busiest files as a growing `Game.log`, one watcher pass per 5 s of log time, gives exactly the single-pass result (every move row and every holding, score and caveats included). |
 | | `live.cold_parity` | 95 % | The same, but with a restart before every pass, so only what the store persists carries over. |
 
@@ -196,8 +199,61 @@ dropped on the ground (`World`).
 | `live.parity` | 100 % | 100 % |
 | `live.cold_parity` | 82.9 % | 95 % |
 
-`holdings.mean_score` is now held back mostly by age: 144 of 197 rows carry "last seen N
-days ago" (×0.8 past 30 days), measured from the corpus's last line.
+### Age, and game updates
+
+`holdings.mean_score` was held back mostly by age: rows older than 30 days took ×0.8. To test
+that assumption, the ledger now checks every named move out of a real source against where
+it believed the item was (`ReplayStats.PlacementChecks`). Containers are followed out to the
+place they sit in, since an item in a backpack stored at a station is at that station.
+
+| Age of the placement | Within one game build | Across a game update |
+|---|---:|---:|
+| < 1 h | 19/19 | — |
+| 1 h – 1 d | 10/10 | — |
+| 1 – 7 d | 4/4 | — |
+| 7 – 30 d | 1/1 | **0/13** |
+
+Age never contradicted a placement. A game update contradicted every one it could be checked
+on. Build 12519617 was first played on 2026-08-27, and in that first session the player
+moved 13 items out of **Area18**:
+
+- armour stored at Lorville 15 days earlier;
+- a rifle stored at Levski;
+- six items last seen equipped.
+
+Area18 is where the player spawned after the update. The server had moved everything, and
+no line of the log says so.
+
+What the tracker does now:
+
+- The build of every log is recorded (`session.build`, from the backup's file name or from
+  the live `Game.log`'s header). A new build is a game update.
+- **The age penalty is gone.** Age past 30 days is still mentioned, at no cost.
+- **A placement made before an update is weighed by what the logs showed of that update:**
+  the share of checked placements that survived it, clamped to between ×0.2 and ×1.0. It
+  takes at least 5 checks to count as verified; an unverified update costs ×0.5. On this
+  corpus that gives ×0.2 for 12519617 (0/13) and ×0.5 for 12572603 and 12660092, which have
+  no evidence yet.
+- The caveat says which update, and what it did: "placed before the game update to build
+  12519617, after which 13 of 13 items checked had been moved elsewhere by the game".
+
+| | Before | After |
+|---|---:|---:|
+| `placement.brier` | 0.277 | **0.011** |
+| `holdings.high_share` | 82.7 % | 11.7 % |
+| `holdings.low_share` | 4.6 % | 74.6 % |
+| `holdings.mean_score` | 0.806 | 0.322 |
+
+The Brier score is the point of the change. Before it, every checked placement was trusted
+fully (all under 30 days old), and 13 of 47 were wrong. After it, the trust matches what
+happened. Be aware that it is in-sample: the update factors are learned from those same
+checks, so the real test is the next corpus.
+
+The holdings numbers fall because nearly all of this corpus's activity predates the update
+that moved everything. Those rows really are unreliable: 147 of them were placed before
+12519617, and the evidence says they are most likely at Area18 now. `holdings.high_share`
+and `holdings.mean_score` measured optimism as much as reliability. Their targets assume a
+corpus played mostly within the current build.
 
 ## Improvement plan
 
@@ -205,11 +261,13 @@ This is ranked by expected effect on the metrics above. Each item names the metr
 should move, so it can be verified by rerunning the study.
 
 1. ~~Find out why class-level units miss their source.~~ Done: see "Units not found at
-   their source" above. Next, and much smaller: the staleness penalty. Whether an item
-   stored at a station 30 days ago is less likely to still be there is an assumption. The
-   corpus never contradicts one of those placements, so it could be tested against later
-   moves out of the same station.
-   Moves: `holdings.mean_score`.
+   their source" above. ~~Test the staleness penalty.~~ Done: see "Age, and game updates".
+   Next, a decision rather than a fix: **relocate instead of only demoting.** After
+   12519617, all 13 checked items were at the station where the player first spawned after
+   the update. If the next update shows the same thing, placements made before an update
+   could be moved to that station, with a caveat, rather than left at a place the evidence
+   says they left. One update is too little to generalise from.
+   Moves: `holdings.*`, `placement.brier`.
 2. ~~Decide what `Type[Interaction] action[Carry]` means.~~ Done: see "Carrying items in
    hand" above. `<[ActorState] Place> … placed '<class>_<geid>' in lootable container` is a
    related, unparsed signal: a carried mission item being handed in.

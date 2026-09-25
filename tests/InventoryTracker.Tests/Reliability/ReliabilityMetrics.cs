@@ -49,6 +49,13 @@ public static class ReliabilityMetrics
         new("holdings.first_seen_share", "Holdings first seen without a known source", false, 0.15, null, true,
             "Loot, purchases and pre-existing stock: real, but with no history before the move that revealed them."),
 
+        new("placement.within_build_same_place", "Placements confirmed within one game build", true, 0.95, null, true,
+            "A later named move out of the place the ledger had the item. Checks the ledger itself, and that age alone does not stale a placement."),
+        new("placement.brier", "Calibration error of placement trust (Brier score)", false, 0.05, null, false,
+            "Mean squared gap between the trust put in a placement and whether the game then confirmed it. 0 is perfect; trusting everything fully scores the share that was wrong."),
+        new("placement.across_update_same_place", "Placements confirmed across a game update", true, 0.0, null, true,
+            "Context, not a goal: how often a placement survived an update. Low means updates move items, which the resolver penalises."),
+
         new("live.parity", "Live tailing matches a single pass", true, 1.0, 1.0, true,
             "Following Game.log as it grows must reach the same answer as reading it once. Anything less is a bug."),
         new("live.cold_parity", "Tailing with a restart before every pass matches a single pass", true, 0.95, null, true,

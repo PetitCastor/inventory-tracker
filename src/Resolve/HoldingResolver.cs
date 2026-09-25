@@ -23,8 +23,58 @@ public sealed class HoldingResolver
     /// <summary>Containers nested deeper than this are a data error, not a real loadout.</summary>
     private const int MaxChainDepth = 6;
 
-    /// <summary>Past this age a placement is old enough that the world has probably moved on.</summary>
+    /// <summary>
+    /// Past this age a placement's age is worth mentioning. It no longer costs score: in the
+    /// local corpus, age within one game build never contradicted a placement (every named
+    /// move out of a place agreed with the ledger, up to 21 days). What did was a game update
+    /// in between — see <see cref="GameUpdate"/>.
+    /// </summary>
     private static readonly TimeSpan StaleAfter = TimeSpan.FromDays(30);
+
+    /// <summary>
+    /// When a new game build was first played, and which. Updates move stored items
+    /// server-side without logging it: of the 14 placements checked across build 12519617,
+    /// 13 had been moved to the station the player first spawned at afterwards.
+    /// </summary>
+    public readonly record struct GameUpdate(DateTimeOffset At, int Build);
+
+    private readonly List<GameUpdate> _updates;
+
+    /// <summary>
+    /// How far to trust a placement made before each update, learned from the logs: the share
+    /// of placements that a later named move found still in place across it.
+    /// </summary>
+    private readonly Dictionary<int, UpdateSurvival> _survival;
+
+    /// <summary>What the logs showed about placements surviving one update.</summary>
+    public readonly record struct UpdateSurvival(int Checked, int Survived)
+    {
+        /// <summary>
+        /// Below this many checks an update's own record is too thin to go on, and the
+        /// default applies instead.
+        /// </summary>
+        private const int Enough = 5;
+
+        /// <summary>
+        /// What an unverified update costs: some are known to move items, this one might.
+        /// </summary>
+        private const double Unverified = 0.5;
+
+        /// <summary>
+        /// Never below this: even an update that moved everything checked leaves the item's
+        /// last known place as the best lead there is.
+        /// </summary>
+        private const double Floor = 0.2;
+
+        public bool Verified => Checked >= Enough;
+
+        public double Factor => Verified ? Math.Clamp((double)Survived / Checked, Floor, 1.0) : Unverified;
+    }
+
+    /// <summary>Game updates, with what the logs showed about each.</summary>
+    public IReadOnlyDictionary<int, UpdateSurvival> UpdateSurvivals => _survival;
+    /// <summary>Game updates seen in the logs, oldest first.</summary>
+    public IReadOnlyList<GameUpdate> Updates => _updates;
 
     /// <summary>A container's class plus the last place we saw the player open it. The class
     /// is null for a container the game never named — its capacity in µSCU, if a drag line
@@ -64,9 +114,11 @@ public sealed class HoldingResolver
         Dictionary<string, ContainerInfo> containers,
         HashSet<string> wornContainers,
         PlaceCatalog places,
-        DateTimeOffset asOf)
+        DateTimeOffset asOf,
+        List<GameUpdate> updates)
     {
         _asOf = asOf;
+        _updates = updates;
         _moves = moves;
         _locationNames = locationNames;
         _containers = containers;
@@ -87,6 +139,7 @@ public sealed class HoldingResolver
             .ToHashSet(StringComparer.Ordinal);
 
         _ledger = LedgerReplay.Run(moves, worn, enumeration, carried);
+        _survival = MeasureSurvival(_ledger.Stats.PlacementChecks, updates);
     }
 
     /// <summary>The whole move history is only a few thousand rows, so resolve in memory.</summary>
@@ -99,7 +152,7 @@ public sealed class HoldingResolver
         using var cn = db.Open();
         return new HoldingResolver(
             LoadMoves(cn), LoadWorn(cn), LoadBodyEnumeration(cn), LoadLocationNames(cn), LoadContainers(cn),
-            LoadWornContainers(cn), PlaceCatalog.Load(cn, db), asOf ?? DateTimeOffset.UtcNow);
+            LoadWornContainers(cn), PlaceCatalog.Load(cn, db), asOf ?? DateTimeOffset.UtcNow, LoadUpdates(cn));
     }
 
     /// <summary>
@@ -195,12 +248,24 @@ public sealed class HoldingResolver
             caveats.Add("dropped as a loose world entity — these despawn");
         }
 
-        var age = _asOf - since;
-        if (age > StaleAfter)
+        // A game update played since this placement is the one thing observed to invalidate
+        // one: the server moves stored items and logs nothing. Each update is weighed by what
+        // the logs showed of it; across several, the least trustworthy one decides.
+        var crossed = _updates.Where(u => u.At > since && u.At <= _asOf).ToList();
+        if (crossed.Count > 0)
         {
-            score *= 0.8;
-            caveats.Add($"last seen {age.TotalDays:F0} days ago");
+            var worst = crossed.MinBy(u => _survival[u.Build].Factor);
+            var record = _survival[worst.Build];
+            score *= record.Factor;
+            caveats.Add(record.Verified
+                ? $"placed before the game update to build {worst.Build}, after which {record.Checked - record.Survived} " +
+                  $"of {record.Checked} items checked had been moved elsewhere by the game"
+                : $"placed before the game update to build {worst.Build} — updates have been seen to move " +
+                  "stored items to wherever the player next spawns");
         }
+
+        var age = _asOf - since;
+        if (age > StaleAfter) caveats.Add($"last seen {age.TotalDays:F0} days ago");
 
         // Which of several identical items this is says nothing about whether one of them
         // is here, so it is reported without touching the score.
@@ -514,6 +579,56 @@ public sealed class HoldingResolver
     /// </summary>
     private static bool IsLootable(string? className) =>
         className is not null && className.Contains("lootable", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// For each update, the placements a later named move checked across it, and how many
+    /// the game confirmed still in place. A check spans every update between the placement
+    /// and the move.
+    /// </summary>
+    private static Dictionary<int, UpdateSurvival> MeasureSurvival(
+        IReadOnlyList<LedgerReplay.PlacementCheck> checks, IReadOnlyList<GameUpdate> updates)
+    {
+        var survival = new Dictionary<int, UpdateSurvival>();
+        foreach (var update in updates)
+        {
+            var across = checks.Where(c => update.At > c.At - c.Age && update.At <= c.At).ToList();
+            survival[update.Build] = new UpdateSurvival(across.Count, across.Count(c => c.SamePlace));
+        }
+
+        return survival;
+    }
+
+    /// <summary>
+    /// Each build's first appearance, keeping only builds newer than every one before — a
+    /// rotated backup ingested late must not read as a downgrade followed by an update.
+    /// </summary>
+    private static List<GameUpdate> LoadUpdates(SqliteConnection cn)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = """
+            SELECT build, MIN(COALESCE(first_ts, last_line_ts)) AS since
+            FROM session
+            WHERE build IS NOT NULL AND COALESCE(first_ts, last_line_ts) IS NOT NULL
+            GROUP BY build
+            ORDER BY since
+            """;
+
+        var updates = new List<GameUpdate>();
+        int? newest = null;
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var build = r.GetInt32(0);
+            if (newest is not null && build > newest)
+            {
+                updates.Add(new GameUpdate(DateTimeOffset.Parse(r.GetString(1), CultureInfo.InvariantCulture), build));
+            }
+
+            if (newest is null || build > newest) newest = build;
+        }
+
+        return updates;
+    }
 
     private static InventoryKind ParseKind(string s) =>
         Enum.TryParse<InventoryKind>(s, out var k) ? k : InventoryKind.Unknown;

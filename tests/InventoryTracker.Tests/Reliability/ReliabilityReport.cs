@@ -19,6 +19,7 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
     public List<string> LiveDiffs { get; } = [];
     public Dictionary<string, int> MissCauses { get; } = new(StringComparer.Ordinal);
     public List<string> MissExamples { get; } = [];
+    public List<string> PlacementTable { get; } = [];
 
     /// <summary>
     /// How far a metric may slip before the ratchet calls it a regression. Covers rounding
@@ -94,6 +95,17 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
         foreach (var (key, value) in Counts.Where(kv => kv.Key.StartsWith("ledger.", StringComparison.Ordinal)))
         {
             sb.AppendLine($"- `{key}`: {value:N0}");
+        }
+
+        if (PlacementTable.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Placement checks by age");
+            sb.AppendLine();
+            sb.AppendLine("Named moves out of a real source, compared with where the ledger believed the entity was.");
+            sb.AppendLine("This is what the resolver's age and update penalties are calibrated against.");
+            sb.AppendLine();
+            foreach (var row in PlacementTable) sb.AppendLine(row);
         }
 
         Section(sb, "Class-level units not found at their source, by cause", MissCauses.OrderByDescending(kv => kv.Value).Select(kv => $"{kv.Value} × {kv.Key}"));

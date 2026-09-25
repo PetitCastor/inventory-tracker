@@ -127,6 +127,13 @@ public sealed class LedgerReplay
         public List<SourceMiss> Misses { get; } = [];
 
         /// <summary>
+        /// Every named move out of a real source, checked against where the ledger believed
+        /// the entity was. This is the only ground truth the logs give on whether a placement
+        /// still held — the game names the source, and the ledger had its own answer.
+        /// </summary>
+        public List<PlacementCheck> PlacementChecks { get; } = [];
+
+        /// <summary>
         /// Share of class-level units found where the move said they came from. The single
         /// best measure of how complete the ledger's history is: every miss is a unit that
         /// arrived somewhere the replay never saw it leave.
@@ -143,6 +150,28 @@ public sealed class LedgerReplay
     }
 
     public ReplayStats Stats { get; } = new();
+
+    /// <summary>
+    /// One named move whose source could be compared with the ledger's belief.
+    /// </summary>
+    /// <param name="Believed">Where the ledger had the entity when the move happened.</param>
+    /// <param name="Age">How long it had been there, by the ledger's account.</param>
+    /// <param name="Agreed">The move's source was where the ledger had it.</param>
+    /// <param name="Actual">Where the game said the entity was moved from.</param>
+    public sealed record PlacementCheck(Holding Believed, TimeSpan Age, bool Agreed)
+    {
+        public string Geid { get; init; } = "";
+        public string ItemClass { get; init; } = "";
+        public DateTimeOffset At { get; init; }
+        public Holding Actual { get; init; }
+        public string BelievedArrivedBy { get; init; } = "";
+
+        /// <summary>
+        /// Believed and actual resolve to the same place once containers are followed out to
+        /// where they sit — an item in a backpack stored at a station is at that station.
+        /// </summary>
+        public bool SamePlace { get; init; }
+    }
 
     /// <summary>Why a class-level move's source could not supply what it asked for.</summary>
     public enum MissCause
@@ -320,6 +349,8 @@ public sealed class LedgerReplay
             if (move.ArrivedBy == CarryArrival) _carried.Add(geid);
             else _carried.Remove(geid);
 
+            CheckPlacement(geid, move, source);
+
             PlaceInstance(
                 geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false,
                 source: source);
@@ -469,6 +500,34 @@ public sealed class LedgerReplay
             var holding = new Holding(InventoryKind.Container, key);
             if (_contents.ContainsKey(holding)) yield return holding;
         }
+    }
+
+    private void CheckPlacement(string geid, MoveRecord move, Holding source)
+    {
+        if (!source.IsReal || !_instanceAt.TryGetValue(geid, out var believed)) return;
+        if (SlotFor(believed, move.ItemClass, create: false)?.Named.FirstOrDefault(i => i.Geid == geid) is not { } instance) return;
+
+        Stats.PlacementChecks.Add(new PlacementCheck(believed, move.Timestamp - instance.Since, believed == source)
+        {
+            Geid = geid,
+            ItemClass = move.ItemClass,
+            At = move.Timestamp,
+            Actual = source,
+            BelievedArrivedBy = instance.ArrivedBy,
+            SamePlace = PlaceOf(believed) == PlaceOf(source),
+        });
+    }
+
+    /// <summary>Follows containers out to the holding they sit in, as far as the ledger knows.</summary>
+    private Holding PlaceOf(Holding holding)
+    {
+        for (var hop = 0; hop < 6 && holding.Kind == InventoryKind.Container; hop++)
+        {
+            if (!_instanceAt.TryGetValue(holding.Key, out var outer)) break;
+            holding = outer;
+        }
+
+        return holding;
     }
 
     private SourceMiss DescribeMiss(MoveRecord move, Holding source, Holding target, int wanted, int found)
