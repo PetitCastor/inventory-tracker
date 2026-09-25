@@ -168,9 +168,8 @@ public sealed class LedgerReplay
     /// </summary>
     /// <param name="Believed">Where the ledger had the entity when the move happened.</param>
     /// <param name="Age">How long it had been there, by the ledger's account.</param>
-    /// <param name="Agreed">The move's source was where the ledger had it.</param>
     /// <param name="Actual">Where the game said the entity was moved from.</param>
-    public sealed record PlacementCheck(Holding Believed, TimeSpan Age, bool Agreed)
+    public sealed record PlacementCheck(Holding Believed, TimeSpan Age)
     {
         public string Geid { get; init; } = "";
         public string ItemClass { get; init; } = "";
@@ -436,8 +435,7 @@ public sealed class LedgerReplay
         if (move.ItemGeid is { } geid)
         {
             Stats.NamedMoves++;
-            if (move.ArrivedBy == CarryArrival) _carried.Add(geid);
-            else _carried.Remove(geid);
+            NoteCarry(geid, move.ArrivedBy);
 
             CheckPlacement(geid, move, source);
 
@@ -493,6 +491,7 @@ public sealed class LedgerReplay
                 // _instanceAt is deliberately left pointing at the source: clearing it here
                 // would make the move look like a first sighting and spend an unrelated
                 // unnamed unit to pay for it.
+                NoteCarry(pick.Geid, move.ArrivedBy);
                 PlaceInstance(
                     pick.Geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy,
                     move.Succeeded, inferred: false, ambiguous: candidates > 1 || pick.IdentityAmbiguous);
@@ -564,6 +563,7 @@ public sealed class LedgerReplay
             {
                 var pick = slot.Named[^1];
                 slot.Named.RemoveAt(slot.Named.Count - 1);
+                NoteCarry(pick.Geid, move.ArrivedBy);
                 PlaceInstance(
                     pick.Geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy,
                     move.Succeeded, inferred: false, ambiguous: true);
@@ -582,14 +582,51 @@ public sealed class LedgerReplay
         return taken;
     }
 
+    /// <summary>
+    /// Keeps <see cref="_carried"/> in step with every move that places a named instance, not
+    /// only the moves that name it: a class-level move relocates named instances too, and one
+    /// left flagged as carried would be used up by the next enumeration and kept back from
+    /// the next update's relocation.
+    /// </summary>
+    private void NoteCarry(string geid, string arrivedBy)
+    {
+        if (arrivedBy == CarryArrival) _carried.Add(geid);
+        else _carried.Remove(geid);
+    }
+
     private IEnumerable<Holding> CarriedHoldings()
     {
         yield return new Holding(InventoryKind.Equipped, "");
         foreach (var key in _carriedContainers)
         {
             var holding = new Holding(InventoryKind.Container, key);
-            if (_contents.ContainsKey(holding)) yield return holding;
+            if (_contents.ContainsKey(holding) && IsOnThePlayer(key)) yield return holding;
         }
+    }
+
+    /// <summary>
+    /// Whether a carried-kind container is on the player now. A backpack is apparel whatever
+    /// it holds, but one stored in a locker is not where a shortfall elsewhere was drawn from.
+    /// With no move history it has never been seen to leave the player, so it counts.
+    /// </summary>
+    private bool IsOnThePlayer(string container)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var key = container;
+        while (_instanceAt.TryGetValue(key, out var at))
+        {
+            if (at.Kind == InventoryKind.Equipped) return true;
+
+            // Nested in another carried container: on the player only if that one is.
+            if (at.Kind != InventoryKind.Container || !_carriedContainers.Contains(at.Key) || !seen.Add(at.Key))
+            {
+                return false;
+            }
+
+            key = at.Key;
+        }
+
+        return true;
     }
 
     private void CheckPlacement(string geid, MoveRecord move, Holding source)
@@ -597,7 +634,7 @@ public sealed class LedgerReplay
         if (!source.IsReal || !_instanceAt.TryGetValue(geid, out var believed)) return;
         if (SlotFor(believed, move.ItemClass, create: false)?.Named.FirstOrDefault(i => i.Geid == geid) is not { } instance) return;
 
-        Stats.PlacementChecks.Add(new PlacementCheck(believed, move.Timestamp - instance.Since, believed == source)
+        Stats.PlacementChecks.Add(new PlacementCheck(believed, move.Timestamp - instance.Since)
         {
             Geid = geid,
             ItemClass = move.ItemClass,

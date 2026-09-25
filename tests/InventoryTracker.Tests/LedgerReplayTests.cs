@@ -246,6 +246,24 @@ public class LedgerReplayTests
     }
 
     [Fact]
+    public void An_item_carried_then_moved_by_class_is_no_longer_carried()
+    {
+        // Stored back and taken out again by class-level moves, the drink is on the player
+        // as an ordinary item. Missing from an enumeration, it is not used up.
+        var ledger = LedgerReplay.Run(
+            [
+                Carry(Crate, "Drink_bottle_cruz_01_a", "780590795163", minute: 2),
+                Move(Nowhere, Crate, "Drink_bottle_cruz_01_a", minute: 3, moveType: "Store"),
+                Move(Crate, OnPlayer, "Drink_bottle_cruz_01_a", minute: 4),
+            ],
+            [],
+            Enumerated(minute: 10));
+
+        Assert.Equal(OnPlayer, ledger.InstanceAt["780590795163"]);
+        Assert.Equal(0, ledger.Stats.CarriedUsedUp);
+    }
+
+    [Fact]
     public void A_carry_after_the_newest_enumeration_is_not_contradicted_yet()
     {
         var ledger = LedgerReplay.Run(
@@ -281,19 +299,42 @@ public class LedgerReplayTests
     public void A_container_that_is_not_carried_is_never_raided_for_a_shortfall()
     {
         // A crate at another station does not travel with the player, so its contents are
-        // not a plausible source — the arrival stays a guess, and a flagged one.
+        // not a plausible source — the arrival stays a guess, and a flagged one. The backpack
+        // is carried, so the crate is left alone by choice, not for want of a carried set.
+        var otherCrate = new Holding(InventoryKind.Container, "681562156431");
         var ledger = LedgerReplay.Run(
             [
-                Move(Nowhere, OtherStation, "rifle_01", minute: 1),
+                Move(Nowhere, otherCrate, "rifle_01", minute: 1),
                 Move(Crate, Station, "rifle_01", minute: 2),
             ],
-            []);
+            [],
+            carriedContainers: new HashSet<string> { Backpack.Key });
 
-        Assert.Single(ledger.Contents(OtherStation));
+        Assert.Single(ledger.Contents(otherCrate));
         var (_, _, loose) = Assert.Single(ledger.Contents(Station));
         Assert.True(loose!.Inferred);
         Assert.True(loose.DuplicateRisk);
         Assert.Equal(1, ledger.Stats.UnitsDuplicateRisk);
+        Assert.Equal(0, ledger.Stats.UnitsFromCarried);
+    }
+
+    [Fact]
+    public void A_backpack_stored_in_a_locker_is_not_raided_for_a_shortfall()
+    {
+        // Apparel travels with the player only while they wear it. Once the backpack itself
+        // is stored, its magazines are at the locker, not a source for a stack elsewhere.
+        var ledger = LedgerReplay.Run(
+            [
+                Move(Nowhere, Backpack, "behr_rifle_ballistic_03_mag", amount: 13, minute: 1),
+                Move(OnPlayer, Crate, "backpack_class", geid: Backpack.Key, minute: 2),
+                Move(Station, OtherStation, "behr_rifle_ballistic_03_mag", amount: 13, minute: 3),
+            ],
+            [],
+            carriedContainers: new HashSet<string> { Backpack.Key });
+
+        var (_, _, kept) = Assert.Single(ledger.Contents(Backpack));
+        Assert.Equal(13, kept!.Quantity);
+        Assert.Equal(0, ledger.Stats.UnitsFromCarried);
     }
 
     [Fact]
