@@ -1,0 +1,2 @@
+# Replay study corpus: byte-exact, so the baseline's size fingerprint matches on every checkout.
+tests/InventoryTracker.Tests/Reliability/Corpus/** -text

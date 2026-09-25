@@ -1,0 +1,21 @@
+{
+  "Corpora": {
+    "sample": {
+      "Files": 3,
+      "Bytes": 770677,
+      "Metrics": {
+        "capture.request_rate": 0.9589,
+        "capture.unrecognised_lines": 0,
+        "enrich.geid_coverage": 0.8491,
+        "enrich.confirmed_rate": 0.8805,
+        "ledger.source_hit_rate": 0.5417,
+        "holdings.high_share": 0.9434,
+        "holdings.low_share": 0.0377,
+        "holdings.mean_score": 0.9413,
+        "holdings.inferred_share": 0.0283,
+        "live.parity": 1,
+        "live.cold_parity": 0.9509
+      }
+    }
+  }
+}

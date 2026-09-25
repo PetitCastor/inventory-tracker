@@ -1,3 +1,4 @@
+using InventoryTracker.Ingest;
 using Microsoft.Data.Sqlite;
 
 namespace InventoryTracker.Data;
@@ -64,26 +65,42 @@ public sealed class TrackerDb
     /// would never be given those bytes to re-read: it would resume exactly where the broken
     /// one left off, or skip the file entirely.
     /// </para>
+    /// <para>9 -> 10 adds <c>session.cur_loc_id</c> / <c>cur_loc_since</c>.</para>
     /// </summary>
-    private const int SchemaVersion = 9;
+    private const int SchemaVersion = 10;
 
     public void Initialize()
     {
         using var cn = Open();
 
         // A store built before versioning existed reports null, which is still a mismatch.
-        if (HasTable(cn, "move") && ReadSchemaVersion(cn) != SchemaVersion)
+        if (HasTable(cn, "move") && ReadMeta(cn, "schema_version") != SchemaVersion)
         {
             Execute(cn, DropAll);
         }
 
         Execute(cn, Schema);
+        WriteMeta(cn, "schema_version", SchemaVersion);
 
+        // Same tables, different extraction: what an older parser left behind is missing
+        // whatever the newer one learned to read, and completed files are never reopened
+        // on their own. Schema 9 had to be bumped just to force that; this does it for any
+        // parser change without touching the schema.
+        if (ReadMeta(cn, "parser_version") != InventoryEventParser.Version)
+        {
+            Execute(cn, ClearIngest);
+            WriteMeta(cn, "parser_version", InventoryEventParser.Version);
+        }
+    }
+
+    private static void WriteMeta(SqliteConnection cn, string key, int value)
+    {
         using var stamp = cn.CreateCommand();
         stamp.CommandText =
-            "INSERT INTO meta(key, value) VALUES('schema_version', $v) " +
+            "INSERT INTO meta(key, value) VALUES($k, $v) " +
             "ON CONFLICT(key) DO UPDATE SET value = $v";
-        stamp.Parameters.AddWithValue("$v", SchemaVersion.ToString());
+        stamp.Parameters.AddWithValue("$k", key);
+        stamp.Parameters.AddWithValue("$v", value.ToString());
         stamp.ExecuteNonQuery();
     }
 
@@ -95,12 +112,13 @@ public sealed class TrackerDb
         return probe.ExecuteScalar() is not null;
     }
 
-    private static int? ReadSchemaVersion(SqliteConnection cn)
+    private static int? ReadMeta(SqliteConnection cn, string key)
     {
         if (!HasTable(cn, "meta")) return null;
 
         using var probe = cn.CreateCommand();
-        probe.CommandText = "SELECT value FROM meta WHERE key = 'schema_version'";
+        probe.CommandText = "SELECT value FROM meta WHERE key = $k";
+        probe.Parameters.AddWithValue("$k", key);
         return probe.ExecuteScalar() is string s && int.TryParse(s, out var v) ? v : null;
     }
 
@@ -108,15 +126,17 @@ public sealed class TrackerDb
     public void ResetIngest()
     {
         using var cn = Open();
-        Execute(cn, """
-            DELETE FROM move;
-            DELETE FROM session;
-            DELETE FROM location_name;
-            DELETE FROM container_class;
-            DELETE FROM attachment;
-            DELETE FROM place_evidence;
-            """);
+        Execute(cn, ClearIngest);
     }
+
+    private const string ClearIngest = """
+        DELETE FROM move;
+        DELETE FROM session;
+        DELETE FROM location_name;
+        DELETE FROM container_class;
+        DELETE FROM attachment;
+        DELETE FROM place_evidence;
+        """;
 
     private static void Execute(SqliteConnection cn, string sql)
     {
@@ -144,7 +164,12 @@ public sealed class TrackerDb
             -- is the one still gated by the filter. This is what lets diagnostics say "your
             -- newest log is from before your inception date" instead of a file with real
             -- content looking empty.
-            last_line_ts TEXT
+            last_line_ts TEXT,
+            -- Where the player stood at byte_offset. The game writes it once, on arrival,
+            -- so a pass that resumes mid-file has no other way to know it — and without
+            -- it every container opened afterwards goes unplaced.
+            cur_loc_id    TEXT,
+            cur_loc_since TEXT
         );
 
         -- One row per item relocation.

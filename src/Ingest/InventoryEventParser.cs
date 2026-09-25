@@ -22,6 +22,14 @@ public static partial class InventoryEventParser
     public static readonly DateTimeOffset Cutoff = new(2026, 7, 16, 0, 0, 0, TimeSpan.Zero);
 
     /// <summary>
+    /// Bump whenever a change here would extract something different from a log already
+    /// ingested. Rotated files are never reopened once complete, so without this a parser
+    /// fix would only ever apply to lines written after the upgrade — see
+    /// <see cref="Data.TrackerDb.Initialize"/>.
+    /// </summary>
+    public const int Version = 1;
+
+    /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
     /// re-organise operations whose source and target inventory are the same grid.
     /// </summary>
@@ -208,15 +216,26 @@ public static partial class InventoryEventParser
         // Store names the exact entity; every other type reports only a class in Source[].
         string itemClass;
         string? geid = null;
-        if (EntityId.TrySplit(m.Groups["item"].Value, out var cls, out var g))
+        var item = m.Groups["item"].Value;
+        if (EntityId.TrySplit(item, out var cls, out var g))
         {
             itemClass = cls;
             geid = g;
         }
-        else
+        else if (!IsBlank(m.Groups["srcitem"].Value))
         {
             itemClass = m.Groups["srcitem"].Value;
-            if (itemClass is "" or "NULL" or "NONE" or "null") return null;
+        }
+        else if (!IsBlank(item))
+        {
+            // A Store of an entity the game never gave an id — a tool attachment picked off
+            // a ship's fittings, say — writes the bare class into Item[] and nothing into
+            // Source[]. It still went into the target; which one it was is simply unknown.
+            itemClass = item;
+        }
+        else
+        {
+            return null;
         }
 
         return new ItemMoved(
@@ -230,6 +249,37 @@ public static partial class InventoryEventParser
             itemClass,
             geid,
             int.Parse(m.Groups["srcamt"].Value));
+    }
+
+    private static bool IsBlank(string value) =>
+        value is "" or "NULL" or "NONE" or "null" or "none";
+
+    /// <summary>
+    /// The request number and move type of any move request line, read loosely enough to
+    /// survive the rewordings <see cref="LooksLikeRequest"/> is there to catch.
+    /// </summary>
+    [GeneratedRegex(
+        @"^(?<kind>New|Queued) Request\[(?<req>\d+)\].*?Type\[(?<type>[^\]]*)\]",
+        RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex RequestShape();
+
+    /// <summary>What <see cref="ReadRequestShape"/> saw on a move request line.</summary>
+    /// <param name="IsAddMove">The "New Request" half of the handshake rather than "Queued Request".</param>
+    public readonly record struct RequestShapeInfo(int RequestNo, string MoveType, bool IsAddMove);
+
+    /// <summary>
+    /// Recognises a move request line by its body alone, whatever tag it carries and whether
+    /// or not <see cref="Parse"/> can still read it. Used to measure how much of the log the
+    /// parser actually captures.
+    /// </summary>
+    public static RequestShapeInfo? ReadRequestShape(LogLine line)
+    {
+        var m = RequestShape().Match(line.Rest);
+        if (!m.Success || !int.TryParse(m.Groups["req"].Value, out var requestNo)) return null;
+
+        return new RequestShapeInfo(
+            requestNo, m.Groups["type"].Value,
+            m.Groups["kind"].Value.Equals("New", StringComparison.OrdinalIgnoreCase));
     }
 
     private static InventoryEvent? ParseAddMove(LogLine line)

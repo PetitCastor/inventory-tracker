@@ -303,4 +303,48 @@ public class InventoryEventParserTests
 
         Assert.Null(ev);
     }
+
+    [Fact]
+    public void Reads_a_store_of_an_entity_the_game_never_gave_an_id()
+    {
+        // Item[] carries a bare class and Source[] is empty: the item still went in. The
+        // reliability study caught four of these dropped in one real session.
+        var ev = Event(
+            "<2026-08-04T14:31:15.467Z> [Notice] <InventoryManagementRequest> Queued Request[20] Type[Store] " +
+            "for 'Pilot' [204821708183] Source Inventory[INVALID] Target Inventory[746335892394:Container:0]. " +
+            "Source[NULL] amount[0] rank[]. Target[NULL] amount[0] rank[amqxvpysnesgu]. " +
+            "Item[grin_multitool_resource_salvage_repair_01_filled] action[None]. RequestInProgress[0] CurrentProcess[]");
+
+        var move = Assert.IsType<ItemMoved>(ev);
+        Assert.Equal("grin_multitool_resource_salvage_repair_01_filled", move.ItemClass);
+        Assert.Null(move.ItemGeid);
+        Assert.Equal("746335892394", move.Target.HoldingKey);
+    }
+
+    [Fact]
+    public void Still_drops_a_queued_line_that_names_nothing_at_all()
+    {
+        // A multi-select drag's Queued half: the Add-move line carries the batch instead.
+        var ev = Event(
+            "<2026-08-05T11:36:16.710Z> [Notice] <InventoryManagementRequest> Queued Request[14] Type[Move] " +
+            "for 'Pilot' [204821708183] Source Inventory[681562156430:Container:0] Target Inventory[751277096094:Container:0]. " +
+            "Source[NULL] amount[0] rank[]. Target[NULL] amount[0] rank[]. Item[NONE] action[None].");
+
+        Assert.Null(ev);
+    }
+
+    [Theory]
+    [InlineData("<Add Inventory Management Move> New Request[29] Player[Pilot] Type[Interaction] SourceInventory[x]", 29, "Interaction", true)]
+    [InlineData("<Add Inventory Management Move> New request[3] Player[Pilot] Type[Drop] SourceInventory[x]", 3, "Drop", true)]
+    [InlineData("<Some Future Tag> Queued Request[7] Type[Move] for 'Pilot' FromInventory[1:Location:2]", 7, "Move", false)]
+    public void Reads_the_shape_of_any_request_line_even_one_it_cannot_parse(
+        string body, int requestNo, string moveType, bool isAddMove)
+    {
+        var shape = InventoryEventParser.ReadRequestShape(Parse($"<2026-09-30T10:00:00.000Z> [Notice] {body}"));
+
+        Assert.NotNull(shape);
+        Assert.Equal(requestNo, shape.Value.RequestNo);
+        Assert.Equal(moveType, shape.Value.MoveType);
+        Assert.Equal(isAddMove, shape.Value.IsAddMove);
+    }
 }
