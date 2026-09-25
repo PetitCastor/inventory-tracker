@@ -625,10 +625,14 @@ public sealed class HoldingResolver
         {
             if (rows[i].Port != BodyPort) continue;
 
+            // Log order within the session, filtered by time rather than cut at the first line
+            // out of range: a line stamped out of order must neither stop the listing short nor
+            // drag in an earlier burst. rows is a List, so Skip does not re-walk it.
             var at = rows[i].Sighting.Timestamp;
             var listed = rows.Skip(i)
-                .TakeWhile(x => x.Session == rows[i].Session && x.Sighting.Timestamp - at <= EnumerationSpread)
+                .TakeWhile(x => x.Session == rows[i].Session)
                 .Select(x => x.Sighting)
+                .Where(w => w.Timestamp >= at && w.Timestamp - at <= EnumerationSpread)
                 .ToList();
 
             enumerations.Add(new LedgerReplay.BodyEnumeration(

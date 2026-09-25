@@ -606,7 +606,7 @@ public sealed class LedgerReplay
         if (_occupant.TryGetValue(port, out var old) && old != sighting.Geid
             && _portOf.GetValueOrDefault(old) == port
             && _instanceAt.GetValueOrDefault(old) == new Holding(InventoryKind.Equipped, "")
-            && Find(old) is { } instance && instance.Since < sighting.Timestamp)
+            && Find(old) is { } instance && instance.Since <= sighting.Timestamp)
         {
             SlotFor(new Holding(InventoryKind.Equipped, ""), instance.ItemClass, create: false)!.Named.Remove(instance);
             SlotFor(LostTrack, instance.ItemClass, create: true)!.Named.Add(instance);
