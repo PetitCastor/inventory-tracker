@@ -410,14 +410,26 @@ public sealed class LogIngestorTests : IDisposable
     }
 
     [Fact]
+    public void A_line_stamped_before_the_previous_one_starts_a_new_burst()
+    {
+        Append(
+            Attached("845736965844", "qrt_utility_heavy_helmet_01_01_03", "Armor_Helmet"),
+            Attached("845736965845", "FP_Visor", "helmet_visor").Replace("15:35:47.776", "15:30:00.000"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("2", Scalar("SELECT COUNT(DISTINCT burst_id) FROM attachment_sighting"));
+        Assert.Equal("", Scalar("SELECT COALESCE(parent_geid, '') FROM attachment_sighting WHERE geid = '845736965845'"));
+    }
+
+    [Fact]
     public void A_local_attachment_is_not_recorded_and_a_placeholder_is_recorded_but_not_worn()
     {
         Append(
-            "<2026-09-25T15:57:37.130Z> [Notice] <AttachmentReceived> Player[Pilot] " +
-            "Attachment[Inventory_LocalAttach_Item, Default, 10721] Status[local] Port[Armor_Helmet] Elapsed[0.0025]",
             "<2026-09-25T15:35:06.912Z> [Notice] <AttachmentReceived> Player[Pilot] " +
             "Attachment[klwe_pistol_energy_01_200000000222, klwe_pistol_energy_01, 200000000222] " +
-            "Status[persistent] Port[wep_sidearm] Elapsed[20.0]");
+            "Status[persistent] Port[wep_sidearm] Elapsed[20.0]",
+            "<2026-09-25T15:57:37.130Z> [Notice] <AttachmentReceived> Player[Pilot] " +
+            "Attachment[Inventory_LocalAttach_Item, Default, 10721] Status[local] Port[Armor_Helmet] Elapsed[0.0025]");
         new LogIngestor(_db, _dir).IngestAll();
 
         Assert.Equal("0", Scalar("SELECT COUNT(*) FROM attachment_sighting WHERE geid = '10721'"));

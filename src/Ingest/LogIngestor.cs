@@ -572,14 +572,16 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     /// burst of the 2026-09-25 playtest each comes right after the item it belongs to:
     /// <c>Armor_Helmet</c> then <c>universal_necksock</c> and <c>helmet_visor</c>, and
     /// <c>wep_stocked_N</c> then <c>magazine_attach</c>, <c>optics_attach</c>,
-    /// <c>barrel_attach</c> and <c>underbarrel_attach</c>. <c>magazine_attach_1</c>, a spare
-    /// magazine seen only in the login placeholder set, is not in the list until a real
-    /// loadout shows what it hangs off.
+    /// <c>barrel_attach</c> and <c>underbarrel_attach</c>. In the August logs a multitool
+    /// comes the same way, with its <c>magazine_attach</c>, <c>module_attach</c> and
+    /// <c>canister_attach</c>. <c>magazine_attach_N</c> is not a part: it is a magazine slot on
+    /// the armour as often as a multitool's canister.
     /// </summary>
     private static readonly HashSet<string> ChildPorts = new(StringComparer.Ordinal)
     {
         "helmet_visor", "universal_necksock",
         "magazine_attach", "optics_attach", "barrel_attach", "underbarrel_attach",
+        "module_attach", "canister_attach",
     };
 
     /// <summary>
@@ -590,7 +592,9 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         SqliteConnection cn, SqliteTransaction tx, long sessionId, long lineOffset, AttachmentSeen worn,
         SessionState state)
     {
-        var burstId = state.LastSighting is { } last && worn.Timestamp - last.At < BurstGap
+        // A line stamped earlier than the one before it is not part of that burst either.
+        var burstId = state.LastSighting is { } last
+                      && worn.Timestamp >= last.At && worn.Timestamp - last.At < BurstGap
             ? last.BurstId
             : lineOffset;
         if (burstId == lineOffset) state.ParentCandidate = null;
