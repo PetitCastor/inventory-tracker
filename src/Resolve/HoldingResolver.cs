@@ -78,7 +78,15 @@ public sealed class HoldingResolver
             .GroupBy(m => m.ItemGeid!)
             .ToDictionary(g => g.Key, g => g.OrderBy(m => m.Timestamp).ToList());
 
-        _ledger = LedgerReplay.Run(moves, worn, enumeration);
+        // Apparel travels with the player, so the ledger draws on it when a move's source
+        // falls short — the same test BuildChain uses to walk straight through it.
+        var carried = containers
+            .Where(kv => IsApparel(kv.Value.ClassName))
+            .Select(kv => kv.Key)
+            .Concat(wornContainers)
+            .ToHashSet(StringComparer.Ordinal);
+
+        _ledger = LedgerReplay.Run(moves, worn, enumeration, carried);
     }
 
     /// <summary>The whole move history is only a few thousand rows, so resolve in memory.</summary>
@@ -117,7 +125,7 @@ public sealed class HoldingResolver
                 {
                     rows.Add(Build(
                         where, itemClass, geid: null, loose.Quantity, loose.Since, loose.ArrivedBy,
-                        loose.Confirmed, loose.Inferred, ambiguous: true));
+                        loose.Confirmed, loose.Inferred, ambiguous: true, loose.DuplicateRisk));
                 }
             }
         }
@@ -147,7 +155,7 @@ public sealed class HoldingResolver
 
     private ItemHolding Build(
         Holding where, string itemClass, string? geid, int quantity, DateTimeOffset since,
-        string arrivedBy, bool confirmed, bool inferred, bool ambiguous)
+        string arrivedBy, bool confirmed, bool inferred, bool ambiguous, bool duplicateRisk = false)
     {
         var caveats = new List<string>();
         var score = 1.0;
@@ -158,10 +166,18 @@ public sealed class HoldingResolver
             caveats.Add("the game never confirmed the move that put it here");
         }
 
-        if (inferred)
+        // An arrival nobody could source is only a problem when the same kind of item is still
+        // recorded somewhere else: then one of the two is wrong. Otherwise it is simply the
+        // first time the item turns up — looted, bought, or already there before the logs
+        // begin — and it provably arrived, so it costs nothing.
+        if (inferred && duplicateRisk)
         {
             score *= 0.8;
             caveats.Add("we saw this arrive but never saw where it came from, so it may have been counted twice");
+        }
+        else if (inferred)
+        {
+            caveats.Add("first seen being moved out of somewhere we had no record of — looted, bought, or there before the logs begin");
         }
 
         // Carried in hand is where eaten, drunk and handed-in items end up, and none of those

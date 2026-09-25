@@ -257,6 +257,74 @@ public class LedgerReplayTests
     }
 
     [Fact]
+    public void A_shortfall_at_the_source_is_drawn_from_what_the_player_carries()
+    {
+        // Magazines ride along in a backpack and turn up in a station stack with no move line
+        // in between. The station stack of 14 is the backpack's 13 plus the 1 already there.
+        var ledger = LedgerReplay.Run(
+            [
+                Move(Nowhere, Backpack, "behr_rifle_ballistic_03_mag", amount: 13, minute: 1),
+                Move(Nowhere, Station, "behr_rifle_ballistic_03_mag", amount: 1, minute: 2),
+                Move(Station, Crate, "behr_rifle_ballistic_03_mag", amount: 14, minute: 3),
+            ],
+            [],
+            carriedContainers: new HashSet<string> { Backpack.Key });
+
+        Assert.Empty(ledger.Contents(Backpack));
+        var (_, _, loose) = Assert.Single(ledger.Contents(Crate));
+        Assert.Equal(14, loose!.Quantity);
+        Assert.False(loose.Inferred);
+        Assert.Equal(13, ledger.Stats.UnitsFromCarried);
+    }
+
+    [Fact]
+    public void A_container_that_is_not_carried_is_never_raided_for_a_shortfall()
+    {
+        // A crate at another station does not travel with the player, so its contents are
+        // not a plausible source — the arrival stays a guess, and a flagged one.
+        var ledger = LedgerReplay.Run(
+            [
+                Move(Nowhere, OtherStation, "rifle_01", minute: 1),
+                Move(Crate, Station, "rifle_01", minute: 2),
+            ],
+            []);
+
+        Assert.Single(ledger.Contents(OtherStation));
+        var (_, _, loose) = Assert.Single(ledger.Contents(Station));
+        Assert.True(loose!.Inferred);
+        Assert.True(loose.DuplicateRisk);
+        Assert.Equal(1, ledger.Stats.UnitsDuplicateRisk);
+    }
+
+    [Fact]
+    public void A_class_level_store_takes_the_item_off_the_player()
+    {
+        // A Store's source is always the player's hand or body, and the log leaves it INVALID.
+        // Without reading it that way, the canister stored in the crate stays equipped too.
+        var ledger = Run(
+            Move(Station, OnPlayer, "grin_multitool_resource_salvage_repair_01_filled", minute: 1, moveType: "Interaction"),
+            Move(Nowhere, Crate, "grin_multitool_resource_salvage_repair_01_filled", minute: 2, moveType: "Store"));
+
+        Assert.Empty(ledger.Contents(OnPlayer));
+        var (_, _, loose) = Assert.Single(ledger.Contents(Crate));
+        Assert.False(loose!.Inferred);
+    }
+
+    [Fact]
+    public void An_arrival_of_a_class_held_nowhere_else_is_a_first_sighting_not_a_duplicate()
+    {
+        // Armour pulled out of a wreck's crate: the crate was never seen filled, and nothing
+        // of the class is recorded anywhere. It is loot, not a double count.
+        var ledger = Run(Move(Crate, Station, "srvl_armor_heavy_core_01_01_10blue", minute: 1));
+
+        var (_, _, loose) = Assert.Single(ledger.Contents(Station));
+        Assert.True(loose!.Inferred);
+        Assert.False(loose.DuplicateRisk);
+        Assert.Equal(1, ledger.Stats.UnitsFirstSeen);
+        Assert.Equal(1.0, ledger.Stats.AccountedRate);
+    }
+
+    [Fact]
     public void An_equipped_item_missing_from_the_enumeration_is_left_alone()
     {
         // Only carried items are ever used up. Absence of an equipped item has other

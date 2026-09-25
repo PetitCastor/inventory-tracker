@@ -59,11 +59,13 @@ Each stage has its own metrics, so a regression points at the stage that caused 
 | | `capture.unrecognised_lines` | **0** (invariant) | Request-shaped lines the parser could not read (`IngestStats.UnrecognisedMoves`). Non-zero means the game changed its format. |
 | Enrichment | `enrich.geid_coverage` | 85 % | Moves that name the exact entity rather than just a class. |
 | | `enrich.confirmed_rate` | 95 % | Moves carrying a `succeed` completion. An unconfirmed placement is scored ×0.5. |
-| Ledger | `ledger.source_hit_rate` | 80 % | Class-level units found where the move said they came from. Each miss is history the ledger never saw, and a likely duplicate. |
+| Ledger | `ledger.accounted_rate` | 95 % | Class-level units the ledger can account for: found at the source, found on the player, or the class's first appearance. |
+| | `ledger.duplicate_risk_rate` | 2 % | Class-level units credited without a source while the same class was still recorded elsewhere. One of the two is wrong. |
 | Holdings | `holdings.high_share` | 80 % | Rows rated High confidence, the ones the user can trust outright. |
 | | `holdings.low_share` | 5 % | Rows rated Low. |
 | | `holdings.mean_score` | 0.85 | Mean resolver score. |
-| | `holdings.inferred_share` | 5 % | Rows that rest on an arrival whose source was never seen. |
+| | `holdings.inferred_share` | 5 % | Rows that may be counted twice: an arrival with no source while the class was recorded elsewhere. |
+| | `holdings.first_seen_share` | 15 % | Rows whose history starts with the move that revealed them: loot, purchases, stock already there. Real, just without a past. |
 | Live | `live.parity` | **100 %** (invariant) | Replaying the busiest files as a growing `Game.log`, one watcher pass per 5 s of log time, gives exactly the single-pass result (every move row and every holding, score and caveats included). |
 | | `live.cold_parity` | 95 % | The same, but with a restart before every pass, so only what the store persists carries over. |
 
@@ -140,6 +142,42 @@ The source-hit rate dips by one unit (62 inferred instead of 61). That fits the 
 being removed: a crate no longer holds a drink that was carried out, so a later class-level
 move out of it finds one unit fewer. That particular unit has not been traced.
 
+### Units not found at their source
+
+After the carry fix, 62 of the 112 class-level units in the local corpus still were not
+found at their source. The ledger now records every such move with a cause. That showed
+the metric was mixing three very different things.
+
+| Cause | Units | What it is |
+|---|---:|---|
+| First appearance of the class | 42 | Armour pulled out of wreck crates the player never filled, drinks and tools already in a crate or at a station before the logs begin, ammunition bought at a shop. The item provably arrived; it simply has no earlier history. **Not an error**, yet it was scored ×0.8 as "may have been counted twice". |
+| Ammunition carried on the player | 15 | For example, 14 magazines moved out of a station that held 1, while the ledger had the other 13 in the backpack: the same total. Magazines ride along in a backpack or on armour and change place with no move line. |
+| Class-level `Store` from the hand | 5 | Filled multitool canisters put away from the hand. A Store's source is always the player, but the log writes it as `INVALID`, so the canister stayed equipped as well as stored. |
+
+Three changes follow from that:
+
+- **A shortfall is drawn from what the player carries** (equipped items, backpacks and
+  worn apparel) before anything is guessed. This only applies when the move names a real
+  source.
+- **A class-level Store takes its item off the player.**
+- **An arrival with no source is only a duplicate risk if its class is still recorded
+  elsewhere.** Otherwise it is a first appearance: it costs no score, and it carries a
+  caveat saying it was looted, bought, or there before the logs begin.
+
+`ledger.source_hit_rate` is replaced by two metrics that separate those cases:
+`ledger.accounted_rate` and `ledger.duplicate_risk_rate`.
+
+| | Before | After |
+|---|---:|---:|
+| Units counted as possible duplicates | 62 / 112 | **2 / 112** (`duplicate_risk_rate` 1.8 %) |
+| Units found on the player | — | 15 |
+| First appearances | (counted as duplicates) | 42 |
+| `holdings.inferred_share` | 3.0 % | **0.5 %** |
+| `holdings.high_share` | 81.0 % | 82.7 % |
+
+The 2 units still at risk were taken from the player while the ledger also had the class
+dropped on the ground (`World`).
+
 ### Where the local corpus stands
 
 | Metric | Value | Target |
@@ -148,27 +186,30 @@ move out of it finds one unit fewer. That particular unit has not been traced.
 | `capture.unrecognised_lines` | 0 | 0 |
 | `enrich.geid_coverage` | 81.3 % | 85 % |
 | `enrich.confirmed_rate` | 91.3 % | 95 % |
-| `ledger.source_hit_rate` | 44.6 % | 80 % |
-| `holdings.high_share` | 81.0 % | 80 % |
-| `holdings.low_share` | 4.5 % | 5 % |
-| `holdings.mean_score` | 0.802 | 0.85 |
-| `holdings.inferred_share` | 3.0 % | 5 % |
+| `ledger.accounted_rate` | 98.2 % | 95 % |
+| `ledger.duplicate_risk_rate` | 1.8 % | 2 % |
+| `holdings.high_share` | 82.7 % | 80 % |
+| `holdings.low_share` | 4.6 % | 5 % |
+| `holdings.mean_score` | 0.806 | 0.85 |
+| `holdings.inferred_share` | 0.5 % | 5 % |
+| `holdings.first_seen_share` | 2.0 % | 15 % |
 | `live.parity` | 100 % | 100 % |
 | `live.cold_parity` | 82.9 % | 95 % |
+
+`holdings.mean_score` is now held back mostly by age: 144 of 197 rows carry "last seen N
+days ago" (×0.8 past 30 days), measured from the corpus's last line.
 
 ## Improvement plan
 
 This is ranked by expected effect on the metrics above. Each item names the metric that
 should move, so it can be verified by rerunning the study.
 
-1. **Find out why 61 of 112 class-level units still miss their source.** For 18 class-level
-   moves the ledger has nothing at all at the source. The rest find fewer units than they
-   ask for. Candidates to check against the report:
-   - history that starts mid-stream, before the corpus;
-   - loot pulled from containers the ledger never saw filled;
-   - moves out of a crate whose contents were only ever credited by class.
-
-   Moves: `ledger.source_hit_rate`.
+1. ~~Find out why class-level units miss their source.~~ Done: see "Units not found at
+   their source" above. Next, and much smaller: the staleness penalty. Whether an item
+   stored at a station 30 days ago is less likely to still be there is an assumption. The
+   corpus never contradicts one of those placements, so it could be tested against later
+   moves out of the same station.
+   Moves: `holdings.mean_score`.
 2. ~~Decide what `Type[Interaction] action[Carry]` means.~~ Done: see "Carrying items in
    hand" above. `<[ActorState] Place> … placed '<class>_<geid>' in lootable container` is a
    related, unparsed signal: a carried mission item being handed in.
