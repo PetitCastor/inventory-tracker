@@ -53,8 +53,8 @@ public static class ReliabilityMetrics
             "A later named move out of the place the ledger had the item. Checks the ledger itself, and that age alone does not stale a placement."),
         new("placement.brier", "Calibration error of placement trust (Brier score)", false, 0.05, null, false,
             "Mean squared gap between the trust put in a placement and whether the game then confirmed it. 0 is perfect; trusting everything fully scores the share that was wrong."),
-        new("placement.across_update_same_place", "Placements confirmed across a game update", true, 0.0, null, true,
-            "Context, not a goal: how often a placement survived an update. Low means updates move items, which the resolver penalises."),
+        new("placement.across_update_same_place", "Placements confirmed across a game update", true, 0.90, null, true,
+            "How often the ledger's belief held across an update, once it has moved what the update moved to where the player spawned."),
 
         new("live.parity", "Live tailing matches a single pass", true, 1.0, 1.0, true,
             "Following Game.log as it grows must reach the same answer as reading it once. Anything less is a bug."),

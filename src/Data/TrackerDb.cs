@@ -66,9 +66,10 @@ public sealed class TrackerDb
     /// one left off, or skip the file entirely.
     /// </para>
     /// <para>9 -> 10 adds <c>session.cur_loc_id</c> / <c>cur_loc_since</c>; 10 -> 11 adds <c>move.action</c>;
-    /// 11 -> 12 adds <c>session.build</c>.</para>
+    /// 11 -> 12 adds <c>session.build</c>; 12 -> 13 adds <c>session.first_loc_id</c> /
+    /// <c>first_loc_since</c>.</para>
     /// </summary>
-    private const int SchemaVersion = 12;
+    private const int SchemaVersion = 13;
 
     public void Initialize()
     {
@@ -174,7 +175,11 @@ public sealed class TrackerDb
             -- The game build that wrote the file. A change of build is a game update, and
             -- updates move stored items server-side without a single log line: after build
             -- 12519617 every item checked had been moved to where the player next spawned.
-            build         INTEGER
+            build         INTEGER,
+            -- Where the player first stood in this file: the spawn. The first session of a
+            -- new build spawned where the update moved the player's stored items to.
+            first_loc_id    TEXT,
+            first_loc_since TEXT
         );
 
         -- One row per item relocation.

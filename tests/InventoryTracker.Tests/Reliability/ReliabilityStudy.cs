@@ -162,6 +162,7 @@ public static class ReliabilityStudy
         report.Counts["ledger.anonymous_reconciled"] = s.AnonymousReconciled;
         report.Counts["ledger.worn_sightings"] = s.WornSightings;
         report.Counts["ledger.carried_used_up"] = s.CarriedUsedUp;
+        report.Counts["ledger.relocated_by_update"] = s.RelocatedByUpdate;
 
         MeasurePlacements(s, resolver.Updates, resolver.UpdateSurvivals, report);
 
@@ -254,7 +255,8 @@ public static class ReliabilityStudy
         {
             report.PlacementTable.Add(
                 $"- `{c.At:yyyy-MM-dd HH:mm} {c.ItemClass} {c.Geid}: believed {c.Believed.Kind} {c.Believed.Key} " +
-                $"(by {c.BelievedArrivedBy}, {c.Age.TotalDays:F1} d{(Crossed(c) ? ", across an update" : "")}), " +
+                $"(by {c.BelievedArrivedBy}, {c.Age.TotalDays:F1} d{(Crossed(c) ? ", across an update" : "")}" +
+                $"{(c.BelievedMovedByUpdate is { } b ? $", relocated by {b}" : "")}), " +
                 $"moved from {c.Actual.Kind} {c.Actual.Key}`");
         }
 
@@ -265,7 +267,8 @@ public static class ReliabilityStudy
         {
             var r = survival[u.Build];
             report.PlacementTable.Add(
-                $"- build {u.Build}, first played {u.At:yyyy-MM-dd}: {r.Survived}/{r.Checked} placements survived, " +
+                $"- build {u.Build}, first played {u.At:yyyy-MM-dd}, spawned at {u.Spawn ?? "unknown"}: " +
+                $"{r.Survived}/{r.Checked} placements held, " +
                 $"factor ×{r.Factor:0.##}{(r.Verified ? "" : " (unverified default)")}");
         }
 

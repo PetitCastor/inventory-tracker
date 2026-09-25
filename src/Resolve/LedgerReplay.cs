@@ -23,6 +23,10 @@ namespace InventoryTracker.Resolve;
 public sealed class LedgerReplay
 {
     /// <summary>One entity, tracked by geid.</summary>
+    /// <param name="MovedByUpdate">
+    /// The game build whose update the ledger assumed moved this entity here, rather than a
+    /// move line. <see cref="Since"/> stays the last time the log saw it.
+    /// </param>
     public sealed record Instance(
         string Geid,
         string ItemClass,
@@ -30,7 +34,8 @@ public sealed class LedgerReplay
         string ArrivedBy,
         bool Confirmed,
         bool IdentityAmbiguous,
-        bool Inferred);
+        bool Inferred,
+        int? MovedByUpdate = null);
 
     /// <summary>An unnamed quantity of one class, with the newest arrival that contributed to it.</summary>
     /// <param name="Inferred">
@@ -42,6 +47,9 @@ public sealed class LedgerReplay
     /// unit is simply the first time the item was seen: looted, bought, or there before the
     /// logs begin.
     /// </param>
+    /// <param name="MovedByUpdate">
+    /// Some of these units were assumed moved here by this build's update.
+    /// </param>
     public sealed record Anonymous(
         string ItemClass,
         int Quantity,
@@ -49,7 +57,8 @@ public sealed class LedgerReplay
         string ArrivedBy,
         bool Confirmed,
         bool Inferred,
-        bool DuplicateRisk = false);
+        bool DuplicateRisk = false,
+        int? MovedByUpdate = null);
 
     /// <summary>What one holding contains, by item class.</summary>
     private sealed class Slot
@@ -123,6 +132,9 @@ public sealed class LedgerReplay
         /// <summary>Items carried in hand that a later body enumeration left out — used up.</summary>
         public int CarriedUsedUp { get; internal set; }
 
+        /// <summary>Units a game update was assumed to have moved to where the player next spawned.</summary>
+        public int RelocatedByUpdate { get; internal set; }
+
         /// <summary>Every class-level move whose source fell short, and why.</summary>
         public List<SourceMiss> Misses { get; } = [];
 
@@ -165,6 +177,9 @@ public sealed class LedgerReplay
         public DateTimeOffset At { get; init; }
         public Holding Actual { get; init; }
         public string BelievedArrivedBy { get; init; } = "";
+
+        /// <summary>The belief was a game update's relocation, not a move line.</summary>
+        public int? BelievedMovedByUpdate { get; init; }
 
         /// <summary>
         /// Believed and actual resolve to the same place once containers are followed out to
@@ -239,31 +254,106 @@ public sealed class LedgerReplay
     /// Containers that travel with the player: backpacks and worn apparel. A class-level move
     /// whose source falls short draws the rest from these before guessing.
     /// </param>
+    /// <param name="relocations">
+    /// Game updates, and where each moved the player's belongings to.
+    /// </param>
     public static LedgerReplay Run(
         IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn, BodyEnumeration? enumeration = null,
-        IReadOnlySet<string>? carriedContainers = null)
+        IReadOnlySet<string>? carriedContainers = null, IEnumerable<Relocation>? relocations = null)
     {
         var ledger = new LedgerReplay { _carriedContainers = carriedContainers ?? new HashSet<string>() };
 
         // Attachment sightings are enumerations of the player's body rather than moves, so
         // they are merged into the same timeline and applied by timestamp like anything else.
         var timeline = moves
-            .Select(m => (At: m.Timestamp, Move: (MoveRecord?)m, Worn: (WornSighting?)null, Body: (BodyEnumeration?)null))
-            .Concat(worn.Select(w => (At: w.Timestamp, Move: (MoveRecord?)null, Worn: (WornSighting?)w, Body: (BodyEnumeration?)null)));
+            .Select(m => new Entry(m.Timestamp, Move: m))
+            .Concat(worn.Select(w => new Entry(w.Timestamp, Worn: w)))
+            .Concat((relocations ?? Enumerable.Empty<Relocation>()).Select(r => new Entry(r.At, Update: r)));
 
-        if (enumeration is not null)
-        {
-            timeline = timeline.Append((At: enumeration.At, Move: null, Worn: null, Body: enumeration));
-        }
+        if (enumeration is not null) timeline = timeline.Append(new Entry(enumeration.At, Body: enumeration));
 
-        foreach (var entry in timeline.OrderBy(x => x.At))
+        // An update lands before anything logged in the build it starts.
+        foreach (var entry in timeline.OrderBy(x => x.At).ThenBy(x => x.Update is null ? 1 : 0))
         {
             if (entry.Move is { } move) ledger.Apply(move);
             else if (entry.Worn is { } sighting) ledger.ApplyWorn(sighting);
             else if (entry.Body is { } body) ledger.UseUpCarried(body);
+            else if (entry.Update is { } update) ledger.Relocate(update);
         }
 
         return ledger;
+    }
+
+    private sealed record Entry(
+        DateTimeOffset At, MoveRecord? Move = null, WornSighting? Worn = null, BodyEnumeration? Body = null,
+        Relocation? Update = null);
+
+    /// <summary>
+    /// A game update, and the station the player first spawned at in the build it started.
+    /// </summary>
+    public sealed record Relocation(DateTimeOffset At, int Build, Holding Destination);
+
+    /// <summary>
+    /// Moves everything stored at a station or on the player to <paramref name="update"/>'s
+    /// destination.
+    /// <para>
+    /// Updates move belongings server-side and log none of it. In the local corpus, every one
+    /// of the 13 items checked after build 12519617 was taken out of the station the player
+    /// first spawned at: armour stored at Lorville, a rifle stored at Levski, and weapons and
+    /// an undersuit last seen equipped. Containers are entities too, so what is inside one
+    /// follows it. Dropped items are left where they fell, and so is anything carried in hand:
+    /// it is most likely used up, and the next body enumeration settles that.
+    /// </para>
+    /// </summary>
+    private void Relocate(Relocation update)
+    {
+        var equipped = new Holding(InventoryKind.Equipped, "");
+        var from = _contents.Keys
+            .Where(h => h != update.Destination && (h.Kind == InventoryKind.Location || h == equipped))
+            .ToList();
+
+        foreach (var where in from)
+        {
+            foreach (var (itemClass, slot) in _contents[where])
+            {
+                foreach (var instance in slot.Named.Where(i => !_carried.Contains(i.Geid)).ToList())
+                {
+                    slot.Named.Remove(instance);
+                    SlotFor(update.Destination, itemClass, create: true)!.Named.Add(
+                        instance with { MovedByUpdate = update.Build });
+                    _instanceAt[instance.Geid] = update.Destination;
+                    Stats.RelocatedByUpdate++;
+                }
+
+                if (slot.Loose is { } loose && loose.ArrivedBy != CarryArrival)
+                {
+                    slot.Loose = null;
+                    MergeLoose(update.Destination, loose with { MovedByUpdate = update.Build });
+                    Stats.RelocatedByUpdate += loose.Quantity;
+                }
+            }
+        }
+    }
+
+    /// <summary>Adds a whole unnamed stack to a holding, merging with what is already there.</summary>
+    private void MergeLoose(Holding target, Anonymous moved)
+    {
+        var slot = SlotFor(target, moved.ItemClass, create: true)!;
+        if (slot.Loose is not { } existing)
+        {
+            slot.Loose = moved;
+            return;
+        }
+
+        var newer = existing.Since >= moved.Since ? existing : moved;
+        slot.Loose = newer with
+        {
+            Quantity = existing.Quantity + moved.Quantity,
+            Confirmed = existing.Confirmed && moved.Confirmed,
+            Inferred = existing.Inferred || moved.Inferred,
+            DuplicateRisk = existing.DuplicateRisk || moved.DuplicateRisk,
+            MovedByUpdate = moved.MovedByUpdate ?? existing.MovedByUpdate,
+        };
     }
 
     /// <summary>An entity observed attached to the player's body at a point in time.</summary>
@@ -514,6 +604,7 @@ public sealed class LedgerReplay
             At = move.Timestamp,
             Actual = source,
             BelievedArrivedBy = instance.ArrivedBy,
+            BelievedMovedByUpdate = instance.MovedByUpdate,
             SamePlace = PlaceOf(believed) == PlaceOf(source),
         });
     }

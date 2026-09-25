@@ -336,4 +336,82 @@ public class LedgerReplayTests
 
         Assert.Equal(OnPlayer, ledger.InstanceAt["333333333333"]);
     }
+
+    /// <summary>A game update the ledger moves the player's belongings through.</summary>
+    private static LedgerReplay.Relocation Update(Holding spawn, int minute) =>
+        new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), 12519617, spawn);
+
+    private static LedgerReplay RunAcross(LedgerReplay.Relocation update, params MoveRecord[] moves) =>
+        LedgerReplay.Run(moves, [], relocations: [update]);
+
+    [Fact]
+    public void A_game_update_moves_what_was_stored_or_equipped_to_where_the_player_spawned()
+    {
+        // Build 12519617: armour stored at Lorville and weapons last equipped were all taken
+        // out of Area18, where the player first spawned after the update.
+        var ledger = RunAcross(
+            Update(OtherStation, minute: 5),
+            Move(Nowhere, Station, "armor_core_01", geid: "111111111111", minute: 1),
+            Move(Station, OnPlayer, "rifle_01", geid: "222222222222", minute: 2),
+            Move(Nowhere, Station, "ammo_box_01", amount: 4, minute: 3));
+
+        Assert.Equal(OtherStation, ledger.InstanceAt["111111111111"]);
+        Assert.Equal(OtherStation, ledger.InstanceAt["222222222222"]);
+        Assert.Equal(4, ledger.Contents(OtherStation).Single(c => c.ItemClass == "ammo_box_01").Loose!.Quantity);
+        Assert.Empty(ledger.Contents(Station));
+        Assert.All(ledger.NamedIn(OtherStation, "armor_core_01"), i => Assert.Equal(12519617, i.MovedByUpdate));
+        Assert.Equal(6, ledger.Stats.RelocatedByUpdate);
+    }
+
+    [Fact]
+    public void A_containers_contents_follow_it_through_an_update()
+    {
+        var ledger = RunAcross(
+            Update(OtherStation, minute: 5),
+            Move(Nowhere, Station, "crate_01", geid: Crate.Key, minute: 1),
+            Move(Nowhere, Crate, "rifle_01", geid: "111111111111", minute: 2));
+
+        Assert.Equal(OtherStation, ledger.InstanceAt[Crate.Key]);
+        Assert.Equal(Crate, ledger.InstanceAt["111111111111"]);
+    }
+
+    [Fact]
+    public void An_update_leaves_dropped_and_hand_carried_items_where_they_were()
+    {
+        // A drop despawns on its own, and a carry is most likely eaten or drunk: the next body
+        // enumeration is what settles it, and it only looks on the player.
+        var world = new Holding(InventoryKind.World, "");
+        var ledger = RunAcross(
+            Update(OtherStation, minute: 5),
+            Move(Station, world, "rifle_01", geid: "111111111111", minute: 1, moveType: "Drop"),
+            Carry(Crate, "drink_01", "222222222222", minute: 2));
+
+        Assert.Equal(world, ledger.InstanceAt["111111111111"]);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["222222222222"]);
+    }
+
+    [Fact]
+    public void A_move_out_of_the_spawn_station_after_an_update_confirms_the_relocation()
+    {
+        var ledger = RunAcross(
+            Update(OtherStation, minute: 5),
+            Move(Nowhere, Station, "armor_core_01", geid: "111111111111", minute: 1),
+            Move(OtherStation, OnPlayer, "armor_core_01", geid: "111111111111", minute: 9));
+
+        var check = Assert.Single(ledger.Stats.PlacementChecks);
+        Assert.True(check.SamePlace);
+        Assert.Equal(12519617, check.BelievedMovedByUpdate);
+    }
+
+    [Fact]
+    public void A_class_level_move_after_an_update_finds_the_stack_at_the_spawn_station()
+    {
+        var ledger = RunAcross(
+            Update(OtherStation, minute: 5),
+            Move(Nowhere, Station, "ammo_box_01", amount: 4, minute: 1),
+            Move(OtherStation, Crate, "ammo_box_01", amount: 3, minute: 9));
+
+        Assert.Equal(3, ledger.Stats.UnitsFromLoose);
+        Assert.DoesNotContain(ledger.Stats.Misses, m => m.Source == OtherStation);
+    }
 }
