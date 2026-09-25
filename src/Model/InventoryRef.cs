@@ -30,6 +30,13 @@ public enum InventoryKind
     /// </summary>
     World,
 
+    /// <summary>
+    /// Synthetic: the item was on the player, and a later enumeration of the body no longer
+    /// listed it. It was stored, sold or lost without a log line saying where, so where it is
+    /// now is unknown. What was inside it went with it.
+    /// </summary>
+    LostTrack,
+
     /// <summary>Anything we do not recognise. Kept so diagnostics can surface new formats.</summary>
     Unknown,
 }

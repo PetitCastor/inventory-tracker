@@ -19,6 +19,9 @@ public sealed record IngestStats
     public int GeidsRecovered { get; set; }
     public int BatchMovesExpanded { get; set; }
     public int AttachmentsSeen { get; set; }
+
+    /// <summary>Requests the server never processed before the connection closed.</summary>
+    public int RequestsLost { get; set; }
     public int PlaceEvidence { get; set; }
 
     /// <summary>
@@ -186,6 +189,9 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             Apply(cn, tx, session.Id, line.StartOffset, ev, state, stats);
         }
 
+        // A rotated file is finished: nothing still waiting in it will ever be processed.
+        if (!file.IsLive) stats.RequestsLost += VoidUnprocessed(cn, tx, session.Id, before: null);
+
         var unrecognisedThisPass = stats.UnrecognisedMoves - unrecognisedBefore;
         SaveSession(
             cn, tx, session.Id, reader.Offset, firstTs, lastTs, newestLineTs, unrecognisedThisPass,
@@ -215,6 +221,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
         var state = new SessionState { CurrentLocation = session.CurrentLocation };
         PreloadPendingRequests(cn, session.Id, state);
+        PreloadLastBurst(cn, session.Id, state);
         return state;
     }
 
@@ -313,7 +320,12 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             }
 
             case AttachmentSeen worn:
-                UpsertAttachment(cn, tx, worn);
+                // A local line is the client predicting an equip still in flight; the
+                // persistent line for the real entity follows within seconds.
+                if (!worn.IsPersistent) break;
+
+                RecordSighting(cn, tx, sessionId, lineOffset, worn, state);
+                if (!worn.IsPlaceholder) UpsertAttachment(cn, tx, worn);
                 stats.AttachmentsSeen++;
                 break;
 
@@ -346,6 +358,10 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             // The canary firing: a request-shaped line neither ParseQueued nor ParseAddMove
             // could read. Nothing to persist for it beyond the count — there is no move to
             // record, only the fact that one was probably missed.
+            case ChannelDisconnected closed:
+                stats.RequestsLost += VoidUnprocessed(cn, tx, sessionId, closed.Timestamp);
+                break;
+
             case UnrecognisedMove:
                 stats.UnrecognisedMoves++;
                 break;
@@ -547,6 +563,81 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         /// <summary>The quantum destination last selected, and when the drive arrived at it.</summary>
         public string? QuantumTarget { get; set; }
         public DateTimeOffset? QuantumArrivedAt { get; set; }
+
+        /// <summary>The newest attachment line: when, and the burst it opened or joined.</summary>
+        public (DateTimeOffset At, long BurstId)? LastSighting { get; set; }
+
+        /// <summary>The newest line of the current burst that a sub-attachment could hang off.</summary>
+        public string? ParentCandidate { get; set; }
+    }
+
+    /// <summary>
+    /// Attachment lines closer together than this are one burst. A whole enumeration of the
+    /// body lands within two milliseconds; the next one is tens of seconds away at the least.
+    /// </summary>
+    private static readonly TimeSpan BurstGap = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// Stores one attachment line, with the burst it belongs to and, for a sub-attachment, the
+    /// item it hangs off.
+    /// </summary>
+    private static void RecordSighting(
+        SqliteConnection cn, SqliteTransaction tx, long sessionId, long lineOffset, AttachmentSeen worn,
+        SessionState state)
+    {
+        // A line stamped earlier than the one before it is not part of that burst either.
+        var burstId = state.LastSighting is { } last
+                      && worn.Timestamp >= last.At && worn.Timestamp - last.At < BurstGap
+            ? last.BurstId
+            : lineOffset;
+        if (burstId == lineOffset) state.ParentCandidate = null;
+        state.LastSighting = (worn.Timestamp, burstId);
+
+        string? parent = null;
+        if (worn.IsPart) parent = state.ParentCandidate;
+        else state.ParentCandidate = worn.Geid;
+
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT OR IGNORE INTO attachment_sighting(
+                session_id, line_offset, ts, geid, class_name, port, burst_id, parent_geid, placeholder)
+            VALUES($s, $o, $t, $g, $c, $p, $b, $parent, $ph)
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$o", lineOffset);
+        cmd.Parameters.AddWithValue("$t", Iso(worn.Timestamp));
+        cmd.Parameters.AddWithValue("$g", worn.Geid);
+        cmd.Parameters.AddWithValue("$c", worn.ClassName);
+        cmd.Parameters.AddWithValue("$p", worn.Port);
+        cmd.Parameters.AddWithValue("$b", burstId);
+        cmd.Parameters.AddWithValue("$parent", (object?)parent ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$ph", worn.IsPlaceholder ? 1 : 0);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Picks the burst tracking up where the store left it, so a burst split across two
+    /// watcher passes stays one burst and its children still find their parent.
+    /// </summary>
+    private static void PreloadLastBurst(SqliteConnection cn, long sessionId, SessionState state)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = """
+            SELECT ts, burst_id, geid, port FROM attachment_sighting
+            WHERE session_id = $s
+              AND burst_id = (SELECT burst_id FROM attachment_sighting
+                              WHERE session_id = $s ORDER BY line_offset DESC LIMIT 1)
+            ORDER BY line_offset
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            state.LastSighting = (DateTimeOffset.Parse(r.GetString(0), CultureInfo.InvariantCulture), r.GetInt64(1));
+            if (!AttachmentSeen.IsPartPort(r.GetString(3))) state.ParentCandidate = r.GetString(2);
+        }
     }
 
     private sealed record SessionRow(
@@ -617,7 +708,10 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         using (var del = cn.CreateCommand())
         {
             del.Transaction = tx;
-            del.CommandText = "DELETE FROM move WHERE session_id = $s";
+            del.CommandText = """
+                DELETE FROM move WHERE session_id = $s;
+                DELETE FROM attachment_sighting WHERE session_id = $s;
+                """;
             del.Parameters.AddWithValue("$s", session.Id);
             del.ExecuteNonQuery();
         }
@@ -643,17 +737,19 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
     /// <summary>
     /// Resuming mid-file loses the in-memory request map, which would leave the
-    /// completions that follow the watermark unmatched. Restore the unresolved ones.
+    /// completions that follow the watermark unmatched. Restore the unresolved ones, and the
+    /// ones marked lost: a completion that still turns up must be able to overwrite the mark.
     /// </summary>
     private static void PreloadPendingRequests(SqliteConnection cn, long sessionId, SessionState state)
     {
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
             SELECT request_no, id, ts FROM move
-            WHERE session_id = $s AND result IS NULL
+            WHERE session_id = $s AND (result IS NULL OR result = $lost)
             ORDER BY id DESC LIMIT $limit
             """;
         cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$lost", LostResult);
         cmd.Parameters.AddWithValue("$limit", PreloadLimit);
 
         using var r = cmd.ExecuteReader();
@@ -816,6 +912,35 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.Parameters.AddWithValue("$v", value);
         cmd.Parameters.AddWithValue("$t", Iso(ts));
         cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>What a request the server never processed is recorded as.</summary>
+    public const string LostResult = "lost";
+
+    /// <summary>
+    /// Marks every request of the session still without a result as lost, up to
+    /// <paramref name="before"/> when given.
+    /// <para>
+    /// Across every log since 2026-08-04, exactly four request-backed moves never got a
+    /// result: the four the server dropped at 15:53 on 2026-09-25. So nothing that was
+    /// processed is caught by this. The rows from <c>OnInventoryStoreItem</c> are left alone:
+    /// they are companions of a Store the request line records, never requests themselves, and
+    /// never get a result. A completion that still turns up later overwrites the mark.
+    /// </para>
+    /// </summary>
+    private static int VoidUnprocessed(SqliteConnection cn, SqliteTransaction tx, long sessionId, DateTimeOffset? before)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            UPDATE move SET result = $lost
+            WHERE session_id = $s AND result IS NULL AND request_no > 0 AND move_type <> 'StoreItem'
+              AND ($before IS NULL OR ts <= $before)
+            """;
+        cmd.Parameters.AddWithValue("$lost", LostResult);
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$before", Iso(before));
+        return cmd.ExecuteNonQuery();
     }
 
     private static void UpdateResult(SqliteConnection cn, SqliteTransaction tx, long moveId, string result)

@@ -227,7 +227,7 @@ public class LedgerReplayTests
         var ledger = LedgerReplay.Run(
             [Carry(Crate, "Food_Grub_Seanut_1_Lemon", "750982316286", minute: 2)],
             [],
-            Enumerated(minute: 10, "200000000218"));
+            [Enumerated(minute: 10, "200000000218")]);
 
         Assert.Empty(ledger.Contents(OnPlayer));
         Assert.False(ledger.InstanceAt.ContainsKey("750982316286"));
@@ -240,7 +240,7 @@ public class LedgerReplayTests
         var ledger = LedgerReplay.Run(
             [Carry(Crate, "Drink_bottle_cruz_01_a", "780590795163", minute: 2)],
             [],
-            Enumerated(minute: 10, "780590795163"));
+            [Enumerated(minute: 10, "780590795163")]);
 
         Assert.Equal(OnPlayer, ledger.InstanceAt["780590795163"]);
     }
@@ -249,7 +249,8 @@ public class LedgerReplayTests
     public void An_item_carried_then_moved_by_class_is_no_longer_carried()
     {
         // Stored back and taken out again by class-level moves, the drink is on the player
-        // as an ordinary item. Missing from an enumeration, it is not used up.
+        // as an ordinary item. Missing from an enumeration, it is not used up: it left the
+        // player for somewhere no line names.
         var ledger = LedgerReplay.Run(
             [
                 Carry(Crate, "Drink_bottle_cruz_01_a", "780590795163", minute: 2),
@@ -257,9 +258,9 @@ public class LedgerReplayTests
                 Move(Crate, OnPlayer, "Drink_bottle_cruz_01_a", minute: 4),
             ],
             [],
-            Enumerated(minute: 10));
+            [Enumerated(minute: 10)]);
 
-        Assert.Equal(OnPlayer, ledger.InstanceAt["780590795163"]);
+        Assert.Equal(LedgerReplay.LostTrack, ledger.InstanceAt["780590795163"]);
         Assert.Equal(0, ledger.Stats.CarriedUsedUp);
     }
 
@@ -269,7 +270,7 @@ public class LedgerReplayTests
         var ledger = LedgerReplay.Run(
             [Carry(Crate, "Drink_bottle_cruz_01_a", "780590795163", minute: 12)],
             [],
-            Enumerated(minute: 10));
+            [Enumerated(minute: 10)]);
 
         Assert.Equal(OnPlayer, ledger.InstanceAt["780590795163"]);
     }
@@ -366,17 +367,162 @@ public class LedgerReplayTests
     }
 
     [Fact]
-    public void An_equipped_item_missing_from_the_enumeration_is_left_alone()
+    public void An_equipped_item_missing_from_the_enumeration_is_no_longer_on_the_player()
     {
-        // Only carried items are ever used up. Absence of an equipped item has other
-        // explanations, and demoting those is a separate decision.
+        // Only carried items are ever used up. An equipped item the body no longer lists was
+        // stored, sold or lost somewhere no line names; it is kept, but not on the player.
         var ledger = LedgerReplay.Run(
             [Move(Station, OnPlayer, "rsi_helmet_01", geid: "333333333333", minute: 2, moveType: "Interaction")],
             [],
-            Enumerated(minute: 10));
+            [Enumerated(minute: 10)]);
 
-        Assert.Equal(OnPlayer, ledger.InstanceAt["333333333333"]);
+        Assert.Equal(LedgerReplay.LostTrack, ledger.InstanceAt["333333333333"]);
+        Assert.Equal(1, ledger.Stats.WornEvicted);
+        Assert.Equal(0, ledger.Stats.CarriedUsedUp);
     }
+
+    [Fact]
+    public void An_unnamed_item_on_the_player_whose_class_the_listing_leaves_out_is_no_longer_there()
+    {
+        var ledger = LedgerReplay.Run(
+            [Move(Station, OnPlayer, "behr_rifle_ballistic_03_mag", amount: 2, minute: 2, moveType: "Interaction")],
+            [],
+            [new(new DateTimeOffset(2026, 7, 16, 12, 10, 0, TimeSpan.Zero), new HashSet<string>(), new HashSet<string> { "hdtc_undersuit_01_01_20" })]);
+
+        Assert.Empty(ledger.Contents(OnPlayer));
+        var (_, _, loose) = Assert.Single(ledger.Contents(LedgerReplay.LostTrack));
+        Assert.Equal(2, loose!.Quantity);
+        Assert.Equal(2, ledger.Stats.WornEvicted);
+    }
+
+    [Fact]
+    public void A_new_item_on_a_body_port_replaces_the_old_one_even_at_the_same_instant()
+    {
+        var ledger = LedgerReplay.Run(
+            [],
+            [
+                Worn(minute: 1, "784862306922", "qrt_utility_heavy_backpack_01_01_03") with { Port = "backpack" },
+                Worn(minute: 1, "845736965831", "qrt_utility_heavy_backpack_01_01_03") with { Port = "backpack" },
+            ]);
+
+        Assert.Equal(LedgerReplay.LostTrack, ledger.InstanceAt["784862306922"]);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["845736965831"]);
+    }
+
+    [Fact]
+    public void What_is_inside_a_backpack_the_body_no_longer_lists_goes_with_it()
+    {
+        var ledger = LedgerReplay.Run(
+            [Move(Station, Backpack, "Drink_can_pips_01_t17_a", geid: "784099875932", minute: 3, moveType: "Store")],
+            [Worn(minute: 1, Backpack.Key, "qrt_utility_heavy_backpack_01_01_03")],
+            [Enumerated(minute: 1, Backpack.Key), Enumerated(minute: 10, "845736965831")]);
+
+        Assert.Equal(LedgerReplay.LostTrack, ledger.InstanceAt[Backpack.Key]);
+        Assert.Equal(Backpack, ledger.InstanceAt["784099875932"]);
+    }
+
+    [Fact]
+    public void An_item_listed_again_stays_on_the_player_and_one_put_on_after_the_listing_is_not_contradicted()
+    {
+        var ledger = LedgerReplay.Run(
+            [Move(Station, OnPlayer, "grin_utility_medium_helmet_01_01_01", geid: "726852737760", minute: 12, moveType: "Interaction")],
+            [Worn(minute: 1, "845736965829", "hdtc_undersuit_01_01_20"), Worn(minute: 10, "845736965829", "hdtc_undersuit_01_01_20")],
+            [Enumerated(minute: 1, "845736965829"), Enumerated(minute: 10, "845736965829")]);
+
+        Assert.Equal(OnPlayer, ledger.InstanceAt["845736965829"]);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["726852737760"]);
+        Assert.Equal(0, ledger.Stats.WornEvicted);
+    }
+
+    [Fact]
+    public void An_evicted_item_sighted_again_without_a_move_is_counted()
+    {
+        // The reliability study reads this as an enumeration that left out something worn.
+        var ledger = LedgerReplay.Run(
+            [],
+            [Worn(minute: 1, "845736965844", "qrt_utility_heavy_helmet_01_01_03"), Worn(minute: 20, "845736965844", "qrt_utility_heavy_helmet_01_01_03")],
+            [Enumerated(minute: 10)]);
+
+        Assert.Equal(1, ledger.Stats.EvictedThenResighted);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["845736965844"]);
+    }
+
+    [Fact]
+    public void A_part_sits_in_its_parent_and_goes_where_the_parent_is_stored()
+    {
+        var ledger = LedgerReplay.Run(
+            [Move(Nowhere, Station, "qrt_utility_heavy_helmet_01_01_03", geid: "845736965844", minute: 5, moveType: "Store")],
+            [
+                Worn(minute: 1, "845736965844", "qrt_utility_heavy_helmet_01_01_03"),
+                Worn(minute: 1, "845736965845", "FP_Visor") with { Port = "helmet_visor", IsPart = true, ParentGeid = "845736965844" },
+            ]);
+
+        Assert.Equal(new Holding(InventoryKind.Container, "845736965844"), ledger.InstanceAt["845736965845"]);
+        Assert.Equal(Station, ledger.InstanceAt["845736965844"]);
+        Assert.True(ledger.IsPartParent("845736965844"));
+    }
+
+    [Fact]
+    public void A_listed_item_loses_the_parts_the_listing_leaves_out()
+    {
+        var ledger = LedgerReplay.Run(
+            [],
+            [
+                Worn(minute: 1, "845736965837", "behr_rifle_ballistic_03"),
+                Worn(minute: 1, "845736965838", "behr_rifle_ballistic_03_mag") with { IsPart = true, ParentGeid = "845736965837" },
+                Worn(minute: 10, "845736965837", "behr_rifle_ballistic_03"),
+            ],
+            [Enumerated(minute: 10, "845736965837")]);
+
+        Assert.Equal(LedgerReplay.LostTrack, ledger.InstanceAt["845736965838"]);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["845736965837"]);
+    }
+
+    [Fact]
+    public void Moves_the_server_dropped_leave_everything_at_the_source_the_player_saw_it_at()
+    {
+        // 2026-09-25 15:44-15:50: the Aril out and back, two Defiance out, all dropped. The
+        // Aril's return starts in the backpack only because the client showed it there.
+        var ledger = Run(
+            Move(Station, Backpack, "grin_utility_medium_helmet_01_01_01", result: "lost", minute: 44),
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 46),
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 47),
+            Move(Backpack, Station, "grin_utility_medium_helmet_01_01_01", result: "lost", minute: 50));
+
+        Assert.Empty(ledger.Contents(Backpack));
+        var station = ledger.Contents(Station).ToDictionary(c => c.ItemClass, c => c.Loose!.Quantity);
+        Assert.Equal(1, station["grin_utility_medium_helmet_01_01_01"]);
+        Assert.Equal(2, station["slaver_armor_heavy_helmet_01_9tails_01"]);
+        Assert.Equal(4, ledger.Stats.LostSkipped);
+        Assert.Equal(3, ledger.Stats.UnitsCreditedByLost);
+    }
+
+    [Fact]
+    public void A_failed_move_ends_a_stall_as_surely_as_a_succeeded_one()
+    {
+        // Two separate stalls, one Defiance each, with a failed move between them: the second
+        // must not count what the first seemed to move.
+        var ledger = Run(
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 1),
+            Move(Station, Crate, "rifle_01", result: "failed", minute: 2),
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 3));
+
+        var (_, _, loose) = Assert.Single(ledger.Contents(Station));
+        Assert.Equal(1, loose!.Quantity);
+    }
+
+    [Fact]
+    public void A_named_move_the_server_dropped_leaves_a_new_item_at_its_source()
+    {
+        var ledger = Run(
+            Move(Station, Crate, "rifle_01", geid: "111111111111", result: "lost", minute: 1));
+
+        Assert.Equal(Station, ledger.InstanceAt["111111111111"]);
+        Assert.Empty(ledger.Contents(Crate));
+    }
+
+    private static LedgerReplay.WornSighting Worn(int minute, string geid, string itemClass) =>
+        new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), geid, itemClass);
 
     /// <summary>A game update the ledger moves the player's belongings through.</summary>
     private static LedgerReplay.Relocation Update(Holding spawn, int minute) =>

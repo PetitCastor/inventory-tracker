@@ -8,17 +8,18 @@
         "capture.unrecognised_lines": 0,
         "enrich.geid_coverage": 0.8545,
         "enrich.confirmed_rate": 0.8848,
-        "ledger.accounted_rate": 0.9583,
-        "ledger.duplicate_risk_rate": 0.0417,
-        "holdings.high_share": 0.3725,
-        "holdings.low_share": 0.049,
-        "holdings.mean_score": 0.6588,
-        "holdings.inferred_share": 0.0098,
+        "ledger.accounted_rate": 1,
+        "ledger.duplicate_risk_rate": 0,
+        "worn.evicted_then_resighted": 0,
+        "holdings.high_share": 0.3212,
+        "holdings.low_share": 0.1576,
+        "holdings.mean_score": 0.611,
+        "holdings.inferred_share": 0,
         "holdings.first_seen_share": 0,
         "placement.within_build_same_place": 1,
         "placement.brier": 0,
         "live.parity": 1,
-        "live.cold_parity": 0.9572
+        "live.cold_parity": 0.9585
       }
     }
   }
