@@ -332,10 +332,13 @@ where they had logged out, and nothing says those updates moved anything. Reloca
 "the spawn" there meant moving every stored item to wherever the player happened to log
 out, here a mining ship in open space.
 
-Now each update records where the player last was before it (`GameUpdate.LeftFrom`, from
-the latest session's `cur_loc_id`). Belongings are relocated only when the spawn differs.
-An update that did not move the player is weighed as unverified. Its caveat says the player
-picked up where they had logged out, so nothing says whether it moved anything.
+Now each update records where the player last was before it (`GameUpdate.LeftFrom`, the
+last `cur_loc_id` an earlier session recorded). Belongings are relocated only when the spawn
+differs, comparing ids through place aliases. An update that did not move the player is
+weighed as unverified. Its caveat says the player picked up where they had logged out, so
+nothing says whether it moved anything. When no earlier session ever placed the player,
+`LeftFrom` is empty. That update moves nothing either, and its caveat says the logout place
+is unknown. The three updates in this corpus all have one, so the numbers below are unchanged.
 
 | | Relocate to any spawn (#17) | Only when the player was moved, spawns named |
 |---|---:|---:|

@@ -237,6 +237,54 @@ public sealed class LogIngestorTests : IDisposable
         Assert.Contains(holding.Caveats, c => c.Contains("picked up where they had logged out"));
     }
 
+    [Fact]
+    public void An_update_that_respawns_the_player_under_a_reissued_id_moves_nothing()
+    {
+        // The game re-issues ids for the same station. Lorville under a new id is still where
+        // the player logged out, which the internal inventory name shows.
+        Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
+        Backup(12519617, "26 Aug 26 (20 30 32)",
+            "<2026-08-27T00:30:37.588Z> [Notice] <X> first line after the update",
+            "<2026-08-27T00:39:21.956Z> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
+            "Landing [0] -> [1234567890]. Location [0] -> [1234567890]. Pending [0]",
+            "<2026-08-27T00:39:22.500Z> [Notice] <RequestLocationInventory> Player[Pilot] requested inventory for Location[Stanton1_Lorville]");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var update = Assert.Single(resolver.Updates);
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.Equal("1234567890", update.Spawn);
+        Assert.Equal("4005457614", update.LeftFrom);
+        Assert.False(resolver.MovedThePlayer(update));
+        Assert.Equal("4005457614", holding.Chain[^1].Key);
+        Assert.Contains(holding.Caveats, c => c.Contains("picked up where they had logged out"));
+    }
+
+    [Fact]
+    public void An_update_with_no_logout_place_on_record_moves_nothing()
+    {
+        // The old build's logs never place the player: no <Update Inventory Location> at all.
+        // Where they logged out is unknown, so the spawn is no evidence the update moved them.
+        Backup(12344265, "04 Aug 26 (10 17 03)",
+            "<2026-08-04T09:59:00.500Z> [Notice] <RequestLocationInventory> Player[Pilot] requested inventory for Location[Stanton1_Lorville]",
+            StoreLine("2026-08-04T10:00:00.000Z", 1),
+            "<2026-08-04T10:00:00.400Z> [Notice] <Inventory Request Completed> Request[1] Player[Pilot] Result[succeed] Elapsed[0.4] PendingMoves[1]");
+        Backup(12519617, "26 Aug 26 (20 30 32)", SpawnAtArea18());
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var update = Assert.Single(resolver.Updates);
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.Equal("2273540638", update.Spawn);
+        Assert.Null(update.LeftFrom);
+        Assert.False(resolver.MovedThePlayer(update));
+        Assert.Equal("4005457614", holding.Chain[^1].Key);
+        Assert.DoesNotContain(holding.Caveats, c => c.Contains("moved here by the game update"));
+        Assert.Contains(holding.Caveats, c => c.Contains("do not say where the player logged out"));
+    }
+
     /// <summary>A quantum jump to <paramref name="point"/>, arriving, then entering <paramref name="location"/>.</summary>
     private static string[] QuantumTo(string point, string location, int minute, double enterAfterSeconds = 2.5)
     {

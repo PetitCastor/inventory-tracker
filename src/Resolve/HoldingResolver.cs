@@ -147,11 +147,11 @@ public sealed class HoldingResolver
             .ToHashSet(StringComparer.Ordinal);
 
         // An update that sent the player somewhere new moves their belongings there with them.
-        // One the player resumed from where they had logged out is only weighed: nothing says
-        // it moved anything. Of the three updates in the local corpus, only 12519617 changed
+        // One the player resumed from where they had logged out, or one with no logout place on
+        // record, is only weighed: nothing says it moved anything. Of the three updates in the local corpus, only 12519617 changed
         // the spawn, and it is the one every checked item was moved by.
         var relocations = updates
-            .Where(u => u.Spawn is not null && !SamePlace(places, u.Spawn, u.LeftFrom))
+            .Where(MovedThePlayer)
             .Select(u => new LedgerReplay.Relocation(u.At, u.Build, new Holding(InventoryKind.Location, u.Spawn!)));
 
         _ledger = LedgerReplay.Run(moves, worn, enumeration, carried, relocations);
@@ -159,12 +159,17 @@ public sealed class HoldingResolver
     }
 
     /// <summary>Whether two location ids are the same place, allowing for the ids the game re-issues.</summary>
-    private static bool SamePlace(PlaceCatalog places, string a, string? b) =>
-        b is not null && (a == b || (places.ByLocationId(a)?.Id is { } pa && pa == places.ByLocationId(b)?.Id));
+    private static bool SamePlace(PlaceCatalog places, string a, string b) =>
+        a == b || (places.ByLocationId(a)?.Id is { } pa && pa == places.ByLocationId(b)?.Id);
 
-    /// <summary>Whether an update sent the player somewhere other than where they logged out.</summary>
+    /// <summary>
+    /// Whether an update sent the player somewhere other than where they logged out. Not when
+    /// the logs lack either end: an unknown logout place is no evidence of a move, and moving
+    /// belongings on it would repeat the relocation to a parked ship that the spawn check exists
+    /// to prevent.
+    /// </summary>
     public bool MovedThePlayer(GameUpdate update) =>
-        update.Spawn is not null && !SamePlace(Places, update.Spawn, update.LeftFrom);
+        update is { Spawn: { } spawn, LeftFrom: { } leftFrom } && !SamePlace(Places, spawn, leftFrom);
 
     /// <summary>The whole move history is only a few thousand rows, so resolve in memory.</summary>
     /// <param name="asOf">
@@ -342,6 +347,9 @@ public sealed class HoldingResolver
             : movedThePlayer || update.Spawn is null
                 ? $"placed before the game update to build {update.Build} — updates have been seen to move " +
                   "stored items to wherever the player next spawns"
+            : update.LeftFrom is null
+                ? $"placed before the game update to build {update.Build}, which no later move has checked — the " +
+                  "logs do not say where the player logged out before it, so nothing says whether it moved anything"
                 : $"placed before the game update to build {update.Build}, which no later move has checked — the " +
                   "player picked up where they had logged out, so nothing says whether it moved anything";
 
