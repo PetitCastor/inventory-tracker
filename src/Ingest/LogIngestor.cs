@@ -737,17 +737,19 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
     /// <summary>
     /// Resuming mid-file loses the in-memory request map, which would leave the
-    /// completions that follow the watermark unmatched. Restore the unresolved ones.
+    /// completions that follow the watermark unmatched. Restore the unresolved ones, and the
+    /// ones marked lost: a completion that still turns up must be able to overwrite the mark.
     /// </summary>
     private static void PreloadPendingRequests(SqliteConnection cn, long sessionId, SessionState state)
     {
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
             SELECT request_no, id, ts FROM move
-            WHERE session_id = $s AND result IS NULL
+            WHERE session_id = $s AND (result IS NULL OR result = $lost)
             ORDER BY id DESC LIMIT $limit
             """;
         cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$lost", LostResult);
         cmd.Parameters.AddWithValue("$limit", PreloadLimit);
 
         using var r = cmd.ExecuteReader();

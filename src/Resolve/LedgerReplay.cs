@@ -302,7 +302,10 @@ public sealed class LedgerReplay
             .Concat((enumerations ?? []).Select(e => new Entry(e.At, Body: e)))
             .Concat((relocations ?? Enumerable.Empty<Relocation>()).Select(r => new Entry(r.At, Update: r)));
 
-        // An update lands before anything logged in the build it starts.
+        // An update lands before anything logged in the build it starts. Otherwise ties keep
+        // the order above, which the sort preserves: at one instant the moves apply first, then
+        // the sightings, then the listing — so a listing sees the items and parts sighted in its
+        // own burst already in place.
         foreach (var entry in timeline.OrderBy(x => x.At).ThenBy(x => x.Update is null ? 1 : 0))
         {
             if (entry.Move is { } move) ledger.Apply(move);
@@ -500,13 +503,6 @@ public sealed class LedgerReplay
 
     private void Apply(MoveRecord move)
     {
-        // The game said this one did not happen, so the world never changed.
-        if (move.Failed)
-        {
-            Stats.FailedSkipped++;
-            return;
-        }
-
         if (move.Lost)
         {
             Stats.LostSkipped++;
@@ -514,12 +510,19 @@ public sealed class LedgerReplay
             return;
         }
 
-        // The server is processing requests again: whatever the client predicted while it was
+        // The server is answering requests again: whatever the client predicted while it was
         // stalled has been settled one way or the other.
-        if (move.Succeeded)
+        if (move.Succeeded || move.Failed)
         {
             _predictedOut.Clear();
             _predictedIn.Clear();
+        }
+
+        // The game said this one did not happen, so the world never changed.
+        if (move.Failed)
+        {
+            Stats.FailedSkipped++;
+            return;
         }
 
         var target = new Holding(move.TargetKind, move.TargetKey);
@@ -572,6 +575,19 @@ public sealed class LedgerReplay
     {
         var source = new Holding(move.SourceKind, move.SourceKey);
         if (!source.IsReal) return;
+
+        // A named item the ledger has never placed was at the source; one it has placed is
+        // wherever the ledger already has it, which the dropped move did not change.
+        if (move.ItemGeid is { } geid)
+        {
+            if (!_instanceAt.ContainsKey(geid))
+            {
+                PlaceInstance(geid, move.ItemClass, source, move.Timestamp, move.MoveType, confirmed: true, inferred: true);
+                Stats.UnitsCreditedByLost++;
+            }
+
+            return;
+        }
 
         var key = (source, move.ItemClass);
         var seen = _predictedOut.GetValueOrDefault(key) + move.Units - _predictedIn.GetValueOrDefault(key);
@@ -674,7 +690,7 @@ public sealed class LedgerReplay
         if (_occupant.TryGetValue(port, out var old) && old != sighting.Geid
             && _portOf.GetValueOrDefault(old) == port
             && _instanceAt.GetValueOrDefault(old) == new Holding(InventoryKind.Equipped, "")
-            && Find(old) is { } instance && instance.Since < sighting.Timestamp)
+            && Find(old) is { } instance && instance.Since <= sighting.Timestamp)
         {
             SlotFor(new Holding(InventoryKind.Equipped, ""), instance.ItemClass, create: false)!.Named.Remove(instance);
             SlotFor(LostTrack, instance.ItemClass, create: true)!.Named.Add(instance);

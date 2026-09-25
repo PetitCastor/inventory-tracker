@@ -382,6 +382,34 @@ public class LedgerReplayTests
     }
 
     [Fact]
+    public void An_unnamed_item_on_the_player_whose_class_the_listing_leaves_out_is_no_longer_there()
+    {
+        var ledger = LedgerReplay.Run(
+            [Move(Station, OnPlayer, "behr_rifle_ballistic_03_mag", amount: 2, minute: 2, moveType: "Interaction")],
+            [],
+            [new(new DateTimeOffset(2026, 7, 16, 12, 10, 0, TimeSpan.Zero), new HashSet<string>(), new HashSet<string> { "hdtc_undersuit_01_01_20" })]);
+
+        Assert.Empty(ledger.Contents(OnPlayer));
+        var (_, _, loose) = Assert.Single(ledger.Contents(LedgerReplay.LostTrack));
+        Assert.Equal(2, loose!.Quantity);
+        Assert.Equal(2, ledger.Stats.WornEvicted);
+    }
+
+    [Fact]
+    public void A_new_item_on_a_body_port_replaces_the_old_one_even_at_the_same_instant()
+    {
+        var ledger = LedgerReplay.Run(
+            [],
+            [
+                Worn(minute: 1, "784862306922", "qrt_utility_heavy_backpack_01_01_03") with { Port = "backpack" },
+                Worn(minute: 1, "845736965831", "qrt_utility_heavy_backpack_01_01_03") with { Port = "backpack" },
+            ]);
+
+        Assert.Equal(LedgerReplay.LostTrack, ledger.InstanceAt["784862306922"]);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["845736965831"]);
+    }
+
+    [Fact]
     public void What_is_inside_a_backpack_the_body_no_longer_lists_goes_with_it()
     {
         var ledger = LedgerReplay.Run(
@@ -467,6 +495,30 @@ public class LedgerReplayTests
         Assert.Equal(2, station["slaver_armor_heavy_helmet_01_9tails_01"]);
         Assert.Equal(4, ledger.Stats.LostSkipped);
         Assert.Equal(3, ledger.Stats.UnitsCreditedByLost);
+    }
+
+    [Fact]
+    public void A_failed_move_ends_a_stall_as_surely_as_a_succeeded_one()
+    {
+        // Two separate stalls, one Defiance each, with a failed move between them: the second
+        // must not count what the first seemed to move.
+        var ledger = Run(
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 1),
+            Move(Station, Crate, "rifle_01", result: "failed", minute: 2),
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 3));
+
+        var (_, _, loose) = Assert.Single(ledger.Contents(Station));
+        Assert.Equal(1, loose!.Quantity);
+    }
+
+    [Fact]
+    public void A_named_move_the_server_dropped_leaves_a_new_item_at_its_source()
+    {
+        var ledger = Run(
+            Move(Station, Crate, "rifle_01", geid: "111111111111", result: "lost", minute: 1));
+
+        Assert.Equal(Station, ledger.InstanceAt["111111111111"]);
+        Assert.Empty(ledger.Contents(Crate));
     }
 
     private static LedgerReplay.WornSighting Worn(int minute, string geid, string itemClass) =>
