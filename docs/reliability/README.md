@@ -68,7 +68,7 @@ Each stage has its own metrics, so a regression points at the stage that caused 
 | | `holdings.first_seen_share` | 15 % | Rows whose history starts with the move that revealed them: loot, purchases, stock already there. Real, just without a past. |
 | Placement | `placement.within_build_same_place` | 95 % | Named moves whose source is where the ledger had the item, when no game update lies in between. Checks the ledger itself. |
 | | `placement.brier` | 0.05 | Calibration: mean squared gap between the trust the resolver puts in a placement (through its update weighting) and whether the game then confirmed it. 0 is perfect. |
-| | `placement.across_update_same_place` | context | The same agreement across a game update. It is what the resolver's update weighting is learned from. |
+| | `placement.across_update_same_place` | 90 % | The same agreement across a game update, once the ledger has moved what the update moved to where the player spawned. It is what the resolver's update weighting is learned from. |
 | Live | `live.parity` | **100 %** (invariant) | Replaying the busiest files as a growing `Game.log`, one watcher pass per 5 s of log time, gives exactly the single-pass result (every move row and every holding, score and caveats included). |
 | | `live.cold_parity` | 95 % | The same, but with a restart before every pass, so only what the store persists carries over. |
 
@@ -235,7 +235,7 @@ What the tracker does now:
   corpus that gives ×0.2 for 12519617 (0/13) and ×0.5 for 12572603 and 12660092, which have
   no evidence yet.
 - The caveat says which update, and what it did: "placed before the game update to build
-  12519617, after which 13 of 13 items checked had been moved elsewhere by the game".
+  12519617, after which 13 of 13 items checked were not where the ledger had them".
 
 | | Before | After |
 |---|---:|---:|
@@ -255,6 +255,48 @@ that moved everything. Those rows really are unreliable: 147 of them were placed
 and `holdings.mean_score` measured optimism as much as reliability. Their targets assume a
 corpus played mostly within the current build.
 
+### Moving belongings to the spawn station
+
+Demoting a placement says the item is probably not there. It does not say where it is.
+The evidence did: all 13 items were at the station where the player first spawned after the
+update. So the ledger now moves them there.
+
+- Every session records the first place the player arrived at (`session.first_loc_id`). The
+  first session of a new build that reached a location gives that update's spawn station.
+- At the moment an update is first played, the ledger moves everything at a station or on
+  the player to that spawn station (`LedgerReplay.Relocation`). Items inside a container go
+  with it. Dropped items stay where they fell. Items carried in hand stay too, since they
+  are most likely used up, and the next body enumeration settles that.
+- Moved items keep their last-seen time and carry the update that moved them. Their caveat
+  reads "moved here by the game update to build N, which no log line records". Items the
+  player still wears are put back on the player by the next body enumeration.
+- The update's weight is still learned from the checks. They now test the relocation, not
+  the old place: after 12519617, 13 of 13 items were where the ledger had moved them, so
+  that update costs nothing. The two later updates are unverified, so they cost ×0.5 and
+  say the move is an assumption.
+
+| | Demote only | Relocate |
+|---|---:|---:|
+| `placement.across_update_same_place` | 0 % (0/13) | **100 % (13/13)** |
+| `placement.brier` | 0.011 | **0** |
+| `holdings.mean_score` | 0.322 | 0.422 |
+| `holdings.high_share` | 11.7 % | 11.7 % |
+| `holdings.low_share` | 74.6 % | 76.1 % |
+| `ledger.relocated_by_update` | — | 303 units |
+
+Relocation settles where the items are. It does not raise how far they are trusted. Most of
+this corpus's belongings now sit at the spawn station of 12660092, which costs them twice:
+
+- that update is unverified (×0.5);
+- the station's id was never paired with a name (×0.7, on 140 rows).
+
+Both change with the next corpus: one named move out of that station verifies the update,
+and one route plotted from it names it.
+
+The Brier score of 0 is in-sample, as before, and rests on one update. If a later update
+does not move belongings, its checks will show that. Its factor will fall toward ×0.2, and
+the caveat will say how many items were not where the ledger moved them.
+
 ## Improvement plan
 
 This is ranked by expected effect on the metrics above. Each item names the metric that
@@ -262,12 +304,10 @@ should move, so it can be verified by rerunning the study.
 
 1. ~~Find out why class-level units miss their source.~~ Done: see "Units not found at
    their source" above. ~~Test the staleness penalty.~~ Done: see "Age, and game updates".
-   Next, a decision rather than a fix: **relocate instead of only demoting.** After
-   12519617, all 13 checked items were at the station where the player first spawned after
-   the update. If the next update shows the same thing, placements made before an update
-   could be moved to that station, with a caveat, rather than left at a place the evidence
-   says they left. One update is too little to generalise from.
-   Moves: `holdings.*`, `placement.brier`.
+   ~~Relocate instead of only demoting.~~ Done: see "Moving belongings to the spawn
+   station". Next: name the spawn stations. 140 rows sit at a station whose id no log line
+   paired with a name. Its asset paths or a later arrival may be enough.
+   Moves: `holdings.mean_score`, `holdings.low_share`.
 2. ~~Decide what `Type[Interaction] action[Carry]` means.~~ Done: see "Carrying items in
    hand" above. `<[ActorState] Place> … placed '<class>_<geid>' in lootable container` is a
    related, unparsed signal: a carried mission item being handed in.

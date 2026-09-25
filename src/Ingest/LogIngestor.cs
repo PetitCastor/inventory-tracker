@@ -189,7 +189,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         var unrecognisedThisPass = stats.UnrecognisedMoves - unrecognisedBefore;
         SaveSession(
             cn, tx, session.Id, reader.Offset, firstTs, lastTs, newestLineTs, unrecognisedThisPass,
-            state.CurrentLocation, session.Build ?? LogFileLocator.BuildOf(file.Path), complete: !file.IsLive);
+            state.CurrentLocation, state.FirstLocation, session.Build ?? LogFileLocator.BuildOf(file.Path),
+            complete: !file.IsLive);
         tx.Commit();
 
         // Only once committed: a pass that throws leaves no entry behind, so the next one
@@ -368,7 +369,11 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 var here = change.NewLocationId != "0" ? change.NewLocationId
                          : change.NewLandingId != "0" ? change.NewLandingId
                          : null;
-                if (here is not null) state.CurrentLocation = new PlayerLocation(here, change.Timestamp);
+                if (here is not null)
+                {
+                    state.CurrentLocation = new PlayerLocation(here, change.Timestamp);
+                    state.FirstLocation ??= state.CurrentLocation;
+                }
                 break;
 
             // ...and the name in the next request, usually within a couple of seconds.
@@ -491,6 +496,12 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
         /// <summary>Where the player is right now, used to pin containers they open.</summary>
         public PlayerLocation? CurrentLocation { get; set; }
+
+        /// <summary>
+        /// The first place this pass saw the player arrive. Only the store's first one is
+        /// kept, so a pass that resumes mid-file cannot overwrite the spawn with a later stop.
+        /// </summary>
+        public PlayerLocation? FirstLocation { get; set; }
     }
 
     private sealed record SessionRow(
@@ -573,7 +584,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 UPDATE session
                 SET byte_offset = 0, first_ts = NULL, last_ts = NULL, complete = 0,
                     unrecognised = 0, last_line_ts = NULL, cur_loc_id = NULL, cur_loc_since = NULL,
-                    build = NULL
+                    build = NULL, first_loc_id = NULL, first_loc_since = NULL
                 WHERE id = $s
                 """;
             reset.Parameters.AddWithValue("$s", session.Id);
@@ -622,6 +633,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         DateTimeOffset? newestLineTs,
         int unrecognisedDelta,
         PlayerLocation? currentLocation,
+        PlayerLocation? firstLocation,
         int? build,
         bool complete)
     {
@@ -637,7 +649,9 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 unrecognised  = unrecognised + $u,
                 cur_loc_id    = $loc,
                 cur_loc_since = $locs,
-                build         = COALESCE(build, $b)
+                build         = COALESCE(build, $b),
+                first_loc_since = CASE WHEN first_loc_id IS NULL THEN $fls ELSE first_loc_since END,
+                first_loc_id    = COALESCE(first_loc_id, $fl)
             WHERE id = $i
             """;
         cmd.Parameters.AddWithValue("$o", offset);
@@ -649,6 +663,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.Parameters.AddWithValue("$loc", (object?)currentLocation?.LocationId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$locs", Iso(currentLocation?.Since));
         cmd.Parameters.AddWithValue("$b", (object?)build ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$fl", (object?)firstLocation?.LocationId ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$fls", Iso(firstLocation?.Since));
         cmd.Parameters.AddWithValue("$i", id);
         cmd.ExecuteNonQuery();
     }

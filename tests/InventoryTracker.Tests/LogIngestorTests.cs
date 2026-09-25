@@ -163,7 +163,8 @@ public sealed class LogIngestorTests : IDisposable
     public void A_placement_made_before_a_game_update_is_trusted_less_and_says_why()
     {
         // Updates move stored items server-side and log nothing, so a placement older than
-        // the newest update is a lead, not a fact. Age alone costs nothing.
+        // the newest update is a lead, not a fact. Age alone costs nothing. Here the new
+        // build never reaches a location, so there is nowhere to move the item to.
         Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
         Backup(12519617, "26 Aug 26 (20 30 32)", "<2026-08-27T00:30:37.588Z> [Notice] <X> first line after the update");
         new LogIngestor(_db, _dir).IngestAll();
@@ -173,6 +174,46 @@ public sealed class LogIngestorTests : IDisposable
 
         Assert.Equal(0.5, holding.Score, precision: 3);
         Assert.Contains(holding.Caveats, c => c.Contains("game update to build 12519617"));
+    }
+
+    /// <summary>The first lines of a new build: the player spawns at Area18, and names it.</summary>
+    private static string[] SpawnAtArea18() =>
+    [
+        "<2026-08-27T00:30:37.588Z> [Notice] <X> first line after the update",
+        Arrive,
+        "<2026-08-27T00:39:22.500Z> [Notice] <RequestLocationInventory> Player[Pilot] requested inventory for Location[Stanton3_Area18]",
+    ];
+
+    [Fact]
+    public void A_game_update_moves_a_stored_item_to_where_the_player_spawned_after_it()
+    {
+        Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
+        Backup(12519617, "26 Aug 26 (20 30 32)", SpawnAtArea18());
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.Equal("2273540638", holding.Chain[^1].Key);
+        Assert.Equal(0.5, holding.Score, precision: 3); // one update, not yet verified
+        Assert.Contains(holding.Caveats, c => c.StartsWith("assumed moved here by the game update to build 12519617"));
+    }
+
+    [Fact]
+    public void A_sessions_spawn_is_its_first_location_even_across_passes()
+    {
+        // Only the first arrival is the spawn; a later stop in the same file must not replace
+        // it, whether the next pass carries state over or starts cold.
+        Append(Arrive);
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Append(
+            "<2026-08-27T01:10:00.000Z> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
+            "Landing [2273540638] -> [4005457614]. Location [2273540638] -> [4005457614]. Pending [0]");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("2273540638", Scalar("SELECT first_loc_id FROM session"));
+        Assert.Equal("4005457614", Scalar("SELECT cur_loc_id FROM session"));
     }
 
     [Fact]

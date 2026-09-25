@@ -33,16 +33,20 @@ public sealed class HoldingResolver
 
     /// <summary>
     /// When a new game build was first played, and which. Updates move stored items
-    /// server-side without logging it: of the 14 placements checked across build 12519617,
-    /// 13 had been moved to the station the player first spawned at afterwards.
+    /// server-side without logging it: all 13 placements checked across build 12519617 had
+    /// been moved to the station the player first spawned at afterwards.
     /// </summary>
-    public readonly record struct GameUpdate(DateTimeOffset At, int Build);
+    /// <param name="Spawn">
+    /// The location the player first arrived at in the new build, if the logs say.
+    /// </param>
+    public readonly record struct GameUpdate(DateTimeOffset At, int Build, string? Spawn = null);
 
     private readonly List<GameUpdate> _updates;
 
     /// <summary>
     /// How far to trust a placement made before each update, learned from the logs: the share
-    /// of placements that a later named move found still in place across it.
+    /// of placements a later named move found where the ledger had them across it — the spawn
+    /// station, for what the update was assumed to move there.
     /// </summary>
     private readonly Dictionary<int, UpdateSurvival> _survival;
 
@@ -138,7 +142,13 @@ public sealed class HoldingResolver
             .Concat(wornContainers)
             .ToHashSet(StringComparer.Ordinal);
 
-        _ledger = LedgerReplay.Run(moves, worn, enumeration, carried);
+        // An update with a known spawn moves the player's belongings there; one without is
+        // only weighed.
+        var relocations = updates
+            .Where(u => u.Spawn is not null)
+            .Select(u => new LedgerReplay.Relocation(u.At, u.Build, new Holding(InventoryKind.Location, u.Spawn!)));
+
+        _ledger = LedgerReplay.Run(moves, worn, enumeration, carried, relocations);
         _survival = MeasureSurvival(_ledger.Stats.PlacementChecks, updates);
     }
 
@@ -171,14 +181,15 @@ public sealed class HoldingResolver
                 {
                     rows.Add(Build(
                         where, itemClass, instance.Geid, quantity: 1, instance.Since, instance.ArrivedBy,
-                        instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous));
+                        instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous,
+                        movedByUpdate: instance.MovedByUpdate));
                 }
 
                 if (loose is { Quantity: > 0 })
                 {
                     rows.Add(Build(
                         where, itemClass, geid: null, loose.Quantity, loose.Since, loose.ArrivedBy,
-                        loose.Confirmed, loose.Inferred, ambiguous: true, loose.DuplicateRisk));
+                        loose.Confirmed, loose.Inferred, ambiguous: true, loose.DuplicateRisk, loose.MovedByUpdate));
                 }
             }
         }
@@ -196,7 +207,7 @@ public sealed class HoldingResolver
 
         return Build(
             where, instance.ItemClass, geid, quantity: 1, instance.Since, instance.ArrivedBy,
-            instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous);
+            instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous, movedByUpdate: instance.MovedByUpdate);
     }
 
     private string ClassOf(string geid) =>
@@ -208,7 +219,8 @@ public sealed class HoldingResolver
 
     private ItemHolding Build(
         Holding where, string itemClass, string? geid, int quantity, DateTimeOffset since,
-        string arrivedBy, bool confirmed, bool inferred, bool ambiguous, bool duplicateRisk = false)
+        string arrivedBy, bool confirmed, bool inferred, bool ambiguous, bool duplicateRisk = false,
+        int? movedByUpdate = null)
     {
         var caveats = new List<string>();
         var score = 1.0;
@@ -249,19 +261,25 @@ public sealed class HoldingResolver
         }
 
         // A game update played since this placement is the one thing observed to invalidate
-        // one: the server moves stored items and logs nothing. Each update is weighed by what
-        // the logs showed of it; across several, the least trustworthy one decides.
+        // one: the server moves stored items and logs nothing. The ledger has already moved
+        // the item to where the player spawned after it, when the logs say where that was.
+        // Each update is weighed by how often the ledger's belief across it held; across
+        // several, the least trustworthy one decides.
         var crossed = _updates.Where(u => u.At > since && u.At <= _asOf).ToList();
         if (crossed.Count > 0)
         {
-            var worst = crossed.MinBy(u => _survival[u.Build].Factor);
-            var record = _survival[worst.Build];
-            score *= record.Factor;
-            caveats.Add(record.Verified
-                ? $"placed before the game update to build {worst.Build}, after which {record.Checked - record.Survived} " +
-                  $"of {record.Checked} items checked had been moved elsewhere by the game"
-                : $"placed before the game update to build {worst.Build} — updates have been seen to move " +
-                  "stored items to wherever the player next spawns");
+            movedByUpdate ??= ContainerMovedByUpdate(where);
+
+            // On a tie, the update that moved the item speaks for the rest: every update after
+            // it moved it again, so they say the same thing.
+            var worst = crossed
+                .OrderBy(u => _survival[u.Build].Factor)
+                .ThenBy(u => u.Build == movedByUpdate ? 0 : 1)
+                .First();
+            score *= _survival[worst.Build].Factor;
+
+            if (movedByUpdate is { } moved) caveats.Add(MovedCaveat(moved, _survival[moved]));
+            if (worst.Build != movedByUpdate) caveats.Add(UpdateCaveat(worst.Build, _survival[worst.Build]));
         }
 
         var age = _asOf - since;
@@ -279,6 +297,35 @@ public sealed class HoldingResolver
         return new ItemHolding(
             geid, itemClass, quantity, chain, since, arrivedBy, score, ambiguous, caveats);
     }
+
+    /// <summary>
+    /// The update that moved the container an item sits in, if one did: the item went with it.
+    /// </summary>
+    private int? ContainerMovedByUpdate(Holding where)
+    {
+        for (var hop = 0; hop < MaxChainDepth && where.Kind == InventoryKind.Container; hop++)
+        {
+            if (!_ledger.InstanceAt.TryGetValue(where.Key, out var outer)) return null;
+
+            var container = _ledger.NamedIn(outer, ClassOf(where.Key)).FirstOrDefault(i => i.Geid == where.Key);
+            if (container?.MovedByUpdate is { } build) return build;
+            where = outer;
+        }
+
+        return null;
+    }
+
+    private static string MovedCaveat(int build, UpdateSurvival record) => record.Verified
+        ? $"moved here by the game update to build {build}, which no log line records: after it, " +
+          $"{record.Survived} of {record.Checked} items checked were where the update had been assumed to put them"
+        : $"assumed moved here by the game update to build {build}, which no log line records — an earlier " +
+          "update moved every stored item checked to where the player first spawned after it";
+
+    private static string UpdateCaveat(int build, UpdateSurvival record) => record.Verified
+        ? $"placed before the game update to build {build}, after which {record.Checked - record.Survived} " +
+          $"of {record.Checked} items checked were not where the ledger had them"
+        : $"placed before the game update to build {build} — updates have been seen to move " +
+          "stored items to wherever the player next spawns";
 
     /// <summary>
     /// Walks from where the item sits outward: an item is in a backpack, and the backpack is
@@ -600,30 +647,42 @@ public sealed class HoldingResolver
 
     /// <summary>
     /// Each build's first appearance, keeping only builds newer than every one before — a
-    /// rotated backup ingested late must not read as a downgrade followed by an update.
+    /// rotated backup ingested late must not read as a downgrade followed by an update — with
+    /// the first place the player arrived at in that build.
     /// </summary>
     private static List<GameUpdate> LoadUpdates(SqliteConnection cn)
     {
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
-            SELECT build, MIN(COALESCE(first_ts, last_line_ts)) AS since
+            SELECT build, COALESCE(first_ts, last_line_ts) AS since, first_loc_id
             FROM session
             WHERE build IS NOT NULL AND COALESCE(first_ts, last_line_ts) IS NOT NULL
-            GROUP BY build
             ORDER BY since
             """;
 
+        var firstPlayed = new List<(int Build, DateTimeOffset At)>();
+        var spawn = new Dictionary<int, string>();
+        using (var r = cmd.ExecuteReader())
+        {
+            while (r.Read())
+            {
+                var build = r.GetInt32(0);
+                if (!firstPlayed.Exists(b => b.Build == build))
+                {
+                    firstPlayed.Add((build, DateTimeOffset.Parse(r.GetString(1), CultureInfo.InvariantCulture)));
+                }
+
+                // A session that never reached a location — a crash at the menu, say — says
+                // nothing; the build's next one still spawned after the update.
+                if (!r.IsDBNull(2)) spawn.TryAdd(build, r.GetString(2));
+            }
+        }
+
         var updates = new List<GameUpdate>();
         int? newest = null;
-        using var r = cmd.ExecuteReader();
-        while (r.Read())
+        foreach (var (build, at) in firstPlayed)
         {
-            var build = r.GetInt32(0);
-            if (newest is not null && build > newest)
-            {
-                updates.Add(new GameUpdate(DateTimeOffset.Parse(r.GetString(1), CultureInfo.InvariantCulture), build));
-            }
-
+            if (newest is not null && build > newest) updates.Add(new GameUpdate(at, build, spawn.GetValueOrDefault(build)));
             if (newest is null || build > newest) newest = build;
         }
 
