@@ -162,6 +162,9 @@ public static class ReliabilityStudy
         report.Counts["ledger.anonymous_reconciled"] = s.AnonymousReconciled;
         report.Counts["ledger.worn_sightings"] = s.WornSightings;
         report.Counts["ledger.carried_used_up"] = s.CarriedUsedUp;
+        report.Counts["ledger.worn_evicted"] = s.WornEvicted;
+        report.Counts["ledger.units_from_lost_track"] = s.UnitsFromLostTrack;
+        report.Metrics["worn.evicted_then_resighted"] = s.EvictedThenResighted;
         report.Counts["ledger.relocated_by_update"] = s.RelocatedByUpdate;
 
         MeasurePlacements(s, resolver, report);

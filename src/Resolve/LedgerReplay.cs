@@ -103,6 +103,12 @@ public sealed class LedgerReplay
         public int UnitsFromCarried { get; internal set; }
 
         /// <summary>
+        /// Units the source could not account for, found instead among entities the ledger had
+        /// lost track of.
+        /// </summary>
+        public int UnitsFromLostTrack { get; internal set; }
+
+        /// <summary>
         /// Units nobody could account for, credited to the target as a guess:
         /// <see cref="UnitsFirstSeen"/> plus <see cref="UnitsDuplicateRisk"/>.
         /// </summary>
@@ -131,6 +137,18 @@ public sealed class LedgerReplay
 
         /// <summary>Items carried in hand that a later body enumeration left out — used up.</summary>
         public int CarriedUsedUp { get; internal set; }
+
+        /// <summary>
+        /// Units on the player that a later body enumeration no longer listed, and whose
+        /// whereabouts are therefore unknown.
+        /// </summary>
+        public int WornEvicted { get; internal set; }
+
+        /// <summary>
+        /// Evicted entities sighted on the player again with no move in between. Each one is an
+        /// enumeration that left out something still worn: the eviction was wrong. Expected 0.
+        /// </summary>
+        public int EvictedThenResighted { get; internal set; }
 
         /// <summary>Units a game update was assumed to have moved to where the player next spawned.</summary>
         public int RelocatedByUpdate { get; internal set; }
@@ -256,8 +274,13 @@ public sealed class LedgerReplay
     /// <param name="relocations">
     /// Game updates, and where each moved the player's belongings to.
     /// </param>
+    /// <param name="enumerations">
+    /// Every complete listing of the player's body, each authoritative for what was on the
+    /// player at that moment.
+    /// </param>
     public static LedgerReplay Run(
-        IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn, BodyEnumeration? enumeration = null,
+        IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn,
+        IEnumerable<BodyEnumeration>? enumerations = null,
         IReadOnlySet<string>? carriedContainers = null, IEnumerable<Relocation>? relocations = null)
     {
         var ledger = new LedgerReplay { _carriedContainers = carriedContainers ?? new HashSet<string>() };
@@ -267,20 +290,35 @@ public sealed class LedgerReplay
         var timeline = moves
             .Select(m => new Entry(m.Timestamp, Move: m))
             .Concat(worn.Select(w => new Entry(w.Timestamp, Worn: w)))
+            .Concat((enumerations ?? []).Select(e => new Entry(e.At, Body: e)))
             .Concat((relocations ?? Enumerable.Empty<Relocation>()).Select(r => new Entry(r.At, Update: r)));
-
-        if (enumeration is not null) timeline = timeline.Append(new Entry(enumeration.At, Body: enumeration));
 
         // An update lands before anything logged in the build it starts.
         foreach (var entry in timeline.OrderBy(x => x.At).ThenBy(x => x.Update is null ? 1 : 0))
         {
             if (entry.Move is { } move) ledger.Apply(move);
             else if (entry.Worn is { } sighting) ledger.ApplyWorn(sighting);
-            else if (entry.Body is { } body) ledger.UseUpCarried(body);
+            else if (entry.Body is { } body) ledger.ApplyEnumeration(body);
             else if (entry.Update is { } update) ledger.Relocate(update);
         }
 
         return ledger;
+    }
+
+    /// <summary>Where an entity is once a body enumeration no longer lists it.</summary>
+    public static readonly Holding LostTrack = new(InventoryKind.LostTrack, "");
+
+    /// <summary>The entity with this geid, wherever the ledger holds it.</summary>
+    public Instance? Find(string geid)
+    {
+        if (!_instanceAt.TryGetValue(geid, out var at) || !_contents.TryGetValue(at, out var byClass)) return null;
+
+        foreach (var slot in byClass.Values)
+        {
+            if (slot.Named.Find(i => i.Geid == geid) is { } instance) return instance;
+        }
+
+        return null;
     }
 
     private sealed record Entry(
@@ -356,12 +394,19 @@ public sealed class LedgerReplay
     }
 
     /// <summary>An entity observed attached to the player's body at a point in time.</summary>
-    public readonly record struct WornSighting(DateTimeOffset Timestamp, string Geid, string ItemClass);
+    /// <param name="Port">The body port it was attached to, when known.</param>
+    /// <param name="IsPart">
+    /// A part of another item (a visor, a magazine) rather than something worn on the body.
+    /// </param>
+    /// <param name="ParentGeid">For a part, the item it hangs off, when the burst says.</param>
+    public readonly record struct WornSighting(
+        DateTimeOffset Timestamp, string Geid, string ItemClass, string? Port = null, bool IsPart = false,
+        string? ParentGeid = null);
 
     /// <summary>
-    /// The newest complete listing of what the player has on them — the burst of attachment
-    /// lines the game writes whenever the character streams in — as the entities and classes
-    /// it named.
+    /// One complete listing of what the player has on them — the burst of attachment lines
+    /// the game writes whenever the character streams in — as the entities and classes it
+    /// named.
     /// </summary>
     public sealed record BodyEnumeration(
         DateTimeOffset At, IReadOnlySet<string> Geids, IReadOnlySet<string> Classes);
@@ -378,16 +423,32 @@ public sealed class LedgerReplay
     private readonly HashSet<string> _carried = [];
 
     /// <summary>
-    /// Removes what was carried in hand before <paramref name="body"/> but is missing from it.
+    /// Makes the player's body match <paramref name="body"/>: whatever the ledger had on the
+    /// player before it, and it does not list, is no longer there.
     /// <para>
-    /// Food, drink and mission items picked up to be used vanish without any line saying so.
-    /// Every one of the 5 items carried and never stored back in the local corpus is absent
-    /// from every enumeration afterwards, while an enumeration re-lists anything still held.
-    /// So absence is the evidence that it was used up. An item carried after the enumeration
-    /// has not been contradicted yet and stays.
+    /// An enumeration re-lists everything worn: across the 2026-09-25 playtest, every relog,
+    /// server switch and station respawn re-sent each worn entity under the same geid. So
+    /// absence is evidence the item left, and what it means depends on how it got there.
+    /// </para>
+    /// <list type="bullet">
+    /// <item>
+    /// Carried in hand: food, drink and mission items picked up to be used vanish without any
+    /// line saying so. Every one of the 5 items carried and never stored back in the local
+    /// corpus is absent from every enumeration afterwards. It was used up, and is removed.
+    /// </item>
+    /// <item>
+    /// Anything else — worn, equipped: it was stored, sold or lost without a line saying
+    /// where. It goes to <see cref="LostTrack"/>, never out of the ledger: an entity with no
+    /// placement reads as still on the player, and whatever is inside a backpack follows the
+    /// backpack there.
+    /// </item>
+    /// </list>
+    /// <para>
+    /// An item placed on the player after the enumeration has not been contradicted yet and
+    /// stays until the next one.
     /// </para>
     /// </summary>
-    private void UseUpCarried(BodyEnumeration body)
+    private void ApplyEnumeration(BodyEnumeration body)
     {
         if (!_contents.TryGetValue(new Holding(InventoryKind.Equipped, ""), out var byClass)) return;
 
@@ -395,21 +456,33 @@ public sealed class LedgerReplay
         {
             foreach (var instance in slot.Named.ToList())
             {
-                if (!_carried.Contains(instance.Geid)) continue;
                 if (instance.Since >= body.At || body.Geids.Contains(instance.Geid)) continue;
 
                 slot.Named.Remove(instance);
-                _carried.Remove(instance.Geid);
-                _instanceAt.Remove(instance.Geid);
-                Stats.CarriedUsedUp++;
+                if (_carried.Remove(instance.Geid))
+                {
+                    _instanceAt.Remove(instance.Geid);
+                    Stats.CarriedUsedUp++;
+                    continue;
+                }
+
+                SlotFor(LostTrack, itemClass, create: true)!.Named.Add(instance);
+                _instanceAt[instance.Geid] = LostTrack;
+                Stats.WornEvicted++;
             }
 
-            // A carry the log never named: its class is all there is to look for.
-            if (slot.Loose is { ArrivedBy: CarryArrival } loose
-                && loose.Since < body.At && !body.Classes.Contains(itemClass))
+            // Unnamed units: their class is all there is to look for.
+            if (slot.Loose is not { } loose || loose.Since >= body.At || body.Classes.Contains(itemClass)) continue;
+
+            slot.Loose = null;
+            if (loose.ArrivedBy == CarryArrival)
             {
                 Stats.CarriedUsedUp += loose.Quantity;
-                slot.Loose = null;
+            }
+            else
+            {
+                MergeLoose(LostTrack, loose);
+                Stats.WornEvicted += loose.Quantity;
             }
         }
     }
@@ -451,6 +524,9 @@ public sealed class LedgerReplay
     private void ApplyWorn(WornSighting sighting)
     {
         Stats.WornSightings++;
+        if (_instanceAt.GetValueOrDefault(sighting.Geid) == LostTrack) Stats.EvictedThenResighted++;
+
+        ReplaceOccupant(sighting);
 
         // An attachment line is proof the item is on the player right now, which no move
         // line can give. It supersedes whatever the ledger believed until something later
@@ -459,6 +535,52 @@ public sealed class LedgerReplay
             sighting.Geid, sighting.ItemClass, new Holding(InventoryKind.Equipped, ""),
             sighting.Timestamp, "Worn", confirmed: true, inferred: false);
     }
+
+    /// <summary>The port each entity was last sighted on, and the entity last sighted on each port.</summary>
+    private readonly Dictionary<string, string> _portOf = [];
+    private readonly Dictionary<string, string> _occupant = [];
+
+    /// <summary>
+    /// A new entity on a body port takes the place of the one last sighted there.
+    /// <para>
+    /// A port holds one item, so the old occupant is off the player, even when the burst that
+    /// says so is not a full enumeration of the body. The respawn after a death in space is
+    /// one: at 10:54:24 on 2026-09-25 the game re-attached the whole loadout under new geids
+    /// with no body line, and the old geids went to the corpse. Only an occupant still on the
+    /// player and still last seen on that port is replaced — one moved to the hands or stored
+    /// since is not.
+    /// </para>
+    /// <para>
+    /// Only the ports of the body itself count. Every other port name repeats: a magazine,
+    /// optic or module port on each weapon and multitool, and <c>magazine_attach_1</c> both on
+    /// armour and on a multitool's canister. The hands and the helmet hook hold whatever is
+    /// being handled at the moment.
+    /// </para>
+    /// </summary>
+    private void ReplaceOccupant(WornSighting sighting)
+    {
+        if (sighting.Port is not { } port || sighting.IsPart || !IsBodyPort(port)) return;
+
+        if (_occupant.TryGetValue(port, out var old) && old != sighting.Geid
+            && _portOf.GetValueOrDefault(old) == port
+            && _instanceAt.GetValueOrDefault(old) == new Holding(InventoryKind.Equipped, "")
+            && Find(old) is { } instance && instance.Since < sighting.Timestamp)
+        {
+            SlotFor(new Holding(InventoryKind.Equipped, ""), instance.ItemClass, create: false)!.Named.Remove(instance);
+            SlotFor(LostTrack, instance.ItemClass, create: true)!.Named.Add(instance);
+            _instanceAt[old] = LostTrack;
+            _carried.Remove(old);
+            Stats.WornEvicted++;
+        }
+
+        _occupant[port] = sighting.Geid;
+        _portOf[sighting.Geid] = port;
+    }
+
+    private static bool IsBodyPort(string port) =>
+        port.StartsWith("Armor_", StringComparison.Ordinal)
+        || port.StartsWith("wep_stocked_", StringComparison.Ordinal)
+        || port is "backpack" or "wep_sidearm";
 
     /// <summary>
     /// Moves <see cref="MoveRecord.Units"/> of a class between holdings. Named instances at
@@ -517,6 +639,7 @@ public sealed class LedgerReplay
         // the backpack on the strength of nothing.
         var fromSource = taken;
         if (taken < wanted && source.IsReal) taken += TakeFromCarried(move, source, target, wanted - taken);
+        if (taken < wanted && source.IsReal) taken += TakeFromLostTrack(move, target, wanted - taken);
 
         // Whatever nothing could account for still arrived at the target: the units existed,
         // we simply never saw them get there. Crediting the destination is what keeps a
@@ -583,6 +706,32 @@ public sealed class LedgerReplay
     }
 
     /// <summary>
+    /// Draws units a class-level move's source could not supply from what the ledger lost
+    /// track of: an entity a later enumeration no longer listed on the player went somewhere
+    /// no line names, and a move of its class out of a real place is the first sign of where.
+    /// Newest first, like everywhere else.
+    /// </summary>
+    private int TakeFromLostTrack(MoveRecord move, Holding target, int wanted)
+    {
+        if (SlotFor(LostTrack, move.ItemClass, create: false) is not { } slot) return 0;
+
+        var taken = 0;
+        while (taken < wanted && slot.Named.Count > 0)
+        {
+            var pick = slot.Named[^1];
+            slot.Named.RemoveAt(slot.Named.Count - 1);
+            NoteCarry(pick.Geid, move.ArrivedBy);
+            PlaceInstance(
+                pick.Geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy,
+                move.Succeeded, inferred: false, ambiguous: true);
+            taken++;
+        }
+
+        Stats.UnitsFromLostTrack += taken;
+        return taken;
+    }
+
+    /// <summary>
     /// Keeps <see cref="_carried"/> in step with every move that places a named instance, not
     /// only the moves that name it: a class-level move relocates named instances too, and one
     /// left flagged as carried would be used up by the next enumeration and kept back from
@@ -632,6 +781,9 @@ public sealed class LedgerReplay
     private void CheckPlacement(string geid, MoveRecord move, Holding source)
     {
         if (!source.IsReal || !_instanceAt.TryGetValue(geid, out var believed)) return;
+
+        // The ledger had no belief to check: it knew it had lost track of the item.
+        if (believed == LostTrack) return;
         if (SlotFor(believed, move.ItemClass, create: false)?.Named.FirstOrDefault(i => i.Geid == geid) is not { } instance) return;
 
         Stats.PlacementChecks.Add(new PlacementCheck(believed, move.Timestamp - instance.Since)

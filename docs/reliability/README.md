@@ -61,6 +61,7 @@ Each stage has its own metrics, so a regression points at the stage that caused 
 | | `enrich.confirmed_rate` | 95 % | Moves carrying a `succeed` completion. An unconfirmed placement is scored ×0.5. |
 | Ledger | `ledger.accounted_rate` | 95 % | Class-level units the ledger can account for: found at the source, found on the player, or the class's first appearance. |
 | | `ledger.duplicate_risk_rate` | 2 % | Class-level units credited without a source while the same class was still recorded elsewhere. One of the two is wrong. |
+| Worn | `worn.evicted_then_resighted` | 0 | Entities a body listing took off the player that a later attachment line showed still on it, with no move in between: a listing that left out something worn. |
 | Holdings | `holdings.high_share` | 80 % | Rows rated High confidence, the ones the user can trust outright. |
 | | `holdings.low_share` | 5 % | Rows rated Low. |
 | | `holdings.mean_score` | 0.85 | Mean resolver score. |
@@ -385,9 +386,9 @@ should move, so it can be verified by rerunning the study.
 6. **`PlaceInstance` looks up an entity's old slot by the new move's class.** When two lines
    spell the class differently, the old entry is never removed and the item appears twice.
    Moves: `holdings.inferred_share`.
-7. **Use negative evidence from `<AttachmentReceived>`.** Each spawn lists everything worn,
-   so an item the ledger believes equipped but that is missing from the latest list should
-   be demoted.
+7. ~~**Use negative evidence from `<AttachmentReceived>`.**~~ Done: every listing of the
+   body is authoritative for what is on the player, and what it leaves out goes to "whereabouts
+   unknown". Watched by `worn.evicted_then_resighted`.
 
 ## Adding a corpus
 
