@@ -68,6 +68,16 @@ public sealed class ConsumableDecayTests : IDisposable
     }
 
     [Fact]
+    public void A_mission_hard_drive_is_not_food()
+    {
+        Store("FPS_Consumable_HardDrive_Generic_751276839369", "723713568285:Container:0");
+
+        var drive = Resolve(TimeSpan.FromDays(31));
+
+        Assert.DoesNotContain(drive.Caveats, c => c.Contains("may be gone", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void A_medpen_lying_in_a_station_inventory_is_not_doubted()
     {
         // Taking anything out of a station's inventory is a logged move.

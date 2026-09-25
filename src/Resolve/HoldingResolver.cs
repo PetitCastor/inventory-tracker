@@ -282,7 +282,9 @@ public sealed class HoldingResolver
         // after 19 hours), so one untouched for a week is as likely gone as there. One lying
         // straight in a station's inventory is not doubted: every one taken out of a station
         // in the logs was taken out by a move line.
-        if (IsConsumable(itemClass) && where.Kind != InventoryKind.Location && _asOf - since > ConsumableShelf)
+        // Carried in hand and dropped already say as much, and are scored for it below.
+        if (IsConsumable(itemClass) && arrivedBy is not ("Carry" or "Drop")
+            && where.Kind != InventoryKind.Location && _asOf - since > ConsumableShelf)
         {
             score *= 0.5;
             caveats.Add("food, drink and medical items are used up without a log line, and this one has not moved in " +
@@ -680,11 +682,15 @@ public sealed class HoldingResolver
     /// <summary>How long a consumable can sit untouched before it is doubted.</summary>
     private static readonly TimeSpan ConsumableShelf = TimeSpan.FromDays(7);
 
-    /// <summary>Food, drink and medical consumables: medpens are <c>crlf_consumable_healing_01</c>.</summary>
+    /// <summary>
+    /// Food, drink and CureLife medical consumables (medpens are
+    /// <c>crlf_consumable_healing_01</c>). Not every <c>_consumable_</c> class: a mission hard
+    /// drive is <c>FPS_Consumable_HardDrive_Generic</c>, and it does not get used up.
+    /// </summary>
     private static bool IsConsumable(string itemClass) =>
         itemClass.StartsWith("Drink_", StringComparison.OrdinalIgnoreCase)
         || itemClass.StartsWith("Food_", StringComparison.OrdinalIgnoreCase)
-        || itemClass.Contains("_consumable_", StringComparison.OrdinalIgnoreCase);
+        || itemClass.StartsWith("crlf_consumable_", StringComparison.OrdinalIgnoreCase);
 
     private static readonly string[] ApparelMarks =
         ["backpack", "undersuit", "_core_", "_legs_", "_arms_"];
