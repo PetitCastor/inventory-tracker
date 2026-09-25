@@ -85,7 +85,7 @@ public sealed class WornEnumerationTests
         using var after = PlaytestReplay.Until("20:09:05");
 
         var worn = (PlaytestReplay r) => r.Holdings
-            .Where(h => h.Geid is not null && h.Root?.Kind == InventoryKind.Equipped && !IsWeaponPart(h.ItemClass))
+            .Where(h => h.Geid is not null && h.Root?.Kind == InventoryKind.Equipped)
             .Select(h => h.Geid!)
             .Order()
             .ToList();
@@ -109,13 +109,4 @@ public sealed class WornEnumerationTests
         Assert.Equal(1, replay.UnitsAt(PlaytestReplay.Area18, "qrt_utility_heavy_helmet_01_01_03"));
         Assert.Equal("carried on your character", replay.Named("726852737760")?.Where);
     }
-
-    /// <summary>
-    /// Parts of a stored weapon are still left on the player until they follow their weapon
-    /// (task T3); they are not what this test is about.
-    /// </summary>
-    private static bool IsWeaponPart(string itemClass) =>
-        itemClass.EndsWith("_mag", StringComparison.Ordinal)
-        || itemClass.Contains("optics", StringComparison.Ordinal)
-        || itemClass.Contains("barrel", StringComparison.Ordinal);
 }

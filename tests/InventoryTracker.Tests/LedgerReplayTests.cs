@@ -419,6 +419,37 @@ public class LedgerReplayTests
         Assert.Equal(OnPlayer, ledger.InstanceAt["845736965844"]);
     }
 
+    [Fact]
+    public void A_part_sits_in_its_parent_and_goes_where_the_parent_is_stored()
+    {
+        var ledger = LedgerReplay.Run(
+            [Move(Nowhere, Station, "qrt_utility_heavy_helmet_01_01_03", geid: "845736965844", minute: 5, moveType: "Store")],
+            [
+                Worn(minute: 1, "845736965844", "qrt_utility_heavy_helmet_01_01_03"),
+                Worn(minute: 1, "845736965845", "FP_Visor") with { Port = "helmet_visor", IsPart = true, ParentGeid = "845736965844" },
+            ]);
+
+        Assert.Equal(new Holding(InventoryKind.Container, "845736965844"), ledger.InstanceAt["845736965845"]);
+        Assert.Equal(Station, ledger.InstanceAt["845736965844"]);
+        Assert.True(ledger.IsPartParent("845736965844"));
+    }
+
+    [Fact]
+    public void A_listed_item_loses_the_parts_the_listing_leaves_out()
+    {
+        var ledger = LedgerReplay.Run(
+            [],
+            [
+                Worn(minute: 1, "845736965837", "behr_rifle_ballistic_03"),
+                Worn(minute: 1, "845736965838", "behr_rifle_ballistic_03_mag") with { IsPart = true, ParentGeid = "845736965837" },
+                Worn(minute: 10, "845736965837", "behr_rifle_ballistic_03"),
+            ],
+            [Enumerated(minute: 10, "845736965837")]);
+
+        Assert.Equal(LedgerReplay.LostTrack, ledger.InstanceAt["845736965838"]);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["845736965837"]);
+    }
+
     private static LedgerReplay.WornSighting Worn(int minute, string geid, string itemClass) =>
         new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), geid, itemClass);
 

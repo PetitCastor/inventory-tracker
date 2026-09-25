@@ -435,6 +435,25 @@ public sealed class HoldingResolver
                     return chain;
                 }
 
+                case InventoryKind.Container when _ledger.IsPartParent(key) && _ledger.Find(key) is { } parent:
+                {
+                    // A part on the item it belongs to. The attachment line that put it there is
+                    // proof, so the hop costs nothing; it is shown so a visor reads as on its
+                    // helmet rather than loose on the character.
+                    chain.Add(new HoldingLink(kind, key, $"on {parent.ItemClass}"));
+                    if (!seen.Add(key))
+                    {
+                        caveats.Add("container nesting loops back on itself");
+                        return chain;
+                    }
+
+                    passedContainer = key;
+                    if (!_ledger.InstanceAt.TryGetValue(key, out var holdingTheParent)) return chain;
+                    kind = holdingTheParent.Kind;
+                    key = holdingTheParent.Key;
+                    continue;
+                }
+
                 case InventoryKind.Container:
                 {
                     var info = _containers.GetValueOrDefault(key);
