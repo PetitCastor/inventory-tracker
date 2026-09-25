@@ -390,6 +390,41 @@ public sealed class LogIngestorTests : IDisposable
         Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move"));
     }
 
+    private static string Attached(string geid, string cls, string port) =>
+        "<2026-09-25T15:35:47.776Z> [Notice] <AttachmentReceived> Player[Pilot] " +
+        $"Attachment[{cls}_{geid}, {cls}, {geid}] Status[persistent] Port[{port}] Elapsed[62.1]";
+
+    [Fact]
+    public void A_burst_split_between_two_passes_is_one_burst_and_its_parts_find_their_parent()
+    {
+        // A whole burst lands within two milliseconds, but a watcher pass can still end in the
+        // middle of it. A fresh ingestor has no carried state and must pick up from the store.
+        Append(Attached("845736965844", "qrt_utility_heavy_helmet_01_01_03", "Armor_Helmet"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Append(Attached("845736965845", "FP_Visor", "helmet_visor"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("845736965844", Scalar("SELECT parent_geid FROM attachment_sighting WHERE geid = '845736965845'"));
+        Assert.Equal("1", Scalar("SELECT COUNT(DISTINCT burst_id) FROM attachment_sighting"));
+    }
+
+    [Fact]
+    public void A_local_attachment_is_not_recorded_and_a_placeholder_is_recorded_but_not_worn()
+    {
+        Append(
+            "<2026-09-25T15:57:37.130Z> [Notice] <AttachmentReceived> Player[Pilot] " +
+            "Attachment[Inventory_LocalAttach_Item, Default, 10721] Status[local] Port[Armor_Helmet] Elapsed[0.0025]",
+            "<2026-09-25T15:35:06.912Z> [Notice] <AttachmentReceived> Player[Pilot] " +
+            "Attachment[klwe_pistol_energy_01_200000000222, klwe_pistol_energy_01, 200000000222] " +
+            "Status[persistent] Port[wep_sidearm] Elapsed[20.0]");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("0", Scalar("SELECT COUNT(*) FROM attachment_sighting WHERE geid = '10721'"));
+        Assert.Equal("1", Scalar("SELECT placeholder FROM attachment_sighting WHERE geid = '200000000222'"));
+        Assert.Equal("0", Scalar("SELECT COUNT(*) FROM attachment"));
+    }
+
     [Fact]
     public void Second_pass_does_not_rediscard_a_live_file_whose_inception_date_is_after_its_first_line()
     {

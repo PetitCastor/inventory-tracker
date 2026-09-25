@@ -152,6 +152,32 @@ public class InventoryEventParserTests
         var worn = Assert.IsType<AttachmentSeen>(ev);
         Assert.Equal("745829874584", worn.Geid);
         Assert.Equal("Armor_Undersuit", worn.Port);
+        Assert.True(worn.IsPersistent);
+        Assert.False(worn.IsPlaceholder);
+    }
+
+    [Fact]
+    public void Reads_the_clients_local_prediction_of_an_equip_as_not_persistent()
+    {
+        // 2026-09-25 15:57:37: the helmet the player equips, before the server's line for it.
+        var ev = Event(
+            "<2026-09-25T15:57:37.130Z> [Notice] <AttachmentReceived> Player[Pilot] " +
+            "Attachment[Inventory_LocalAttach_Item, Default, 10721] Status[local] Port[Armor_Helmet] Elapsed[0.002501]");
+
+        var worn = Assert.IsType<AttachmentSeen>(ev);
+        Assert.Equal("10721", worn.Geid);
+        Assert.False(worn.IsPersistent);
+    }
+
+    [Fact]
+    public void Tells_the_login_placeholder_set_apart_by_its_geids()
+    {
+        var ev = Event(
+            "<2026-09-25T10:42:42.271Z> [Notice] <AttachmentReceived> Player[Pilot] " +
+            "Attachment[klwe_pistol_energy_01_200000000222, klwe_pistol_energy_01, 200000000222] " +
+            "Status[persistent] Port[wep_sidearm] Elapsed[23.949884]");
+
+        Assert.True(Assert.IsType<AttachmentSeen>(ev).IsPlaceholder);
     }
 
     [Fact]

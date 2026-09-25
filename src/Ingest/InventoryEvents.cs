@@ -116,11 +116,37 @@ public sealed record ItemStored(
 /// station, which no move line can.
 /// </para>
 /// </summary>
+/// <param name="Status">
+/// <c>persistent</c> for an entity the server holds. <c>local</c> is the client's own prediction
+/// while an equip is in flight: short made-up geids (10721) and a class of <c>Default</c>, followed
+/// within seconds by the persistent line for the real entity.
+/// </param>
 public sealed record AttachmentSeen(
     DateTimeOffset Timestamp,
     string Geid,
     string ClassName,
-    string Port) : InventoryEvent(Timestamp);
+    string Port,
+    string Status = AttachmentSeen.Persistent) : InventoryEvent(Timestamp)
+{
+    public const string Persistent = "persistent";
+
+    public bool IsPersistent => Status == Persistent;
+
+    /// <summary>
+    /// Whether this is one of the stand-in items the game attaches on every login before the
+    /// real loadout arrives.
+    /// <para>
+    /// About 20 s after launch the game attaches a fixed set of 23 items — an odyssey undersuit
+    /// and helmet, a klwe energy pistol with two magazines, a medpen, default hair and face —
+    /// all under geids of the form <c>2000xxxxxxxx</c>. The real character follows 40–160 s
+    /// later under real geids. Across every log from build 12344265 (2026-08-04) to 12660092
+    /// these geids only ever come 23 at a time and never appear in a move line; the player
+    /// confirmed owning none of it.
+    /// </para>
+    /// </summary>
+    public bool IsPlaceholder =>
+        Geid.Length == 12 && Geid.StartsWith("2000", StringComparison.Ordinal) && Geid.All(char.IsAsciiDigit);
+}
 
 /// <summary>
 /// <c>&lt;Calculate Route&gt; ... Projected Start Location is &lt;name&gt; for route to destination ...</c> —
