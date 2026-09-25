@@ -568,23 +568,6 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     private static readonly TimeSpan BurstGap = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// Ports that hold a part of another item rather than something worn on the body. In every
-    /// burst of the 2026-09-25 playtest each comes right after the item it belongs to:
-    /// <c>Armor_Helmet</c> then <c>universal_necksock</c> and <c>helmet_visor</c>, and
-    /// <c>wep_stocked_N</c> then <c>magazine_attach</c>, <c>optics_attach</c>,
-    /// <c>barrel_attach</c> and <c>underbarrel_attach</c>. In the August logs a multitool
-    /// comes the same way, with its <c>magazine_attach</c>, <c>module_attach</c> and
-    /// <c>canister_attach</c>. <c>magazine_attach_N</c> is not a part: it is a magazine slot on
-    /// the armour as often as a multitool's canister.
-    /// </summary>
-    private static readonly HashSet<string> ChildPorts = new(StringComparer.Ordinal)
-    {
-        "helmet_visor", "universal_necksock",
-        "magazine_attach", "optics_attach", "barrel_attach", "underbarrel_attach",
-        "module_attach", "canister_attach",
-    };
-
-    /// <summary>
     /// Stores one attachment line, with the burst it belongs to and, for a sub-attachment, the
     /// item it hangs off.
     /// </summary>
@@ -601,7 +584,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         state.LastSighting = (worn.Timestamp, burstId);
 
         string? parent = null;
-        if (ChildPorts.Contains(worn.Port)) parent = state.ParentCandidate;
+        if (worn.IsPart) parent = state.ParentCandidate;
         else state.ParentCandidate = worn.Geid;
 
         using var cmd = cn.CreateCommand();
@@ -643,7 +626,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         while (r.Read())
         {
             state.LastSighting = (DateTimeOffset.Parse(r.GetString(0), CultureInfo.InvariantCulture), r.GetInt64(1));
-            if (!ChildPorts.Contains(r.GetString(3))) state.ParentCandidate = r.GetString(2);
+            if (!AttachmentSeen.IsPartPort(r.GetString(3))) state.ParentCandidate = r.GetString(2);
         }
     }
 

@@ -130,6 +130,28 @@ public sealed record AttachmentSeen(
 {
     public const string Persistent = "persistent";
 
+    /// <summary>
+    /// Ports that hold a part of another item rather than something worn on the body. In every
+    /// burst of the 2026-09-25 playtest each comes right after the item it belongs to:
+    /// <c>Armor_Helmet</c> then <c>universal_necksock</c> and <c>helmet_visor</c>, and
+    /// <c>wep_stocked_N</c> then <c>magazine_attach</c>, <c>optics_attach</c>,
+    /// <c>barrel_attach</c> and <c>underbarrel_attach</c>. In the August logs a multitool
+    /// comes the same way, with its <c>magazine_attach</c>, <c>module_attach</c> and
+    /// <c>canister_attach</c>. <c>magazine_attach_N</c> is not a part: it is a magazine slot on
+    /// the armour as often as a multitool's canister.
+    /// </summary>
+    private static readonly HashSet<string> PartPorts = new(StringComparer.Ordinal)
+    {
+        "helmet_visor", "universal_necksock",
+        "magazine_attach", "optics_attach", "barrel_attach", "underbarrel_attach",
+        "module_attach", "canister_attach",
+    };
+
+    /// <summary>Whether a port holds a part of another item. Its name repeats on every weapon.</summary>
+    public static bool IsPartPort(string port) => PartPorts.Contains(port);
+
+    public bool IsPart => IsPartPort(Port);
+
     public bool IsPersistent => Status == Persistent;
 
     /// <summary>

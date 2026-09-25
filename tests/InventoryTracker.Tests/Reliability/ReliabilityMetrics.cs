@@ -38,6 +38,9 @@ public static class ReliabilityMetrics
         new("ledger.duplicate_risk_rate", "Class-level units that may be counted twice", false, 0.02, null, true,
             "Credited without a source while the same class was still recorded elsewhere: one of the two is wrong."),
 
+        new("worn.evicted_then_resighted", "Entities taken off the player, then sighted on it again with no move", false, 0, null, false,
+            "Each is a body listing that left out something still worn, so the ledger wrongly lost track of it."),
+
         new("holdings.high_share", "Holdings rated High confidence", true, 0.80, null, true,
             "What the user sees: the share of rows worth trusting outright."),
         new("holdings.low_share", "Holdings rated Low confidence", false, 0.05, null, true,

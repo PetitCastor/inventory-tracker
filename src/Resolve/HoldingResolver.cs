@@ -1,5 +1,6 @@
 using System.Globalization;
 using InventoryTracker.Data;
+using InventoryTracker.Ingest;
 using InventoryTracker.Model;
 using InventoryTracker.Naming;
 using Microsoft.Data.Sqlite;
@@ -117,7 +118,7 @@ public sealed class HoldingResolver
     private HoldingResolver(
         List<MoveRecord> moves,
         List<LedgerReplay.WornSighting> worn,
-        LedgerReplay.BodyEnumeration? enumeration,
+        List<LedgerReplay.BodyEnumeration> enumerations,
         Dictionary<string, string> locationNames,
         Dictionary<string, ContainerInfo> containers,
         HashSet<string> wornContainers,
@@ -154,7 +155,7 @@ public sealed class HoldingResolver
             .Where(MovedThePlayer)
             .Select(u => new LedgerReplay.Relocation(u.At, u.Build, new Holding(InventoryKind.Location, u.Spawn!)));
 
-        _ledger = LedgerReplay.Run(moves, worn, enumeration, carried, relocations);
+        _ledger = LedgerReplay.Run(moves, worn, enumerations, carried, relocations);
         _survival = MeasureSurvival(_ledger.Stats.PlacementChecks, updates);
     }
 
@@ -179,8 +180,9 @@ public sealed class HoldingResolver
     public static HoldingResolver Load(TrackerDb db, DateTimeOffset? asOf = null)
     {
         using var cn = db.Open();
+        var (worn, enumerations) = LoadSightings(cn);
         return new HoldingResolver(
-            LoadMoves(cn), LoadWorn(cn), LoadBodyEnumeration(cn), LoadLocationNames(cn), LoadContainers(cn),
+            LoadMoves(cn), worn, enumerations, LoadLocationNames(cn), LoadContainers(cn),
             LoadWornContainers(cn), PlaceCatalog.Load(cn, db), asOf ?? DateTimeOffset.UtcNow, LoadUpdates(cn));
     }
 
@@ -311,7 +313,7 @@ public sealed class HoldingResolver
             caveats.Add("the log did not name which of several identical items was moved, so this instance may be one of its twins");
         }
 
-        var chain = BuildChain(where, geid, caveats, ref score);
+        var chain = BuildChain(where, geid, since, caveats, ref score);
 
         return new ItemHolding(
             geid, itemClass, quantity, chain, since, arrivedBy, score, ambiguous, caveats);
@@ -357,8 +359,10 @@ public sealed class HoldingResolver
     /// Walks from where the item sits outward: an item is in a backpack, and the backpack is
     /// itself an entity whose own last move says which station it is at.
     /// </summary>
+    /// <param name="since">When the item arrived where it sits: for an item the ledger lost
+    /// track of, the last time it was seen on the player.</param>
     private List<HoldingLink> BuildChain(
-        Holding start, string? itemGeid, List<string> caveats, ref double score)
+        Holding start, string? itemGeid, DateTimeOffset since, List<string> caveats, ref double score)
     {
         var chain = new List<HoldingLink>();
         var seen = new HashSet<string>();
@@ -368,6 +372,9 @@ public sealed class HoldingResolver
         // labelled correctly: the backpack is worn, not the item inside it, so ending up here
         // by way of apparel reads as "carried" rather than "equipped".
         var passedWorn = false;
+
+        // The last container walked through, whose own placement the walk is following.
+        string? passedContainer = null;
 
         var kind = start.Kind;
         var key = start.Key;
@@ -414,6 +421,20 @@ public sealed class HoldingResolver
                     chain.Add(new HoldingLink(kind, "", "dropped in the world"));
                     return chain;
 
+                // A later login no longer listed it on the player, and no line said where it
+                // went. The last time it was seen on the player is the only lead there is: the
+                // item's own arrival, or, inside a backpack, the backpack's.
+                case InventoryKind.LostTrack:
+                {
+                    var lastOnPlayer = (passedContainer is { } outer ? _ledger.Find(outer)?.Since : null) ?? since;
+                    score *= 0.3;
+                    caveats.Add(
+                        $"last seen on your character {lastOnPlayer:yyyy-MM-dd}; a later login no longer listed it, " +
+                        "and no log line says where it went");
+                    chain.Add(new HoldingLink(kind, "", "no longer on your character — whereabouts unknown"));
+                    return chain;
+                }
+
                 case InventoryKind.Container:
                 {
                     var info = _containers.GetValueOrDefault(key);
@@ -445,6 +466,7 @@ public sealed class HoldingResolver
                     // The container is an entity too, so the ledger knows where it went.
                     if (_ledger.InstanceAt.TryGetValue(key, out var holdingTheContainer))
                     {
+                        passedContainer = key;
                         kind = holdingTheContainer.Kind;
                         key = holdingTheContainer.Key;
                         continue;
@@ -534,93 +556,73 @@ public sealed class HoldingResolver
     }
 
     /// <summary>
-    /// How much of the newest spawn counts as one enumeration. Attachment lines are emitted
-    /// in a burst as the character streams in.
-    /// </summary>
-    private static readonly TimeSpan WornBurst = TimeSpan.FromMinutes(10);
-
-    /// <summary>
-    /// The ports worn at the most recent spawn.
-    /// <para>
-    /// Each spawn enumerates the whole body, so an older sighting is not just stale — it is
-    /// contradicted by a later enumeration that left the item out. Those are dropped rather
-    /// than believed, which leaves the item wherever its moves last put it instead of
-    /// claiming it is still being worn months later.
-    /// </para>
-    /// <para>
-    /// The login placeholder set is never read: it is not the player's.
-    /// </para>
-    /// </summary>
-    private static List<LedgerReplay.WornSighting> LoadWorn(SqliteConnection cn)
-    {
-        using var cmd = cn.CreateCommand();
-
-        // SQLite takes the bare class_name from the row holding the MAX.
-        cmd.CommandText = """
-            SELECT geid, class_name, MAX(ts) FROM attachment_sighting
-            WHERE placeholder = 0
-            GROUP BY geid
-            """;
-
-        var all = new List<LedgerReplay.WornSighting>();
-        using (var r = cmd.ExecuteReader())
-        {
-            while (r.Read())
-            {
-                all.Add(new LedgerReplay.WornSighting(
-                    DateTimeOffset.Parse(r.GetString(2), CultureInfo.InvariantCulture),
-                    r.GetString(0),
-                    r.GetString(1)));
-            }
-        }
-
-        if (all.Count == 0) return all;
-
-        var newest = all.Max(w => w.Timestamp);
-        return all.Where(w => newest - w.Timestamp <= WornBurst).ToList();
-    }
-
-    /// <summary>
     /// The player's body entity sits on this port, and it is re-sent at the head of every
-    /// enumeration of what the player has on them — on spawn and whenever the character
-    /// streams back in — so its newest sighting dates the newest complete listing.
+    /// enumeration of what the player has on them — on spawn, on a server switch, on a
+    /// respawn — so each of its sightings dates one complete listing.
     /// </summary>
     private const string BodyPort = "Body_ItemPort";
 
     /// <summary>
     /// How long after the body line an enumeration's other lines keep arriving. They follow
-    /// it within a second or two; the margin only has to cover a slow stream-in.
+    /// it within two milliseconds; the margin only has to cover a slow stream-in.
     /// </summary>
     private static readonly TimeSpan EnumerationSpread = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// The newest complete listing of the player's body: everything sighted from the body
-    /// line on. The attachment table keeps only each entity's newest sighting, so anything
-    /// seen last before the body line was not part of that listing.
+    /// Every attachment sighting, and every complete listing of the body they make up.
+    /// <para>
+    /// Each sighting puts its item on the player at that moment. Each listing — everything
+    /// sighted from a body line on, within <see cref="EnumerationSpread"/> — is authoritative
+    /// for the whole body: what the ledger had on the player before it and it leaves out is
+    /// no longer there. The login placeholder set is never read: it is not the player's.
+    /// </para>
     /// </summary>
-    private static LedgerReplay.BodyEnumeration? LoadBodyEnumeration(SqliteConnection cn)
+    private static (List<LedgerReplay.WornSighting> Worn, List<LedgerReplay.BodyEnumeration> Enumerations)
+        LoadSightings(SqliteConnection cn)
     {
         using var cmd = cn.CreateCommand();
-        cmd.CommandText = "SELECT MAX(last_seen) FROM attachment WHERE port = $p";
-        cmd.Parameters.AddWithValue("$p", BodyPort);
-        if (cmd.ExecuteScalar() is not string newest) return null;
+        cmd.CommandText = """
+            SELECT session_id, ts, geid, class_name, port, parent_geid FROM attachment_sighting
+            WHERE placeholder = 0
+            ORDER BY session_id, line_offset
+            """;
 
-        var at = DateTimeOffset.Parse(newest, CultureInfo.InvariantCulture);
-        var geids = new HashSet<string>(StringComparer.Ordinal);
-        var classes = new HashSet<string>(StringComparer.Ordinal);
-
-        using var list = cn.CreateCommand();
-        list.CommandText = "SELECT geid, class_name, last_seen FROM attachment";
-        using var r = list.ExecuteReader();
-        while (r.Read())
+        var rows = new List<(long Session, LedgerReplay.WornSighting Sighting, string Port)>();
+        using (var r = cmd.ExecuteReader())
         {
-            var seen = DateTimeOffset.Parse(r.GetString(2), CultureInfo.InvariantCulture);
-            if (seen < at || seen - at > EnumerationSpread) continue;
-            geids.Add(r.GetString(0));
-            classes.Add(r.GetString(1));
+            while (r.Read())
+            {
+                rows.Add((
+                    r.GetInt64(0),
+                    new LedgerReplay.WornSighting(
+                        DateTimeOffset.Parse(r.GetString(1), CultureInfo.InvariantCulture), r.GetString(2), r.GetString(3),
+                        r.GetString(4), AttachmentSeen.IsPartPort(r.GetString(4)), r.IsDBNull(5) ? null : r.GetString(5)),
+                    r.GetString(4)));
+            }
         }
 
-        return new LedgerReplay.BodyEnumeration(at, geids, classes);
+        var enumerations = new List<LedgerReplay.BodyEnumeration>();
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if (rows[i].Port != BodyPort) continue;
+
+            // Log order within the session, filtered by time rather than cut at the first line
+            // out of range: a line stamped out of order must neither stop the listing short nor
+            // drag in an earlier burst. rows is a List, so Skip does not re-walk it.
+            var at = rows[i].Sighting.Timestamp;
+            var listed = rows.Skip(i)
+                .TakeWhile(x => x.Session == rows[i].Session)
+                .Select(x => x.Sighting)
+                .Where(w => w.Timestamp >= at && w.Timestamp - at <= EnumerationSpread)
+                .ToList();
+
+            enumerations.Add(new LedgerReplay.BodyEnumeration(
+                at,
+                listed.Select(w => w.Geid).ToHashSet(StringComparer.Ordinal),
+                listed.Select(w => w.ItemClass).ToHashSet(StringComparer.Ordinal)));
+        }
+
+        return (rows.Select(x => x.Sighting).ToList(), enumerations);
     }
 
     /// <summary>
@@ -771,9 +773,8 @@ public sealed class HoldingResolver
     }
 
     /// <summary>
-    /// Every container geid ever enumerated on the player's body. Unlike <see cref="LoadWorn"/>
-    /// this is the full history, not the recent burst: a backpack worn last week and stored
-    /// today is still apparel and must never be shown as a container. Membership in the
+    /// Every container geid ever enumerated on the player's body: a backpack worn last week and
+    /// stored today is still apparel and must never be shown as a container. Membership in the
     /// attachment table is the signal — world crates and freight elevators never appear there.
     /// </summary>
     private static HashSet<string> LoadWornContainers(SqliteConnection cn)
