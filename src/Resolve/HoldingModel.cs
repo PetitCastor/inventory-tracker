@@ -22,6 +22,13 @@ public sealed record MoveRecord(
     public bool Failed =>
         Result is not null && Result.Equals("failed", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// True when the server never processed the request before the connection closed: the
+    /// move did not happen.
+    /// </summary>
+    public bool Lost =>
+        Result is not null && Result.Equals(Ingest.LogIngestor.LostResult, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>True when the game confirmed the move landed.</summary>
     public bool Succeeded =>
         Result is not null && Result.Equals("succeed", StringComparison.OrdinalIgnoreCase);

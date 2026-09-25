@@ -19,6 +19,9 @@ public sealed record IngestStats
     public int GeidsRecovered { get; set; }
     public int BatchMovesExpanded { get; set; }
     public int AttachmentsSeen { get; set; }
+
+    /// <summary>Requests the server never processed before the connection closed.</summary>
+    public int RequestsLost { get; set; }
     public int PlaceEvidence { get; set; }
 
     /// <summary>
@@ -186,6 +189,9 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             Apply(cn, tx, session.Id, line.StartOffset, ev, state, stats);
         }
 
+        // A rotated file is finished: nothing still waiting in it will ever be processed.
+        if (!file.IsLive) stats.RequestsLost += VoidUnprocessed(cn, tx, session.Id, before: null);
+
         var unrecognisedThisPass = stats.UnrecognisedMoves - unrecognisedBefore;
         SaveSession(
             cn, tx, session.Id, reader.Offset, firstTs, lastTs, newestLineTs, unrecognisedThisPass,
@@ -352,6 +358,10 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             // The canary firing: a request-shaped line neither ParseQueued nor ParseAddMove
             // could read. Nothing to persist for it beyond the count — there is no move to
             // record, only the fact that one was probably missed.
+            case ChannelDisconnected closed:
+                stats.RequestsLost += VoidUnprocessed(cn, tx, sessionId, closed.Timestamp);
+                break;
+
             case UnrecognisedMove:
                 stats.UnrecognisedMoves++;
                 break;
@@ -727,17 +737,19 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
     /// <summary>
     /// Resuming mid-file loses the in-memory request map, which would leave the
-    /// completions that follow the watermark unmatched. Restore the unresolved ones.
+    /// completions that follow the watermark unmatched. Restore the unresolved ones, and the
+    /// ones marked lost: a completion that still turns up must be able to overwrite the mark.
     /// </summary>
     private static void PreloadPendingRequests(SqliteConnection cn, long sessionId, SessionState state)
     {
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
             SELECT request_no, id, ts FROM move
-            WHERE session_id = $s AND result IS NULL
+            WHERE session_id = $s AND (result IS NULL OR result = $lost)
             ORDER BY id DESC LIMIT $limit
             """;
         cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$lost", LostResult);
         cmd.Parameters.AddWithValue("$limit", PreloadLimit);
 
         using var r = cmd.ExecuteReader();
@@ -900,6 +912,35 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.Parameters.AddWithValue("$v", value);
         cmd.Parameters.AddWithValue("$t", Iso(ts));
         cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>What a request the server never processed is recorded as.</summary>
+    public const string LostResult = "lost";
+
+    /// <summary>
+    /// Marks every request of the session still without a result as lost, up to
+    /// <paramref name="before"/> when given.
+    /// <para>
+    /// Across every log since 2026-08-04, exactly four request-backed moves never got a
+    /// result: the four the server dropped at 15:53 on 2026-09-25. So nothing that was
+    /// processed is caught by this. The rows from <c>OnInventoryStoreItem</c> are left alone:
+    /// they are companions of a Store the request line records, never requests themselves, and
+    /// never get a result. A completion that still turns up later overwrites the mark.
+    /// </para>
+    /// </summary>
+    private static int VoidUnprocessed(SqliteConnection cn, SqliteTransaction tx, long sessionId, DateTimeOffset? before)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            UPDATE move SET result = $lost
+            WHERE session_id = $s AND result IS NULL AND request_no > 0 AND move_type <> 'StoreItem'
+              AND ($before IS NULL OR ts <= $before)
+            """;
+        cmd.Parameters.AddWithValue("$lost", LostResult);
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$before", Iso(before));
+        return cmd.ExecuteNonQuery();
     }
 
     private static void UpdateResult(SqliteConnection cn, SqliteTransaction tx, long moveId, string result)

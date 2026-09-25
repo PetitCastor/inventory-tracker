@@ -478,6 +478,49 @@ public class LedgerReplayTests
         Assert.Equal(OnPlayer, ledger.InstanceAt["845736965837"]);
     }
 
+    [Fact]
+    public void Moves_the_server_dropped_leave_everything_at_the_source_the_player_saw_it_at()
+    {
+        // 2026-09-25 15:44-15:50: the Aril out and back, two Defiance out, all dropped. The
+        // Aril's return starts in the backpack only because the client showed it there.
+        var ledger = Run(
+            Move(Station, Backpack, "grin_utility_medium_helmet_01_01_01", result: "lost", minute: 44),
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 46),
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 47),
+            Move(Backpack, Station, "grin_utility_medium_helmet_01_01_01", result: "lost", minute: 50));
+
+        Assert.Empty(ledger.Contents(Backpack));
+        var station = ledger.Contents(Station).ToDictionary(c => c.ItemClass, c => c.Loose!.Quantity);
+        Assert.Equal(1, station["grin_utility_medium_helmet_01_01_01"]);
+        Assert.Equal(2, station["slaver_armor_heavy_helmet_01_9tails_01"]);
+        Assert.Equal(4, ledger.Stats.LostSkipped);
+        Assert.Equal(3, ledger.Stats.UnitsCreditedByLost);
+    }
+
+    [Fact]
+    public void A_failed_move_ends_a_stall_as_surely_as_a_succeeded_one()
+    {
+        // Two separate stalls, one Defiance each, with a failed move between them: the second
+        // must not count what the first seemed to move.
+        var ledger = Run(
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 1),
+            Move(Station, Crate, "rifle_01", result: "failed", minute: 2),
+            Move(Station, Backpack, "slaver_armor_heavy_helmet_01_9tails_01", result: "lost", minute: 3));
+
+        var (_, _, loose) = Assert.Single(ledger.Contents(Station));
+        Assert.Equal(1, loose!.Quantity);
+    }
+
+    [Fact]
+    public void A_named_move_the_server_dropped_leaves_a_new_item_at_its_source()
+    {
+        var ledger = Run(
+            Move(Station, Crate, "rifle_01", geid: "111111111111", result: "lost", minute: 1));
+
+        Assert.Equal(Station, ledger.InstanceAt["111111111111"]);
+        Assert.Empty(ledger.Contents(Crate));
+    }
+
     private static LedgerReplay.WornSighting Worn(int minute, string geid, string itemClass) =>
         new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), geid, itemClass);
 
