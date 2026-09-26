@@ -152,53 +152,46 @@ else
 
         @if (_place is not null)
         {
+            @* Only shown once inside a container: the station itself is already named by the
+               picker above. Every crumb but the last leads back out to that level. *@
+            @if (_path.Count > 0)
+            {
+                <div class="crumbs">
+                    <button type="button" class="link-btn" @onclick="() => LeaveTo(0)">@_place.Name</button>
+                    @for (var i = 0; i < _path.Count; i++)
+                    {
+                        var depth = i + 1;
+                        <span class="crumb-sep">›</span>
+                        @if (depth == _path.Count)
+                        {
+                            <span>@_path[i].Label</span>
+                        }
+                        else
+                        {
+                            <button type="button" class="link-btn" @onclick="() => LeaveTo(depth)">@_path[i].Label</button>
+                        }
+                    }
+                </div>
+            }
+
             <section class="place">
-                <h2>Directly in local inventory <span class="badge-count">@_direct.Sum(r => r.Quantity)</span></h2>
+                <h2>Local Inventory <span class="badge-count">@_direct.Sum(r => r.Quantity)</span></h2>
                 @if (_direct.Count == 0)
                 {
-                    <p class="empty">Nothing tracked here directly.</p>
+                    <p class="empty">Nothing tracked here.</p>
                 }
                 else
                 {
                     @ItemTable(_direct)
                 }
             </section>
-
-            <section class="place">
-                <h2>Inside a container here <span class="badge-count">@_viaContainer.Sum(g => g.Rows.Sum(r => r.Quantity))</span></h2>
-                @if (_viaContainer.Count == 0)
-                {
-                    <p class="empty">Nothing tracked inside a container here.</p>
-                }
-                else
-                {
-                    @foreach (var group in _viaContainer)
-                    {
-                        <h3>@group.Container.Label <span class="badge-count">@group.Rows.Sum(r => r.Quantity)</span></h3>
-                        @ItemTable(group.Rows)
-                    }
-                }
-            </section>
         }
     }
 
-    @* Equipped/carried/dropped/unplaced-container holdings never belong to a Location, so
-       they were previously invisible everywhere in the UI — this is the only place they
-       surface. Shown regardless of which system/place is selected above, and even when
-       there are no stations at all. *@
-    @if (_notAtStation.Count > 0)
-    {
-        <section class="place">
-            <h2>Not at a station <span class="badge-count">@_notAtStation.Sum(g => g.Rows.Sum(r => r.Quantity))</span></h2>
-            @foreach (var group in _notAtStation)
-            {
-                <h3>@group.Root.Label <span class="badge-count">@group.Rows.Sum(r => r.Quantity)</span></h3>
-                @ItemTable(group.Rows)
-            }
-        </section>
-    }
-
-    @if (_systems.Count == 0 && _notAtStation.Count == 0 && !EmptinessExplained(State.Current))
+    @* The page is focused on station inventories: equipped/carried/dropped/unplaced-container
+       holdings (anything whose root is not a Location) are deliberately not listed here for
+       now — search above still finds them. *@
+    @if (_systems.Count == 0 && !EmptinessExplained(State.Current))
     {
         <p class="empty">No locations tracked yet. The tracker reads Star Citizen's logs as you play.</p>
     }
@@ -214,11 +207,18 @@ else
         string Display,
         string ItemClass,
         int Quantity,
-        string? Geid,
         DateTimeOffset LastMove,
         Confidence Confidence,
         bool Unnamed,
-        IReadOnlyList<string> Caveats);
+        IReadOnlyList<string> Caveats,
+        ContainerRow? Opens = null);
+
+    /// <summary>
+    /// Something at the level being browsed that can be opened: a container, or an item with
+    /// parts on it. Key is its geid, as it appears in the chain of everything inside it;
+    /// Quantity counts everything inside, at any depth.
+    /// </summary>
+    private sealed record ContainerRow(string Key, string Label, int Quantity);
 
     private List<string> _systems = [];
     private Dictionary<string, List<Place>> _bySystem = [];
@@ -229,8 +229,12 @@ else
     private Place? _place;
 
     private List<Row> _direct = [];
-    private List<(HoldingLink Container, List<Row> Rows)> _viaContainer = [];
-    private List<(HoldingLink Root, List<Row> Rows)> _notAtStation = [];
+
+    /// <summary>The containers entered at the selected station, outermost first.</summary>
+    private List<ContainerRow> _path = [];
+
+    /// <summary>The station _path was built at, so choosing another one starts back at its top.</summary>
+    private string? _pathPlaceId;
 
     private string _query = "";
 
@@ -253,21 +257,6 @@ else
     private void RefreshOptions()
     {
         var snapshot = State.Current;
-
-        // Independent of the station catalogue below: equipped/carried/dropped/unplaced-container
-        // holdings never belong to a Location, so this has to be computed even when there is no
-        // catalogue at all (or no station currently selected).
-        _notAtStation = snapshot.Holdings
-            .Where(h => h.Holding.Root is { Kind: not InventoryKind.Location })
-            .GroupBy(h => h.Holding.Root!)
-            // Grouping on the whole HoldingLink rather than just Kind+Key matters here: every
-            // Equipped root shares Key == "", but the resolver labels some of them "equipped on
-            // your character" and others "carried on your character" (worn vs. carried-in-a-
-            // worn-container) — folding those into one bucket would lose that distinction.
-            .Select(g => (Root: g.Key, Rows: Pool(g)))
-            .OrderByDescending(g => g.Rows.Sum(r => r.Quantity))
-            .ToList();
-
         var catalogue = snapshot.Resolver?.Places;
 
         if (catalogue is null)
@@ -339,28 +328,101 @@ else
     {
         _place = _placesInSystem.FirstOrDefault(p => p.Id == _placeId);
 
+        if (_place?.Id != _pathPlaceId)
+        {
+            _path = [];
+            _pathPlaceId = _place?.Id;
+        }
+
         if (_place is null)
         {
             _direct = [];
-            _viaContainer = [];
             return;
         }
 
         // The game re-issues a station's id from time to time, so every alias counts as here.
         var aliases = _place.AliasIds.ToHashSet(StringComparer.Ordinal);
 
+        // Chain runs from the item's immediate holder out to the station; the station dropped
+        // and the rest reversed, it reads as the containers to open, outermost first.
         var here = State.Current.Holdings
             .Where(h => h.Holding.Root is { Kind: InventoryKind.Location } root && aliases.Contains(root.Key))
+            .Select(h => (Holding: h, Inside: h.Holding.Chain.Take(h.Holding.Chain.Count - 1).Reverse().ToList()))
             .ToList();
 
-        _direct = Pool(here.Where(h => h.Holding.Chain.Count == 1));
+        // A refresh can empty or move a container that is open: back out to the deepest level
+        // that still holds something rather than show a container that is no longer there.
+        while (_path.Count > 0 && !here.Any(h => IsWithin(h.Inside, _path)))
+        {
+            _path.RemoveAt(_path.Count - 1);
+        }
 
-        _viaContainer = here
-            .Where(h => h.Holding.Chain.Count > 1)
-            .GroupBy(h => h.Holding.Chain[0])
-            .Select(g => (Container: g.Key, Rows: Pool(g)))
-            .OrderByDescending(g => g.Rows.Sum(r => r.Quantity))
+        var level = here.Where(h => IsWithin(h.Inside, _path)).ToList();
+        var depth = _path.Count;
+
+        var atLevel = level.Where(h => h.Inside.Count == depth).Select(h => h.Holding).ToList();
+        var byGeid = atLevel
+            .Where(h => h.Holding.Geid is not null)
+            .DistinctBy(h => h.Holding.Geid)
+            .ToDictionary(h => h.Holding.Geid!, StringComparer.Ordinal);
+
+        // Anything something else sits in or on — a box, a crate, a weapon with its scope, a
+        // helmet with its visor — is one row of its own, opening onto what it holds. Pooling
+        // two rifles would leave one link for two different sets of attachments.
+        var openable = level
+            .Where(h => h.Inside.Count > depth)
+            .GroupBy(h => h.Inside[depth].Key, StringComparer.Ordinal)
+            .Select(g =>
+            {
+                var inside = g.Select(h => h.Holding).ToList();
+                var opens = new ContainerRow(
+                    g.Key,
+                    byGeid.GetValueOrDefault(g.Key)?.Display ?? g.First().Inside[depth].Label,
+                    inside.Sum(h => h.Holding.Quantity));
+
+                // Its own record names it better than its class. Without one — a box set down
+                // rather than stored has no move of its own — it is only known through what it
+                // holds, so it is dated and trusted by that.
+                return byGeid.TryGetValue(g.Key, out var own)
+                    ? Pool([own])[0] with { Opens = opens }
+                    : new Row(
+                        opens.Label,
+                        opens.Label,
+                        1,
+                        inside.Max(h => h.Holding.LastMove),
+                        inside.Min(h => h.Holding.Confidence),
+                        false,
+                        inside.SelectMany(h => h.Holding.Caveats).Distinct().ToList(),
+                        opens);
+            })
             .ToList();
+
+        var openableKeys = openable.Select(r => r.Opens!.Key).ToHashSet(StringComparer.Ordinal);
+        var loose = atLevel.Where(h => h.Holding.Geid is not { } geid || !openableKeys.Contains(geid));
+
+        _direct = Pool(loose)
+            .Concat(openable)
+            .OrderBy(r => r.Display, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>True when every container of <paramref name="path"/> is opened, in order, on the
+    /// way to the item.</summary>
+    private static bool IsWithin(List<HoldingLink> inside, List<ContainerRow> path) =>
+        inside.Count >= path.Count
+        && path.Select((c, i) => inside[i].Key == c.Key).All(match => match);
+
+    private void Enter(ContainerRow container)
+    {
+        _path = [.. _path, container];
+        Recompute();
+    }
+
+    /// <summary>Backs out to <paramref name="depth"/> containers deep; 0 is the station itself.</summary>
+    private void LeaveTo(int depth)
+    {
+        _path = _path.Take(depth).ToList();
+        Recompute();
     }
 
     /// <summary>
@@ -371,23 +433,18 @@ else
     private static List<Row> Pool(IEnumerable<NamedHolding> holdings) =>
         holdings
             .GroupBy(h => h.ClassName, StringComparer.Ordinal)
-            .Select(g =>
-            {
-                var geids = g.Where(h => h.Holding.Geid is not null).Select(h => h.Holding.Geid!).ToList();
-                return new Row(
-                    g.First().Display,
-                    g.Key,
-                    g.Sum(h => h.Holding.Quantity),
-                    geids.Count == 1 ? geids[0] : null,
-                    g.Max(h => h.Holding.LastMove),
-                    g.Min(h => h.Holding.Confidence),
-                    g.First().Name.Match == NameMatch.None,
-                    g.SelectMany(h => h.Holding.Caveats).Distinct().ToList());
-            })
+            .Select(g => new Row(
+                g.First().Display,
+                g.Key,
+                g.Sum(h => h.Holding.Quantity),
+                g.Max(h => h.Holding.LastMove),
+                g.Min(h => h.Holding.Confidence),
+                g.First().Name.Match == NameMatch.None,
+                g.SelectMany(h => h.Holding.Caveats).Distinct().ToList()))
             .OrderBy(r => r.Display, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    private static RenderFragment ItemTable(IReadOnlyList<Row> rows) => @<table>
+    private RenderFragment ItemTable(IReadOnlyList<Row> rows) => @<table>
         <thead>
             <tr>
                 <th>Item</th>
@@ -401,12 +458,12 @@ else
         {
             <tr>
                 <td>
-                    @* Only a pooled row that resolved to exactly one instance can be linked —
-                       Row.Geid is null whenever the pool mixes named and anonymous units, or
-                       more than one named instance, and there is no single item page for that. *@
-                    @if (row.Geid is { } geid)
+                    @* Items are not links: in the station view only what can be opened leads
+                       anywhere, onto what it holds. Search still links to a single item's page. *@
+                    @if (row.Opens is { } opens)
                     {
-                        <a href="item/@geid">@row.Display</a>
+                        <button type="button" class="link-btn" @onclick="() => Enter(opens)">@row.Display</button>
+                        <span class="badge-count" title="Items inside, at any depth">@opens.Quantity</span>
                     }
                     else
                     {

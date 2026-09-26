@@ -158,6 +158,22 @@
 
     button:hover { border-color: var(--accent); }
 
+    /* A button that reads as a link: navigating into a container on Browse changes the view
+       in place rather than going to another page. */
+    .link-btn {
+        padding: 0;
+        background: none;
+        border: none;
+        color: var(--accent);
+        font: inherit;
+        text-decoration: underline;
+    }
+
+    .link-btn:hover { border: none; color: var(--text); }
+
+    .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-bottom: 0.5rem; }
+    .crumb-sep { color: var(--muted); }
+
     .count, .subtle, .empty { color: var(--muted); font-size: 0.9rem; }
 
     .qty { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
