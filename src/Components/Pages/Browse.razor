@@ -193,7 +193,16 @@ else
        now — search above still finds them. *@
     @if (_systems.Count == 0 && !EmptinessExplained(State.Current))
     {
-        <p class="empty">No locations tracked yet. The tracker reads Star Citizen's logs as you play.</p>
+        @* With no station listed, anything tracked at all is somewhere this page does not show;
+           saying nothing is tracked would read as the tracker not working. *@
+        @if (State.Current.Holdings.Count > 0)
+        {
+            <p class="empty">Nothing stored at a station yet. Search above finds what's on your character.</p>
+        }
+        else
+        {
+            <p class="empty">No locations tracked yet. The tracker reads Star Citizen's logs as you play.</p>
+        }
     }
 }
 
@@ -355,6 +364,18 @@ else
         while (_path.Count > 0 && !here.Any(h => IsWithin(h.Inside, _path)))
         {
             _path.RemoveAt(_path.Count - 1);
+        }
+
+        // A name can resolve while its container is open, so the crumbs are named afresh each
+        // time, the same way the row that was clicked would be named now.
+        for (var i = 0; i < _path.Count; i++)
+        {
+            var key = _path[i].Key;
+            var outer = _path.Take(i).ToList();
+            var own = here.FirstOrDefault(h => h.Inside.Count == i && h.Holding.Holding.Geid == key && IsWithin(h.Inside, outer));
+            var label = own.Holding?.Display
+                        ?? here.First(h => h.Inside.Count > i && h.Inside[i].Key == key && IsWithin(h.Inside, outer)).Inside[i].Label;
+            _path[i] = _path[i] with { Label = label };
         }
 
         var level = here.Where(h => IsWithin(h.Inside, _path)).ToList();
