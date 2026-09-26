@@ -138,17 +138,19 @@ jobs:
       # of the VERSION file committed in the repo — see that step's comment.
       - name: Publish
         shell: pwsh
-        run: |
-          ./publish.ps1 -Version '${{ steps.release.outputs.version }}'
-
-          Rename-Item -LiteralPath 'dist\InventoryTracker.exe' `
-            -NewName "InventoryTracker-v${{ steps.release.outputs.version }}.exe"
+        run: ./publish.ps1 -Version '${{ steps.release.outputs.version }}'
 
       # Pinned to a commit rather than the mutable v2 tag: this step runs with a
       # write-capable token.
+      #
+      # The asset keeps the unversioned name on purpose. The auto-updater swaps the new
+      # build in at the running exe's own path, so a versioned file name would be frozen
+      # at whatever release was first downloaded and misreport every later one. A fixed
+      # name also keeps releases/latest/download/InventoryTracker.exe a stable link. The
+      # version lives in the tag, the release title and the exe's assembly version.
       - name: Create release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: v${{ steps.release.outputs.version }}
           name: v${{ steps.release.outputs.version }}
-          files: dist/InventoryTracker-v${{ steps.release.outputs.version }}.exe
+          files: dist/InventoryTracker.exe

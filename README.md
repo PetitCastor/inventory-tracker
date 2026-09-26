@@ -14,6 +14,8 @@ Because it's built entirely from inferred deltas over an unknown starting state,
 
 ## Running it
 
+Download the latest build: **[InventoryTracker.exe](https://github.com/PetitCastor/inventory-tracker/releases/latest/download/InventoryTracker.exe)**. It is a single self-contained file with no installer and no .NET prerequisite. Put it wherever you like and run it. On every launch it checks for a newer release and, if there is one, updates itself in place and restarts.
+
 ```
 InventoryTracker.exe                     tray app + UI at http://localhost:5730
 InventoryTracker.exe --scan --holdings   console mode, no UI
