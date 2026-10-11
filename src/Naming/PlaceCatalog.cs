@@ -116,11 +116,13 @@ public sealed partial class PlaceCatalog
     {
         // Sightings also attach to the pseudo-ids the client uses in open space ("Hurston",
         // "Aberdeen"). Those are resolvable but are not stations, so they are named on
-        // request and kept out of the browsable list.
+        // request and kept out of the browsable list. A place the player named by hand is
+        // known through that alone: an id holding items that nothing in the logs ever named.
         var ids = rawNames.Keys
             .Concat(nameVotes.Keys)
             .Concat(systemVotes.Keys)
             .Concat(arrivalVotes.Keys)
+            .Concat(decisions.Keys.Where(k => k.StartsWith("id:", StringComparison.Ordinal)).Select(k => k[3..]))
             .Distinct(StringComparer.Ordinal)
             .ToList();
 

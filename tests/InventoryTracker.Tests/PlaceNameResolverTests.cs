@@ -74,6 +74,18 @@ public class PlaceNameResolverTests
     }
 
     [Fact]
+    public void A_place_in_an_unknown_system_is_never_backed_by_the_wiki()
+    {
+        // Either Stanton Gateway would do, and they are different places.
+        var resolution = PlaceNameResolver.Resolve(
+            null, Place.UnknownSystem, "Stanton Gateway", GameLocalization.Empty,
+            Wiki(Station("Stanton Gateway", "Pyro"), Station("Stanton Gateway", "Nyx")));
+
+        Assert.Equal(PlaceNameStatus.Pending, resolution.Status);
+        Assert.Equal(PlaceNameSource.Log, resolution.Sources);
+    }
+
+    [Fact]
     public void Two_names_each_backed_twice_are_contested_and_the_logs_name_is_proposed()
     {
         var resolution = PlaceNameResolver.Resolve(

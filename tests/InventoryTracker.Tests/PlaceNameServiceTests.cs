@@ -90,12 +90,12 @@ public sealed class PlaceNameServiceTests : IDisposable
         OnWiki("People's Service Station Alpha", "Nyx");
         SpawnAtKeeger001();
 
-        Assert.Equal(1, _places.ResolveStations());
+        Assert.Equal(1, _places.ResolvePlaces());
 
         var place = Station();
         Assert.Equal("People's Service Station Alpha", place.Name);
         Assert.Equal(PlaceNameStatus.Confirmed, place.NameStatus);
-        Assert.Equal(0, _places.ResolveStations()); // nothing new to decide
+        Assert.Equal(0, _places.ResolvePlaces()); // nothing new to decide
     }
 
     [Fact]
@@ -104,11 +104,11 @@ public sealed class PlaceNameServiceTests : IDisposable
         GameText("Nyx_SocialStation_001=People's Service Station Alpha\r\n");
         SpawnAtKeeger001();
 
-        _places.ResolveStations();
+        _places.ResolvePlaces();
         Assert.Equal(PlaceNameStatus.Pending, Station().NameStatus);
 
         OnWiki("People's Service Station Alpha", "Nyx");
-        _places.ResolveStations();
+        _places.ResolvePlaces();
         Assert.Equal(PlaceNameStatus.Confirmed, Station().NameStatus);
     }
 
@@ -118,28 +118,40 @@ public sealed class PlaceNameServiceTests : IDisposable
         GameText("Nyx_SocialStation_001=People's Service Station Alpha\r\n");
         OnWiki("People's Service Station Alpha", "Nyx");
         SpawnAtKeeger001();
-        _places.ResolveStations();
+        _places.ResolvePlaces();
 
         // A later patch renames the entry; the station keeps the name it was confirmed under.
         GameText("Nyx_SocialStation_001=Something Else\r\n");
         OnWiki("Something Else", "Nyx");
 
-        Assert.Equal(0, _places.ResolveStations());
+        Assert.Equal(0, _places.ResolvePlaces());
         Assert.Equal("People's Service Station Alpha", Station().Name);
+    }
+
+    [Fact]
+    public void A_place_nothing_in_the_logs_names_takes_the_name_the_player_gives_it()
+    {
+        _places.Confirm(PlaceCatalog.Unnamed("777"), "Grim HEX");
+
+        var place = PlaceCatalog.Load(_db).ByLocationId("777");
+
+        Assert.NotNull(place);
+        Assert.Equal("Grim HEX", place.Name);
+        Assert.Equal(PlaceNameStatus.Confirmed, place.NameStatus);
     }
 
     [Fact]
     public void The_players_correction_is_final_and_survives_a_rebuild()
     {
         SpawnAtKeeger001();
-        _places.ResolveStations();
+        _places.ResolvePlaces();
 
         _places.Confirm(Station(), "People's Service Station Alpha");
 
         _db.ResetIngest();
         SpawnAtKeeger001();
         GameText("Nyx_SocialStation_001=Something Else\r\n");
-        _places.ResolveStations();
+        _places.ResolvePlaces();
 
         var place = Station();
         Assert.Equal("People's Service Station Alpha", place.Name);

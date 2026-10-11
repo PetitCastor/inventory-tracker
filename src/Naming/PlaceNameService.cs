@@ -7,9 +7,9 @@ using Microsoft.Data.Sqlite;
 namespace InventoryTracker.Naming;
 
 /// <summary>
-/// Files a name for every station the logs reveal, and keeps it until it is confirmed.
+/// Files a name for every place the logs reveal, and keeps it until it is confirmed.
 /// <para>
-/// After each ingest pass, every station whose name is not yet confirmed is resolved again by
+/// After an ingest pass, every place whose name is not yet confirmed is resolved again by
 /// <see cref="PlaceNameResolver"/>, against the game's own text (<see cref="GameLocalization"/>)
 /// and the star-citizen.wiki location list, which this service downloads and caches. The
 /// result goes to <c>place_name</c>, which <see cref="PlaceCatalog"/> reads: a confirmed row is
@@ -32,12 +32,13 @@ public sealed class PlaceNameService(TrackerDb db, TrackerOptions options, HttpC
 
     /// <summary>
     /// Downloads the wiki's location list and replaces the local copy (~1,970 places, ten
-    /// requests). Safe to re-run; existing rows are updated in place.
+    /// requests). Nothing is written until every page is in: a resolution run against half a
+    /// list could miss the rival name that should have kept a place unconfirmed, and a
+    /// confirmation is final. Places the wiki no longer lists are dropped with the swap.
     /// </summary>
     public async Task<int> RefreshAsync(IProgress<string>? progress = null, CancellationToken ct = default)
     {
-        using var cn = db.Open();
-        var written = 0;
+        var rows = new List<(string Uuid, WikiLocation Location)>();
         var page = 1;
         var lastPage = 1;
 
@@ -55,26 +56,34 @@ public sealed class PlaceNameService(TrackerDb db, TrackerOptions options, HttpC
                 lastPage = lp.GetInt32();
             }
 
-            using var tx = cn.BeginTransaction();
             foreach (var element in doc.RootElement.GetProperty("data").EnumerateArray())
             {
-                if (ReadLocation(element) is { } row)
-                {
-                    Upsert(cn, tx, row.Uuid, row.Location);
-                    written++;
-                }
+                if (ReadLocation(element) is { } row) rows.Add(row);
             }
-            tx.Commit();
 
-            progress?.Report($"places page {page}/{lastPage} ({written} places)");
+            progress?.Report($"places page {page}/{lastPage} ({rows.Count} places)");
             page++;
 
             if (page <= lastPage) await Task.Delay(BetweenRequests, ct);
         }
         while (page <= lastPage);
 
+        using var cn = db.Open();
+        using (var tx = cn.BeginTransaction())
+        {
+            using (var clear = cn.CreateCommand())
+            {
+                clear.Transaction = tx;
+                clear.CommandText = "DELETE FROM wiki_location";
+                clear.ExecuteNonQuery();
+            }
+
+            foreach (var (uuid, location) in rows) Insert(cn, tx, uuid, location);
+            tx.Commit();
+        }
+
         Stamp(cn, "wiki_locations_refreshed_at", DateTimeOffset.UtcNow.ToString("O"));
-        return written;
+        return rows.Count;
     }
 
     /// <summary>When the location list was last downloaded, or null if it never has been.</summary>
@@ -87,10 +96,10 @@ public sealed class PlaceNameService(TrackerDb db, TrackerOptions options, HttpC
     }
 
     /// <summary>
-    /// Resolves every station whose name is not confirmed yet and files the result. Returns
-    /// how many stations' names changed, so the caller knows whether the view is stale.
+    /// Resolves every place whose name is not confirmed yet and files the result. Returns
+    /// how many places' names changed, so the caller knows whether the view is stale.
     /// </summary>
-    public int ResolveStations()
+    public int ResolvePlaces()
     {
         using var cn = db.Open();
 
@@ -99,8 +108,9 @@ public sealed class PlaceNameService(TrackerDb db, TrackerOptions options, HttpC
         var filed = PlaceCatalog.LoadDecisions(cn);
         var changed = 0;
 
-        // Stations only: the ids seen in passing are many, and are never browsed.
-        foreach (var place in PlaceCatalog.Load(cn).Places)
+        // Every place, not just the stations: the ids seen in passing ("Hurston", a mining
+        // site) end up in item chains too, and are held to the same rule.
+        foreach (var place in PlaceCatalog.Load(cn).All)
         {
             var key = place.Key;
             if (filed.TryGetValue(key, out var was) && was.Status == PlaceNameStatus.Confirmed) continue;
@@ -161,7 +171,7 @@ public sealed class PlaceNameService(TrackerDb db, TrackerOptions options, HttpC
                 return text;
             }
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // Mid-patch, or a log directory on a drive that went away: names wait for the next pass.
             return GameLocalization.Empty;
@@ -232,15 +242,14 @@ public sealed class PlaceNameService(TrackerDb db, TrackerOptions options, HttpC
     private static string? Text(JsonElement e, string name) =>
         e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-    private static void Upsert(SqliteConnection cn, SqliteTransaction tx, string uuid, WikiLocation l)
+    private static void Insert(SqliteConnection cn, SqliteTransaction tx, string uuid, WikiLocation l)
     {
         using var cmd = cn.CreateCommand();
         cmd.Transaction = tx;
         cmd.CommandText = """
             INSERT INTO wiki_location(uuid, name, system, parent, parent_type, type, fetched_at)
             VALUES($u, $n, $s, $p, $pt, $t, $f)
-            ON CONFLICT(uuid) DO UPDATE SET
-                name = $n, system = $s, parent = $p, parent_type = $pt, type = $t, fetched_at = $f
+            ON CONFLICT(uuid) DO NOTHING
             """;
         cmd.Parameters.AddWithValue("$u", uuid);
         cmd.Parameters.AddWithValue("$n", l.Name);

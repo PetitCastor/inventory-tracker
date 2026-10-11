@@ -70,7 +70,7 @@ public sealed partial class GameLocalization
                 return m.Groups["lang"].Value;
             }
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // The game can hold user.cfg open while writing it; English is its default.
         }

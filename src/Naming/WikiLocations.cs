@@ -24,16 +24,14 @@ public sealed class WikiLocations
 
     /// <summary>
     /// The place by that name in that system. Names repeat across systems — there is a
-    /// "Stanton Gateway" in Nyx and another in Pyro — so a known system has to match too;
-    /// with the system unknown, any place by that name will do.
+    /// "Stanton Gateway" in Nyx and another in Pyro — so the system has to match too, and a
+    /// place whose system is unknown is never backed: the wrong gateway would do.
     /// </summary>
     public WikiLocation? Find(string name, string system)
     {
-        if (!_byName.TryGetValue(name.Trim(), out var matches)) return null;
+        if (system == Place.UnknownSystem || !_byName.TryGetValue(name.Trim(), out var matches)) return null;
 
-        return system == Place.UnknownSystem
-            ? matches[0]
-            : matches.FirstOrDefault(l => string.Equals(l.System, system, StringComparison.OrdinalIgnoreCase));
+        return matches.FirstOrDefault(l => string.Equals(l.System, system, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>The names of the places in a system a player could store things at, for

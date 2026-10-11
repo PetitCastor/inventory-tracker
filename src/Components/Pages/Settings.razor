@@ -280,24 +280,41 @@
             StateHasChanged();
         });
 
+        // Two downloads, each worth keeping on its own: a failed place list must not hide
+        // item names that did arrive.
+        var failures = new List<string>();
+
         try
         {
             await State.Names.RefreshAsync(progress);
-            await Places.RefreshAsync(progress);
-            State.Rebuild();
-
-            // Stations waiting on the place list are resolved on the next pass.
-            Watcher.RequestScan();
-            RefreshDiagnostics();
-            _namesRefreshed = true;
         }
         catch (Exception ex)
         {
-            _namesError = $"Could not download names from the wiki: {ex.Message}";
+            failures.Add($"item names ({ex.Message})");
+        }
+
+        try
+        {
+            await Places.RefreshAsync(progress);
+
+            // Places waiting on the list are resolved on the next pass, which rebuilds.
+            Watcher.RequestPlaceResolution();
+        }
+        catch (Exception ex)
+        {
+            failures.Add($"the place list ({ex.Message})");
+        }
+
+        try
+        {
+            State.Rebuild();
+            RefreshDiagnostics();
         }
         finally
         {
             _refreshingNames = false;
+            _namesRefreshed = failures.Count == 0;
+            _namesError = failures.Count == 0 ? null : $"Could not download {string.Join(" or ", failures)} from the wiki.";
         }
     }
 

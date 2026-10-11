@@ -155,18 +155,32 @@ else
         {
             @* A name is only shown as fact once confirmed: by two sources agreeing, or by the
                player here. Until then it says what it is and offers to settle it. *@
-            @if (!_place.NameConfirmed)
+            @* Kept open while the player is typing, even if a pass confirms the name meanwhile:
+               a correction is never dropped from under them. A confirmed name can still be
+               renamed — two sources can agree on an obsolete name. *@
+            @if (!_place.NameConfirmed || _correcting)
             {
                 var pending = _place.NameStatus == PlaceNameStatus.Pending;
                 <div class="place-status">
-                    <span class="badge-unconfirmed">@(pending ? "unconfirmed" : "unresolved")</span>
-                    @if (pending)
+                    @if (_place.NameConfirmed)
                     {
-                        <span>Named by @SourcesText(_place.NameSources) only. Is this what the game calls it?</span>
+                        <span>Rename <strong>@_place.Name</strong>:</span>
                     }
                     else
                     {
-                        <span>The game only logged this place as <code>@_place.RawName</code>.</span>
+                        <span class="badge-unconfirmed">@(pending ? "unconfirmed" : "unresolved")</span>
+                        @if (pending)
+                        {
+                            <span>Named by @SourcesText(_place.NameSources) only. Is this what the game calls it?</span>
+                        }
+                        else if (_place.RawName is { } raw)
+                        {
+                            <span>The game only logged this place as <code>@raw</code>.</span>
+                        }
+                        else
+                        {
+                            <span>Nothing in the logs names this place.</span>
+                        }
                     }
 
                     @if (_correcting)
@@ -190,6 +204,12 @@ else
                         }
                         <button type="button" @onclick="StartCorrection">@(pending ? "Correct…" : "Name it…")</button>
                     }
+                </div>
+            }
+            else
+            {
+                <div class="place-rename">
+                    <button type="button" class="link-btn" @onclick="StartCorrection">Rename this place…</button>
                 </div>
             }
 
@@ -484,7 +504,7 @@ else
     {
         if (_place is null) return;
 
-        _correction = _place.NameStatus == PlaceNameStatus.Pending ? _place.Name : "";
+        _correction = _place.NameStatus == PlaceNameStatus.Unresolved ? "" : _place.Name;
         _suggestions = Places.Suggestions(_place.System);
         _correcting = true;
     }

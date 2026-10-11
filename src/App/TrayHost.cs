@@ -175,11 +175,21 @@ public static class TrayHost
         {
             try
             {
-                var names = app.Services.GetRequiredService<WikiNameService>();
-                await names.RefreshAsync();
-                await app.Services.GetRequiredService<PlaceNameService>().RefreshAsync();
+                // Each download is kept on its own: a failed place list must not cost the
+                // item names that did arrive, nor skip the rebuild that shows them.
+                Exception? failed = null;
+                try { await app.Services.GetRequiredService<WikiNameService>().RefreshAsync(); }
+                catch (Exception ex) { failed = ex; }
+
+                try
+                {
+                    await app.Services.GetRequiredService<PlaceNameService>().RefreshAsync();
+                    app.Services.GetRequiredService<LogWatchService>().RequestPlaceResolution();
+                }
+                catch (Exception ex) { failed ??= ex; }
+
                 app.Services.GetRequiredService<TrackerState>().Rebuild();
-                app.Services.GetRequiredService<LogWatchService>().RequestScan();
+                if (failed is not null) throw failed;
             }
             catch (Exception ex)
             {
