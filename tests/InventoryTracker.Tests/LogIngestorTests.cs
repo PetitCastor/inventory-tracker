@@ -212,7 +212,7 @@ public sealed class LogIngestorTests : IDisposable
 
         Assert.NotNull(place);
         Assert.Equal("Area18", place.Name);
-        Assert.False(place.NameVerified);
+        Assert.Equal(PlaceNameStatus.Pending, place.NameStatus); // one source: KnownPlaces
         Assert.Equal("ArcCorp", place.Planet);
         Assert.Equal("Area18 — ArcCorp (Stanton)", place.Label);
         Assert.Equal("Area18 — ArcCorp", place.LabelInSystem); // the picker already names the system

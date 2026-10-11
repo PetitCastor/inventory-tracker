@@ -19,6 +19,7 @@ public sealed class LogWatchService(
     TrackerDb db,
     TrackerState state,
     WikiNameService names,
+    PlaceNameService places,
     ILogger<LogWatchService> log) : BackgroundService
 {
     private static readonly TimeSpan Debounce = TimeSpan.FromSeconds(1);
@@ -41,6 +42,20 @@ public sealed class LogWatchService(
     /// next — see <see cref="LogIngestor"/>. Guarded by <see cref="_ingestLock"/>.
     /// </summary>
     private LogIngestor? _ingestor;
+
+    /// <summary>
+    /// Set when something place names are resolved from changed outside the logs — the wiki's
+    /// location list, or the app just started and the game's text may have been patched — so
+    /// the next pass resolves even if it read nothing new. Starts set for that reason.
+    /// </summary>
+    private volatile bool _placesStale = true;
+
+    /// <summary>Resolves place names again on the next pass, then nudges one.</summary>
+    public void RequestPlaceResolution()
+    {
+        _placesStale = true;
+        RequestScan();
+    }
 
     /// <summary>Nudges the service to ingest now — used by the tray's "Rescan" command.</summary>
     public void RequestScan()
@@ -109,6 +124,7 @@ public sealed class LogWatchService(
         // added since the last run (and the catalogue's own edits) show up without the
         // user having to remember to hit the manual refresh.
         _ = RefreshCatalogueAsync(ct);
+        _ = RefreshPlacesAsync(ct);
 
         while (!ct.IsCancellationRequested)
         {
@@ -145,6 +161,31 @@ public sealed class LogWatchService(
             // Names are a nicety — the tracker still works with raw class names, and the
             // tray menu offers a manual retry.
             log.LogWarning(ex, "Could not download item names");
+        }
+    }
+
+    /// <summary>
+    /// The wiki's location list is what a station's name is checked against; until it is
+    /// here, names backed by a single source stay unconfirmed. A pass follows, so places
+    /// waiting on it are resolved again right away.
+    /// </summary>
+    private async Task RefreshPlacesAsync(CancellationToken ct)
+    {
+        try
+        {
+            log.LogInformation("Downloading location list from star-citizen.wiki");
+            var count = await places.RefreshAsync(ct: ct);
+            log.LogInformation("Cached {Count} wiki locations", count);
+            RequestPlaceResolution();
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutting down mid-download; the next launch retries.
+        }
+        catch (Exception ex)
+        {
+            // Names wait for the list, and the player can still confirm them by hand.
+            log.LogWarning(ex, "Could not download the wiki's location list");
         }
     }
 
@@ -193,6 +234,7 @@ public sealed class LogWatchService(
             }
 
             var stats = _ingestor.IngestAll();
+            var renamed = ResolvePlaces(stats);
 
             // Re-resolving is cheap, but pushing a no-op update to every open page is noise.
             // An UnrecognisedMove counts too: it means the game's log grammar just drifted,
@@ -201,6 +243,7 @@ public sealed class LogWatchService(
             if (stats.MovesInserted > 0 ||
                 stats.ContainersIdentified > 0 ||
                 stats.UnrecognisedMoves > 0 ||
+                renamed > 0 ||
                 state.Current.BuiltAt == DateTimeOffset.MinValue)
             {
                 state.Rebuild();
@@ -225,6 +268,32 @@ public sealed class LogWatchService(
         catch (Exception ex)
         {
             log.LogError(ex, "Ingest pass failed");
+        }
+    }
+
+    /// <summary>
+    /// Names a place seen for the first time, and looks again at any still waiting on
+    /// confirmation — but only when there is something new to go on: the watcher fires on
+    /// every write to Game.log, and most passes read no place evidence at all. A failure here
+    /// costs the names, never the rebuild of what was just ingested.
+    /// </summary>
+    private int ResolvePlaces(IngestStats stats)
+    {
+        if (!_placesStale && stats.LocationsNamed == 0 && stats.LocationConflicts == 0 && stats.PlaceEvidence == 0)
+        {
+            return 0;
+        }
+
+        try
+        {
+            _placesStale = false;
+            return places.ResolvePlaces();
+        }
+        catch (Exception ex)
+        {
+            _placesStale = true;
+            log.LogWarning(ex, "Could not resolve place names");
+            return 0;
         }
     }
 
