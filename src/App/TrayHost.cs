@@ -59,6 +59,10 @@ public static class TrayHost
         builder.WebHost.UseUrls(options.Url);
         builder.Logging.SetMinimumLevel(LogLevel.Information);
 
+        // Exit has nothing to flush (every write is already committed), but the default 30 s
+        // wait for open browser circuits to drain makes it look hung.
+        builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(3));
+
         var db = new TrackerDb(options.DatabasePath);
         db.Initialize();
 
@@ -148,10 +152,15 @@ public static class TrayHost
             return 1;
         }
 
-        using var tray = BuildTrayIcon(app, options);
+        var tray = BuildTrayIcon(app, options);
         // Land first-time users on the setup wizard; the UI gate enforces it regardless.
         OpenBrowser(options.SetupComplete ? options.Url : $"{options.Url}/setup");
         Application.Run();
+
+        // Gone before the host stops: an open browser tab holds a Blazor circuit that
+        // Kestrel waits on, and the icon should not linger in the tray while it does.
+        tray.Visible = false;
+        tray.Dispose();
 
         app.StopAsync().GetAwaiter().GetResult();
         return 0;
