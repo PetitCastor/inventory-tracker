@@ -57,6 +57,10 @@ jobs:
             });
 
   build:
+    # pull_request_target exists only for the branch cleanup above. Without this, every
+    # merge also rebuilt and retested main in that second run, alongside the push run
+    # that actually gates publish.
+    if: github.event_name != 'pull_request_target'
     # WinExe / net10.0-windows (UseWindowsForms) only builds on Windows.
     runs-on: windows-latest
 
