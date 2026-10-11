@@ -78,6 +78,10 @@ public static class TrayHost
         builder.Services.AddSingleton(sp => new WikiNameService(
             sp.GetRequiredService<TrackerDb>(),
             sp.GetRequiredService<IHttpClientFactory>().CreateClient(WikiClient)));
+        builder.Services.AddSingleton(sp => new PlaceNameService(
+            sp.GetRequiredService<TrackerDb>(),
+            sp.GetRequiredService<TrackerOptions>(),
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(WikiClient)));
 
         // Same registration shape as the wiki client above, for the "Check for updates"
         // button in Settings — the startup check in Run() uses its own short-lived
@@ -164,25 +168,28 @@ public static class TrayHost
             app.Services.GetRequiredService<LogWatchService>().RequestScan());
 
         // The handler is async void — an EventHandler returns void — so nothing can observe
-        // what it throws and an unhandled exception would end the process. RefreshAsync
-        // makes ~62 network calls, so failure is routine rather than exceptional: being
+        // what it throws and an unhandled exception would end the process. The two refreshes
+        // make ~72 network calls, so failure is routine rather than exceptional: being
         // offline must not cost the user their tracker.
-        menu.Items.Add("Refresh item names from wiki", null, async (_, _) =>
+        menu.Items.Add("Refresh names from wiki", null, async (_, _) =>
         {
             try
             {
                 var names = app.Services.GetRequiredService<WikiNameService>();
                 await names.RefreshAsync();
+                await app.Services.GetRequiredService<PlaceNameService>().RefreshAsync();
                 app.Services.GetRequiredService<TrackerState>().Rebuild();
+                app.Services.GetRequiredService<LogWatchService>().RequestScan();
             }
             catch (Exception ex)
             {
                 app.Services.GetRequiredService<ILogger<WebApplication>>()
-                    .LogWarning(ex, "Could not refresh item names");
+                    .LogWarning(ex, "Could not refresh names from the wiki");
 
                 MessageBox.Show(
-                    $"Could not download item names.\n\n{ex.Message}\n\n" +
-                    "The tracker keeps working; items just show their raw class names.",
+                    $"Could not download names from the wiki.\n\n{ex.Message}\n\n" +
+                    "The tracker keeps working; items show their raw class names, and " +
+                    "place names stay unconfirmed until you confirm them.",
                     "Inventory Tracker",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);

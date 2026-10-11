@@ -6,6 +6,7 @@
 @inject TrackerState State
 @inject TrackerOptions Options
 @inject LogWatchService Watcher
+@inject PlaceNameService Places
 @inject InventoryTracker.App.DesktopShell Shell
 @inject UpdateService Updates
 @inject Microsoft.Extensions.Hosting.IHostApplicationLifetime Lifetime
@@ -57,10 +58,12 @@
     <dt>Snapshot built</dt><dd>@State.Current.BuiltAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</dd>
     <dt>Item catalogue</dt>
     <dd>@(_catalogueAge is null ? "never downloaded" : $"refreshed {_catalogueAge:yyyy-MM-dd}")</dd>
+    <dt>Place list</dt>
+    <dd>@(_placesAge is null ? "never downloaded" : $"refreshed {_placesAge:yyyy-MM-dd}")</dd>
 </dl>
 
 <div class="settings-actions">
-    <button @onclick="RefreshNames" disabled="@_refreshingNames">Refresh item names from wiki</button>
+    <button @onclick="RefreshNames" disabled="@_refreshingNames">Refresh names from wiki</button>
     @if (_refreshingNames)
     {
         <span class="rebuild-status"><span class="spinner"></span> @(_namesProgress ?? "starting…")</span>
@@ -157,6 +160,7 @@
     private List<string> _unknownContainers = [];
     private List<string> _unnamedItems = [];
     private DateTimeOffset? _catalogueAge;
+    private DateTimeOffset? _placesAge;
 
     private string _logDir = "";
     private DateOnly? _inceptionDate;
@@ -201,6 +205,7 @@
     {
         _holdings = State.Current.Holdings;
         _catalogueAge = State.Names.LastRefresh();
+        _placesAge = Places.LastRefresh();
 
         // A link labelled "location <id>" or "container <id>" is the resolver's way of
         // saying it had nothing better than the raw id.
@@ -256,7 +261,7 @@
     }
 
     /// <summary>
-    /// Web-UI equivalent of the tray menu's "Refresh item names from wiki". Progress is
+    /// Web-UI equivalent of the tray menu's "Refresh names from wiki". Progress is
     /// reported via the page-by-page callback <see cref="WikiNameService.RefreshAsync"/>
     /// already supports; <see cref="Progress{T}"/> captures this circuit's synchronization
     /// context at construction time, so each report marshals back here on its own.
@@ -278,13 +283,17 @@
         try
         {
             await State.Names.RefreshAsync(progress);
+            await Places.RefreshAsync(progress);
             State.Rebuild();
+
+            // Stations waiting on the place list are resolved on the next pass.
+            Watcher.RequestScan();
             RefreshDiagnostics();
             _namesRefreshed = true;
         }
         catch (Exception ex)
         {
-            _namesError = $"Could not download item names: {ex.Message}";
+            _namesError = $"Could not download names from the wiki: {ex.Message}";
         }
         finally
         {

@@ -404,7 +404,8 @@ public sealed class HoldingResolver
                     var place = Places.ByLocationId(key);
                     if (place is not null)
                     {
-                        chain.Add(new HoldingLink(kind, key, place.Label));
+                        chain.Add(new HoldingLink(
+                            kind, key, place.NameConfirmed ? place.Label : $"{place.Label} (unconfirmed)"));
 
                         // Where the item is does not depend on the label, so it costs nothing,
                         // but the label is our guess and says so.

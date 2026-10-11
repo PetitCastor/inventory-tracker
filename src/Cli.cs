@@ -281,7 +281,7 @@ internal static class Cli
         Console.WriteLine("-- places --");
         foreach (var place in PlaceCatalog.Load(db).Places)
         {
-            var flags = (place.NameVerified ? "" : " [name unverified]") +
+            var flags = (place.NameConfirmed ? "" : $" [name {place.NameStatus.ToString().ToLowerInvariant()}]") +
                         (place.SystemVerified ? "" : " [system inferred]");
             Console.WriteLine($"  {place.System,-14} {place.LabelInSystem,-46} {string.Join(",", place.AliasIds)}{flags}");
             if (place.RawName is { } raw && raw != place.Name) Console.WriteLine($"  {"",-14} logged internally as {raw}");

@@ -67,9 +67,10 @@ public sealed class TrackerDb
     /// </para>
     /// <para>9 -> 10 adds <c>session.cur_loc_id</c> / <c>cur_loc_since</c>; 10 -> 11 adds <c>move.action</c>;
     /// 11 -> 12 adds <c>session.build</c>; 12 -> 13 adds <c>session.first_loc_id</c> /
-    /// <c>first_loc_since</c>; 13 -> 14 adds <c>attachment_sighting</c>.</para>
+    /// <c>first_loc_since</c>; 13 -> 14 adds <c>attachment_sighting</c>; 14 -> 15 adds
+    /// <c>wiki_location</c> and <c>place_name</c>.</para>
     /// </summary>
-    private const int SchemaVersion = 14;
+    private const int SchemaVersion = 15;
 
     public void Initialize()
     {
@@ -311,6 +312,39 @@ public sealed class TrackerDb
             fetched_at   TEXT
         );
 
+        -- The star-citizen.wiki location list: the reference every place name is checked
+        -- against. Kept across rebuilds for the same reason as wiki_item.
+        CREATE TABLE IF NOT EXISTS wiki_location (
+            uuid        TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            system      TEXT NOT NULL,
+            parent      TEXT,
+            parent_type TEXT,
+            type        TEXT,
+            fetched_at  TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_wiki_location_name ON wiki_location(name);
+
+        -- The name each place is shown under, and whether it is confirmed. Keyed by the
+        -- internal string the game pairs with a station's inventory, which outlives the ids
+        -- the game re-issues; a place with no such string is keyed 'id:<location id>'.
+        --   status     'confirmed' rows are final: the resolver never touches them again.
+        --              'pending' and 'unresolved' rows are re-resolved on every ingest pass.
+        --   sources    the PlaceNameSource flags backing the name, as an integer.
+        --   decided_by 'auto' when two sources agreed, 'user' when the player said so.
+        -- Not derived from the logs alone, and the player's confirmations cannot be rebuilt,
+        -- so it survives a rebuild.
+        CREATE TABLE IF NOT EXISTS place_name (
+            place_key  TEXT PRIMARY KEY,
+            name       TEXT,
+            status     TEXT    NOT NULL,
+            sources    INTEGER NOT NULL DEFAULT 0,
+            planet     TEXT,
+            decided_by TEXT    NOT NULL DEFAULT 'auto',
+            updated_at TEXT
+        );
+
         -- Dropped in schema 8. It was rebuilt from wiki_item on every catalogue refresh
         -- (~12k rows) and never read by anything: the name search it was built for was
         -- never written. Reinstate it alongside the feature, not before.
@@ -324,8 +358,9 @@ public sealed class TrackerDb
 
     /// <summary>
     /// Everything derived from the logs, dropped and rebuilt on a schema mismatch. The wiki
-    /// catalogue is deliberately not in here: it costs ~62 network requests to refill and is
-    /// not derived from anything a schema change would invalidate.
+    /// catalogues are deliberately not in here: they cost ~72 network requests to refill and
+    /// are not derived from anything a schema change would invalidate. Nor is place_name,
+    /// which holds the player's own confirmations.
     /// </summary>
     private const string DropAll = """
         DROP TABLE IF EXISTS attachment_sighting;
