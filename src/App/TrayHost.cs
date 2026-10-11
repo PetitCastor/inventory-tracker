@@ -153,16 +153,30 @@ public static class TrayHost
         }
 
         var tray = BuildTrayIcon(app, options);
-        // Land first-time users on the setup wizard; the UI gate enforces it regardless.
-        OpenBrowser(options.SetupComplete ? options.Url : $"{options.Url}/setup");
-        Application.Run();
+        try
+        {
+            // Land first-time users on the setup wizard; the UI gate enforces it regardless.
+            OpenBrowser(options.SetupComplete ? options.Url : $"{options.Url}/setup");
+            Application.Run();
+        }
+        finally
+        {
+            // Gone before the host stops: an open browser tab holds a Blazor circuit that
+            // Kestrel waits on, and the icon should not linger in the tray while it does.
+            tray.Visible = false;
+            tray.Dispose();
+        }
 
-        // Gone before the host stops: an open browser tab holds a Blazor circuit that
-        // Kestrel waits on, and the icon should not linger in the tray while it does.
-        tray.Visible = false;
-        tray.Dispose();
+        try
+        {
+            app.StopAsync().GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            // The shutdown timeout ran out on a circuit or a pass still winding down. The
+            // process is exiting anyway; a crash dialog after "Exit" would only be noise.
+        }
 
-        app.StopAsync().GetAwaiter().GetResult();
         return 0;
     }
 

@@ -117,6 +117,8 @@ public sealed class LogWatchService(
         await Task.Yield();
 
         Ingest(ct);
+        if (ct.IsCancellationRequested) return;
+
         StartWatching();
 
         // Without the catalogue every item shows as a raw class name, which is useless as
@@ -217,7 +219,7 @@ public sealed class LogWatchService(
         {
             _ingestLock.Wait(ct);
         }
-        catch (OperationCanceledException)
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
         {
             return;
         }
@@ -228,7 +230,10 @@ public sealed class LogWatchService(
         }
         finally
         {
-            _ingestLock.Release();
+            // The host disposes this service once its shutdown timeout runs out, even if a
+            // pass is still winding down; the lock may be gone by the time it finishes.
+            try { _ingestLock.Release(); }
+            catch (ObjectDisposedException) { }
         }
     }
 

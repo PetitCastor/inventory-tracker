@@ -119,14 +119,17 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         foreach (var file in files)
         {
             ct.ThrowIfCancellationRequested();
-            IngestFile(cn, file, stats);
+            IngestFile(cn, file, stats, ct);
         }
 
         return stats;
     }
 
-    /// <summary>Parses one file from its stored watermark to the last complete line.</summary>
-    public void IngestFile(SqliteConnection cn, LogFile file, IngestStats stats)
+    /// <summary>
+    /// Parses one file from its stored watermark to the last complete line. Cancelling rolls
+    /// the file's transaction back, so one huge live log cannot hold up shutdown.
+    /// </summary>
+    public void IngestFile(SqliteConnection cn, LogFile file, IngestStats stats, CancellationToken ct = default)
     {
         var session = LoadOrCreateSession(cn, file.Path);
 
@@ -155,6 +158,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
         foreach (var line in reader.ReadLines(file.Path))
         {
+            ct.ThrowIfCancellationRequested();
             stats.LinesRead++;
 
             // The reader starts over when the file shrank under it; whatever the state knew
