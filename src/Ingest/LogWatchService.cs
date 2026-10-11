@@ -67,7 +67,7 @@ public sealed class LogWatchService(
 
     /// <summary>Runs one ingest pass and returns only when it has finished, so the caller
     /// can show a rebuild-complete state.</summary>
-    public Task RebuildNowAsync() => Task.Run(Ingest);
+    public Task RebuildNowAsync() => Task.Run(() => Ingest());
 
     /// <summary>
     /// Discards everything derived from the logs and re-ingests from scratch, as one
@@ -116,7 +116,9 @@ public sealed class LogWatchService(
         // icon, Kestrel and the browser launch all wait on it.
         await Task.Yield();
 
-        Ingest();
+        Ingest(ct);
+        if (ct.IsCancellationRequested) return;
+
         StartWatching();
 
         // Without the catalogue every item shows as a raw class name, which is useless as
@@ -139,7 +141,7 @@ public sealed class LogWatchService(
                 break;
             }
 
-            Ingest();
+            Ingest(ct);
         }
     }
 
@@ -207,21 +209,36 @@ public sealed class LogWatchService(
         _watcher.Created += (_, _) => RequestScan();
     }
 
-    private void Ingest()
+    /// <summary>
+    /// <paramref name="ct"/> is the host's stop token: shutdown waits for the pass in flight, so
+    /// it has to be able to cut a long backfill short. The next launch resumes from the watermark.
+    /// </summary>
+    private void Ingest(CancellationToken ct = default)
     {
-        _ingestLock.Wait();
         try
         {
-            IngestLocked();
+            _ingestLock.Wait(ct);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            IngestLocked(ct);
         }
         finally
         {
-            _ingestLock.Release();
+            // The host disposes this service once its shutdown timeout runs out, even if a
+            // pass is still winding down; the lock may be gone by the time it finishes.
+            try { _ingestLock.Release(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
     /// <summary>One ingest pass. The caller must already hold <see cref="_ingestLock"/>.</summary>
-    private void IngestLocked()
+    private void IngestLocked(CancellationToken ct = default)
     {
         try
         {
@@ -233,7 +250,7 @@ public sealed class LogWatchService(
                 _ingestor = new LogIngestor(db, options.LogDir, options.InceptionDate);
             }
 
-            var stats = _ingestor.IngestAll();
+            var stats = _ingestor.IngestAll(ct);
             var renamed = ResolvePlaces(stats);
 
             // Re-resolving is cheap, but pushing a no-op update to every open page is noise.
@@ -258,6 +275,10 @@ public sealed class LogWatchService(
                     "parser's patterns. The game's log format has probably changed; tracking is incomplete.",
                     stats.UnrecognisedMoves);
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutting down mid-pass; the next launch picks up from the watermark.
         }
         catch (IOException ex)
         {
