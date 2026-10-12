@@ -7,6 +7,12 @@
 
 <h1>Dropped <span class="badge-count">@_groups.Sum(g => g.Items.Sum(i => i.Holding.Quantity))</span></h1>
 
+@* A drop out of an equipment slot writes no Type[Drop]: on 2026-10-12 one left three
+   "Drop From Container" lines naming the wrong item, another only an INVALID-to-INVALID
+   drag. Nothing names what fell, so the ledger keeps such an item equipped until a pickup
+   re-attaches or stores it. *@
+<p class="subtle">Items dropped from a holster or another equipment slot do not appear here: the game logs no drop for them.</p>
+
 @* Everything the ledger last saw land on the floor and never saw picked up again. The game
    despawns loose items, and nothing in the logs says when, so these are leads, not holdings. *@
 @if (_groups.Count == 0)
