@@ -87,4 +87,63 @@ public sealed class LogWatchServiceTests : IDisposable
         Assert.NotNull(_watcher.LastMovesAt);
         Assert.Equal(2, completed);
     }
+
+    [Fact]
+    public async Task A_pass_that_reads_only_noise_still_refreshes_a_banner_it_made_wrong()
+    {
+        // The game logs in and loads for minutes before any inventory line. Holdings do not
+        // change, but "the game has not written anything yet" stops being true, and Browse
+        // reads the snapshot: without a rebuild that banner stayed up the whole time.
+        File.WriteAllText(Path.Combine(_dir, "Game.log"), "");
+        await _watcher.ResetAndRebuildAsync();
+        Assert.Null(_state.Current.Health.NewestLogLine);
+
+        Append("<2026-10-11T22:00:13.695Z> [Notice] <Legacy login response> User Login Success");
+        await _watcher.RunPassAsync(IngestTrigger.Poll);
+
+        Assert.True(Assert.IsType<IngestPass>(_watcher.LastPass).Rebuilt);
+        Assert.NotNull(_state.Current.Health.NewestLogLine);
+    }
+
+    [Fact]
+    public async Task A_pass_that_reads_noise_into_an_already_correct_banner_does_not_rebuild()
+    {
+        // The newest line's time moves on every pass while the game writes; rebuilding for it
+        // alone would mean a full rebuild every two seconds.
+        Append(Store);
+        await _watcher.ResetAndRebuildAsync();
+
+        Append("<2026-08-27T00:45:00.000Z> [Notice] <Legacy login response> User Login Success");
+        await _watcher.RunPassAsync(IngestTrigger.Poll);
+
+        Assert.False(Assert.IsType<IngestPass>(_watcher.LastPass).Rebuilt);
+    }
+
+    [Fact]
+    public async Task A_subscriber_that_throws_does_not_fail_the_pass()
+    {
+        // The loop runs passes inline; an exception escaping one would stop ExecuteAsync and
+        // with it the host.
+        _watcher.PassCompleted += () => throw new InvalidOperationException("page gone");
+        Append(Store);
+
+        await _watcher.RebuildNowAsync();
+
+        var pass = Assert.IsType<IngestPass>(_watcher.LastPass);
+        Assert.Null(pass.Error);
+        Assert.NotEmpty(_state.Current.Holdings);
+    }
+
+    [Fact]
+    public void A_snapshot_subscriber_that_throws_neither_fails_the_rebuild_nor_starves_the_others()
+    {
+        var reached = 0;
+        _state.Changed += () => throw new InvalidOperationException("circuit gone");
+        _state.Changed += () => reached++;
+
+        _state.Rebuild();
+
+        Assert.Equal(1, reached);
+        Assert.NotEqual(DateTimeOffset.MinValue, _state.Current.BuiltAt);
+    }
 }

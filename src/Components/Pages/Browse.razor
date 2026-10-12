@@ -44,6 +44,15 @@ else if (health.LogFiles == 0)
         <a href="settings">Check the log location in Settings</a>.
     </p>
 }
+else if (health.FilesWithLinesSinceInception == 0 && health.NewestLogLine is null)
+{
+    @* First among the empty-file cases: with no timestamped line anywhere — a fresh install,
+       or the game only just started a new log — neither a wipe date nor 4.9 is to blame. *@
+    <p class="banner banner-info">
+        Found @health.LogFiles log file(s), but the game has not written anything to them yet.
+        This page updates by itself once it does.
+    </p>
+}
 else if (health.FilesWithLinesSinceInception == 0 && health.InceptionDate is not null)
 {
     <p class="banner banner-info">
@@ -54,7 +63,7 @@ else if (health.FilesWithLinesSinceInception == 0 && health.InceptionDate is not
 }
 else if (health.FilesWithLinesSinceInception == 0)
 {
-    @* No wipe date to blame: the logs predate the 4.9 parser cutoff, or hold no line it reads. *@
+    @* No wipe date to blame, and the files do have lines: they predate the 4.9 cutoff. *@
     <p class="banner banner-info">
         Found @health.LogFiles log file(s), but none has a line the tracker can read.
         Logs written before Star Citizen 4.9 are skipped. Newest log line: @FormatDate(health.NewestLogLine).

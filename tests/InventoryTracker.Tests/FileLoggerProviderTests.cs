@@ -40,4 +40,20 @@ public sealed class FileLoggerProviderTests : IDisposable
         Assert.Contains("INFO  Test: fresh", File.ReadAllText(LogPath));
         Assert.DoesNotContain("xxx", File.ReadAllText(LogPath));
     }
+
+    [Fact]
+    public void A_locked_backup_cannot_make_the_file_grow_without_bound()
+    {
+        // tracker.log.1 held open (an editor, antivirus) makes every rollover fail. Past
+        // twice the cap the live file is emptied rather than appended to forever.
+        Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
+        File.WriteAllText(LogPath, new string('x', (int)(2 * FileLoggerProvider.MaxBytes) + 1));
+        using var locked = new FileStream(LogPath + ".1", FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+
+        using var provider = new FileLoggerProvider(LogPath);
+        provider.CreateLogger("Test").LogInformation("after");
+
+        Assert.True(new FileInfo(LogPath).Length < FileLoggerProvider.MaxBytes);
+        Assert.Contains("INFO  Test: after", File.ReadAllText(LogPath));
+    }
 }

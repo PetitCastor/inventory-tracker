@@ -57,6 +57,27 @@ public sealed class LogIngestorTests : IDisposable
         "User[Pilot, 204821708183] on Inventory[cds_combat_superheavy_suit_01_04_01_783810961476, 783810961476]";
 
     [Fact]
+    public void A_store_line_on_its_own_is_reported_as_a_change()
+    {
+        // The watcher only publishes a snapshot when a pass reports a change. A store line
+        // inserted a move row without counting it, so a pass that read nothing else left the
+        // UI without the item it had just placed. It is not a new move for the player, though:
+        // it usually doubles the Queued line of the same action.
+        var ingestor = new LogIngestor(_db, _dir);
+        Append(
+            "<2026-08-27T00:41:00.000Z> [Notice] <OnInventoryStoreItem> " +
+            "Entity[grin_multitool_01_red01_481104483777 - Class(grin_multitool_01_red01) - x] " +
+            "Inventory[204821708183:Location:4005457614]");
+
+        var stats = ingestor.IngestAll();
+
+        Assert.Equal(1, stats.StoresRecorded);
+        Assert.Equal(0, stats.MovesInserted);
+        Assert.True(stats.ChangedHoldings);
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move"));
+    }
+
+    [Fact]
     public void A_container_opened_in_a_later_pass_is_placed_where_an_earlier_pass_saw_the_player_arrive()
     {
         // The game writes the location once, on arrival. The watcher runs a pass every second
