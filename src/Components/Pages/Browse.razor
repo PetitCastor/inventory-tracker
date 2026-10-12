@@ -183,8 +183,7 @@ else
             @* A name is only shown as fact once confirmed: by two sources agreeing, or by the
                player here. Until then it says what it is and offers to settle it. *@
             @* Kept open while the player is typing, even if a pass confirms the name meanwhile:
-               a correction is never dropped from under them. A confirmed name can still be
-               renamed — two sources can agree on an obsolete name. *@
+               a correction is never dropped from under them. *@
             @if (!_place.NameConfirmed || _correcting)
             {
                 var pending = _place.NameStatus == PlaceNameStatus.Pending;
@@ -231,12 +230,6 @@ else
                         }
                         <button type="button" @onclick="StartCorrection">@(pending ? "Correct…" : "Name it…")</button>
                     }
-                </div>
-            }
-            else
-            {
-                <div class="place-rename">
-                    <button type="button" class="link-btn" @onclick="StartCorrection">Rename this place…</button>
                 </div>
             }
 
