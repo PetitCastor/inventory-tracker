@@ -1,0 +1,102 @@
+@page "/ships"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject TrackerState State
+
+<PageTitle>Ships — Star Citizen inventory</PageTitle>
+
+<h1>Ships <span class="badge-count">@_ships.Count</span></h1>
+
+@* What is in each ship's lockers. A locker is followed like any container, but it belongs to
+   the ship: storing the ship and calling it back out kept the locker and its contents. *@
+@if (_ships.Count == 0)
+{
+    <p class="empty">Nothing tracked in a ship. Items you put in a ship's lockers are listed here.</p>
+}
+else
+{
+    @foreach (var ship in _ships)
+    {
+        <section class="place">
+            <h2>@ship.Label <span class="badge-count">@ship.Items.Sum(i => i.Holding.Quantity)</span></h2>
+            @if (ship.Retrieved is { } retrieved)
+            {
+                <p class="subtle">
+                    Last retrieved @(retrieved.PlaceLabel is { } at ? $"at {at}, " : "")@retrieved.At.ToString("yyyy-MM-dd HH:mm") UTC
+                </p>
+            }
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Qty</th>
+                        <th>Last moved (UTC)</th>
+                        <th>Confidence</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var item in ship.Items)
+                {
+                    <tr>
+                        <td>
+                            @if (item.Holding.Geid is { } geid)
+                            {
+                                <a href="item/@geid">@item.Display</a>
+                            }
+                            else
+                            {
+                                @item.Display
+                            }
+                        </td>
+                        <td class="qty">@item.Holding.Quantity&times;</td>
+                        <td class="when">@item.Holding.LastMove.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td>
+                            <span class="conf conf-@item.Holding.Confidence.ToString().ToLowerInvariant()"
+                                  title="@string.Join("; ", item.Holding.Caveats)">
+                                @item.Holding.Confidence
+                            </span>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </section>
+    }
+}
+
+@code {
+    /// <summary>One ship class and what its lockers hold, most recently moved first.</summary>
+    private sealed record Ship(string Label, ShipRetrieval? Retrieved, IReadOnlyList<NamedHolding> Items);
+
+    private List<Ship> _ships = [];
+
+    protected override void OnInitialized()
+    {
+        State.Changed += OnChanged;
+        Load();
+    }
+
+    /// <summary>
+    /// Groups by ship class, which is all a locker says about its ship. Two ships of one class
+    /// would share a section; the logs give no way to tell their lockers apart by owner.
+    /// </summary>
+    private void Load()
+    {
+        var snapshot = State.Current;
+        var resolver = snapshot.Resolver;
+
+        _ships = snapshot.Holdings
+            .Where(h => h.Holding.IsInShip)
+            .GroupBy(h => h.Holding.Root!.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new Ship(
+                resolver?.ShipLabel(g.Key) ?? g.Key,
+                resolver?.LastRetrieved(g.Key),
+                g.OrderByDescending(h => h.Holding.LastMove).ToList()))
+            .OrderBy(s => s.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

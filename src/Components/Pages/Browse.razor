@@ -91,7 +91,7 @@ else if (health.Moves == 0)
         <circle cx="10.5" cy="10.5" r="6.5" />
         <path d="m20 20-4.35-4.35" stroke-linecap="round" />
     </svg>
-    <input type="text" placeholder="Search what's stored at stations…" class="search-input"
+    <input type="text" placeholder="Search what's stored at stations and in ships…" class="search-input"
            @bind="_query" @bind:event="oninput" />
 </div>
 
@@ -102,7 +102,7 @@ else if (health.Moves == 0)
         <h2>Search results <span class="badge-count">@results.Count</span></h2>
         @if (results.Count == 0)
         {
-            <p class="empty">Nothing stored at a station matches "@_query".</p>
+            <p class="empty">Nothing stored at a station or in a ship matches "@_query".</p>
         }
         else
         {
@@ -629,16 +629,16 @@ else
     </table>;
 
     /// <summary>
-    /// Every holding stored at a station, at any station and at any depth, whose display name
-    /// or item class contains the query. It covers what the station view covers and nothing
-    /// more: what is on the character is never listed. Unpooled — search exists precisely to
+    /// Every holding stored at a station or in a ship's locker, at any depth, whose display
+    /// name or item class contains the query. It covers what the station view and the Ships
+    /// page cover and nothing more: what is on the character is never listed. Unpooled — search exists precisely to
     /// find one named instance out of a pool, so collapsing rows here would defeat the point
     /// (unlike the station tables, which pool because the game itself never distinguishes the
     /// pooled units).
     /// </summary>
     private List<NamedHolding> SearchResults() =>
         State.Current.Holdings
-            .Where(h => h.Holding.IsAtStation)
+            .Where(h => h.Holding.IsAtStation || h.Holding.IsInShip)
             .Where(h => h.Display.Contains(_query, StringComparison.OrdinalIgnoreCase)
                      || h.ClassName.Contains(_query, StringComparison.OrdinalIgnoreCase))
             .OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase)

@@ -112,6 +112,20 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
             Volatile.Write(ref _cache, null);
         }
 
+        // Ships are named from the same wiki, so every place that refreshes the item names
+        // refreshes theirs too — after the items are done, so a failure here never leaves
+        // the item names written but unstamped and uncached. A ship the list does not name
+        // shows its class instead, and the next refresh tries again.
+        try
+        {
+            await Task.Delay(BetweenRequests, ct);
+            await new WikiVehicleCatalog(db, http).RefreshAsync(progress, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            progress?.Report($"vehicle names not downloaded: {ex.Message}");
+        }
+
         return written;
     }
 

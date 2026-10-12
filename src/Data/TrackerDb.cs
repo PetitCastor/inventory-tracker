@@ -68,9 +68,9 @@ public sealed class TrackerDb
     /// <para>9 -> 10 adds <c>session.cur_loc_id</c> / <c>cur_loc_since</c>; 10 -> 11 adds <c>move.action</c>;
     /// 11 -> 12 adds <c>session.build</c>; 12 -> 13 adds <c>session.first_loc_id</c> /
     /// <c>first_loc_since</c>; 13 -> 14 adds <c>attachment_sighting</c>; 14 -> 15 adds
-    /// <c>wiki_location</c> and <c>place_name</c>.</para>
+    /// <c>wiki_location</c> and <c>place_name</c>; 15 -> 16 adds <c>vehicle</c> and <c>wiki_vehicle</c>.</para>
     /// </summary>
-    private const int SchemaVersion = 15;
+    private const int SchemaVersion = 16;
 
     public void Initialize()
     {
@@ -138,6 +138,7 @@ public sealed class TrackerDb
         DELETE FROM session;
         DELETE FROM location_name;
         DELETE FROM container_class;
+        DELETE FROM vehicle;
         DELETE FROM attachment;
         DELETE FROM place_evidence;
         """;
@@ -245,6 +246,28 @@ public sealed class TrackerDb
             last_loc_id    TEXT,
             last_loc_ts    TEXT,
             capacity       INTEGER
+        );
+
+        -- Ships, by geid. class_name comes from the line written when the player leaves a pilot
+        -- seat; retrieved_* from the one written when the ship is called out of storage, which
+        -- happens where the player stands. A ship's lockers are linked to it by class only.
+        CREATE TABLE IF NOT EXISTS vehicle (
+            geid             TEXT PRIMARY KEY,
+            class_name       TEXT,
+            last_seen        TEXT,
+            retrieved_ts     TEXT,
+            retrieved_loc_id TEXT
+        );
+
+        -- The star-citizen.wiki vehicle list: what a ship class is called in game
+        -- ("GLSN_Shiv" -> "Grey's Shiv"). Kept across rebuilds for the same reason as wiki_item.
+        CREATE TABLE IF NOT EXISTS wiki_vehicle (
+            class_name   TEXT PRIMARY KEY,
+            game_name    TEXT,
+            name         TEXT,
+            manufacturer TEXT,
+            web_url      TEXT,
+            fetched_at   TEXT
         );
 
         -- Ports worn on the player's body, from <AttachmentReceived>. Re-emitted on every
@@ -368,6 +391,7 @@ public sealed class TrackerDb
         DROP TABLE IF EXISTS session;
         DROP TABLE IF EXISTS location_name;
         DROP TABLE IF EXISTS container_class;
+        DROP TABLE IF EXISTS vehicle;
         DROP TABLE IF EXISTS attachment;
         DROP TABLE IF EXISTS place_evidence;
         """;

@@ -36,6 +36,9 @@ public sealed record IngestStats
     /// one usually doubles a Queued line for the same action.</summary>
     public int StoresRecorded { get; set; }
 
+    /// <summary>Ships flown or retrieved: each says which ship a locker belongs to, or where it is.</summary>
+    public int VehiclesSeen { get; set; }
+
     /// <summary>
     /// Whether this pass wrote anything the holdings are built from, and so whether the UI
     /// needs a new snapshot. Not just new moves: a completion read in a later pass than its
@@ -47,7 +50,7 @@ public sealed record IngestStats
     public bool ChangedHoldings =>
         MovesInserted > 0 || StoresRecorded > 0 || CompletionsApplied > 0 || ContainersIdentified > 0 ||
         CapacitiesSeen > 0 || LocationsNamed > 0 || LocationConflicts > 0 || GeidsRecovered > 0 ||
-        AttachmentsSeen > 0 || RequestsLost > 0 || UnrecognisedMoves > 0;
+        AttachmentsSeen > 0 || RequestsLost > 0 || UnrecognisedMoves > 0 || VehiclesSeen > 0;
 }
 
 /// <summary>
@@ -389,6 +392,17 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             case ContainerIdentified container:
                 UpsertContainer(cn, tx, container, state.CurrentLocation);
                 stats.ContainersIdentified++;
+                break;
+
+            case VehicleFlown flown:
+                UpsertVehicle(cn, tx, flown.Geid, flown.ClassName, retrievedAt: null, flown.Timestamp);
+                stats.VehiclesSeen++;
+                break;
+
+            // The ship comes out where the player stands.
+            case VehicleRetrieved retrieved:
+                UpsertVehicle(cn, tx, retrieved.Geid, className: null, state.CurrentLocation, retrieved.Timestamp);
+                stats.VehiclesSeen++;
                 break;
 
             // The canary firing: a request-shaped line neither ParseQueued nor ParseAddMove
@@ -994,6 +1008,38 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     /// opened it. Only ever moves the location forward in time so that replaying an
     /// older log file cannot overwrite a newer sighting.
     /// </summary>
+    /// <summary>
+    /// Records a ship: its class when a pilot seat names it, where and when it last came out of
+    /// storage when a retrieval does. Each line carries only one half, so neither overwrites
+    /// the other, and an older line read late never replaces a newer retrieval.
+    /// </summary>
+    private static void UpsertVehicle(
+        SqliteConnection cn, SqliteTransaction tx, string geid, string? className,
+        PlayerLocation? retrievedAt, DateTimeOffset seenAt)
+    {
+        var retrieved = className is null;
+
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT INTO vehicle(geid, class_name, last_seen, retrieved_ts, retrieved_loc_id)
+            VALUES($g, $c, $t, $rts, $loc)
+            ON CONFLICT(geid) DO UPDATE SET
+                class_name       = COALESCE($c, class_name),
+                last_seen        = MAX(last_seen, $t),
+                retrieved_loc_id = CASE WHEN $rts IS NOT NULL AND ($rts > retrieved_ts OR retrieved_ts IS NULL)
+                                        THEN $loc ELSE retrieved_loc_id END,
+                retrieved_ts     = CASE WHEN $rts IS NOT NULL AND ($rts > retrieved_ts OR retrieved_ts IS NULL)
+                                        THEN $rts ELSE retrieved_ts END
+            """;
+        cmd.Parameters.AddWithValue("$g", geid);
+        cmd.Parameters.AddWithValue("$c", (object?)className ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$t", Iso(seenAt));
+        cmd.Parameters.AddWithValue("$rts", retrieved ? Iso(seenAt) : DBNull.Value);
+        cmd.Parameters.AddWithValue("$loc", (object?)retrievedAt?.LocationId ?? DBNull.Value);
+        cmd.ExecuteNonQuery();
+    }
+
     private static void UpsertContainer(
         SqliteConnection cn, SqliteTransaction tx, ContainerIdentified c, PlayerLocation? at) =>
         UpsertContainer(cn, tx, c.Geid, c.ClassName, capacity: null, c.Timestamp, at);

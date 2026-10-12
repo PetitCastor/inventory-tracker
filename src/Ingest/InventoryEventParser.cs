@@ -29,8 +29,9 @@ public static partial class InventoryEventParser
     /// <para>3 -> 4: attachment lines keep their status, and every sighting is stored.</para>
     /// <para>4 -> 5: a closed connection voids the requests the server never processed.</para>
     /// <para>5 -> 6: a drop records the location it fell in.</para>
+    /// <para>6 -> 7: ship lockers are named, and ships flown and retrieved are recorded.</para>
     /// </summary>
-    public const int Version = 6;
+    public const int Version = 7;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -142,8 +143,9 @@ public static partial class InventoryEventParser
     private static partial Regex RequestCompleted();
 
     // ... on Inventory[qrt_utility_heavy_backpack_01_01_03_745829874584, 745829874584]
+    // ... on Inventory[PersonalStorage_GLSN_Shiv-000, 876737713105]
     [GeneratedRegex(
-        @"on Inventory\[(?<entity>[A-Za-z0-9_]+), (?<geid>\d{6,})\]",
+        @"on Inventory\[(?<entity>[A-Za-z0-9_\-]+), (?<geid>\d{6,})\]",
         RegexOptions.CultureInvariant)]
     private static partial Regex TokenFlow();
 
@@ -161,6 +163,14 @@ public static partial class InventoryEventParser
 
     [GeneratedRegex(@"Location\[(?<name>[^\]]*)\]", RegexOptions.CultureInvariant)]
     private static partial Regex LocationName();
+
+    // ... releasing control token for 'GLSN_Shiv_876737712932' [876737712932]
+    [GeneratedRegex(@"releasing control token for '(?<entity>[^']+)' \[(?<geid>\d{6,})\]", RegexOptions.CultureInvariant)]
+    private static partial Regex VehicleFlownLine();
+
+    // SetVehicleSpawningInformations - VehicleEntityId: [876737712932], LandingArea: ...
+    [GeneratedRegex(@"VehicleEntityId: \[(?<geid>\d{6,})\]", RegexOptions.CultureInvariant)]
+    private static partial Regex VehicleRetrievedLine();
 
     // <Channel Disconnected> cause=30016 reason="Remote Disconnect - Player requested disconnect" frame=...
     [GeneratedRegex(@"^cause=(?<cause>\d+) reason=""(?<reason>[^""]*)""", RegexOptions.CultureInvariant)]
@@ -185,6 +195,8 @@ public static partial class InventoryEventParser
             "Player Selected Quantum Target - Local" => ParseQuantumTarget(line),
             "Quantum Drive Arrived - Arrived at Final Destination" => new QuantumArrived(line.Timestamp),
             "Channel Disconnected" => ParseDisconnect(line),
+            "Vehicle Control Flow" => ParseVehicleFlown(line),
+            "CEntityComponentShipListProvider::SetVehicleSpawningInformations" => ParseVehicleRetrieved(line),
 
             // An event tag we have never seen dispatch to a move parser at all — most likely
             // the queued-tag rename happening again under a name this build doesn't know
@@ -426,9 +438,13 @@ public static partial class InventoryEventParser
         if (!m.Success) return null;
 
         var geid = m.Groups["geid"].Value;
+        var entity = m.Groups["entity"].Value;
+
+        // A ship's locker is named by its class alone, with no geid in the name.
+        if (ShipStorage.TryShipClass(entity, out _)) return new ContainerIdentified(line.Timestamp, geid, entity);
 
         // The entity is "<class>_<geid>"; the trailing geid must agree with the standalone one.
-        if (!EntityId.TrySplit(m.Groups["entity"].Value, out var cls, out var entityGeid)) return null;
+        if (!EntityId.TrySplit(entity, out var cls, out var entityGeid)) return null;
         if (entityGeid != geid) return null;
 
         return new ContainerIdentified(line.Timestamp, geid, cls);
@@ -453,6 +469,23 @@ public static partial class InventoryEventParser
         return m.Success
             ? new LocationChanged(line.Timestamp, m.Groups["landing"].Value, m.Groups["location"].Value)
             : null;
+    }
+
+    private static InventoryEvent? ParseVehicleFlown(LogLine line)
+    {
+        var m = VehicleFlownLine().Match(line.Rest);
+        if (!m.Success) return null;
+
+        var geid = m.Groups["geid"].Value;
+        return EntityId.TrySplit(m.Groups["entity"].Value, out var cls, out var entityGeid) && entityGeid == geid
+            ? new VehicleFlown(line.Timestamp, geid, cls)
+            : null;
+    }
+
+    private static InventoryEvent? ParseVehicleRetrieved(LogLine line)
+    {
+        var m = VehicleRetrievedLine().Match(line.Rest);
+        return m.Success ? new VehicleRetrieved(line.Timestamp, m.Groups["geid"].Value) : null;
     }
 
     private static InventoryEvent? ParseDisconnect(LogLine line)

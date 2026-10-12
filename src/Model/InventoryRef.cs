@@ -37,6 +37,13 @@ public enum InventoryKind
     /// </summary>
     LostTrack,
 
+    /// <summary>
+    /// Synthetic, and only ever the end of a chain: the item is in one of a ship's lockers
+    /// (<see cref="ShipStorage"/>). The key is the ship's class. The ship goes where it is
+    /// flown, so the locker is never pinned to a station.
+    /// </summary>
+    Ship,
+
     /// <summary>Anything we do not recognise. Kept so diagnostics can surface new formats.</summary>
     Unknown,
 }
