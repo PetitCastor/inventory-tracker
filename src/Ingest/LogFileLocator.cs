@@ -140,7 +140,8 @@ public static partial class LogFileLocator
                 FileShare.ReadWrite | FileShare.Delete);
             return fs.Length;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
+                                       or NotSupportedException or System.Security.SecurityException)
         {
             // Missing, mid-rotation, or an unusable path: nothing to compare yet.
             return null;

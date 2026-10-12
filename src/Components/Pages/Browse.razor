@@ -44,12 +44,20 @@ else if (health.LogFiles == 0)
         <a href="settings">Check the log location in Settings</a>.
     </p>
 }
-else if (health.FilesWithLinesSinceInception == 0)
+else if (health.FilesWithLinesSinceInception == 0 && health.InceptionDate is not null)
 {
     <p class="banner banner-info">
         Found @health.LogFiles log file(s), but none has anything after your wipe date
         (@FormatDate(health.InceptionDate)). Newest log line: @FormatDate(health.NewestLogLine).
         <a href="settings">Clear or move back the wipe date in Settings</a>.
+    </p>
+}
+else if (health.FilesWithLinesSinceInception == 0)
+{
+    @* No wipe date to blame: the logs predate the 4.9 parser cutoff, or hold no line it reads. *@
+    <p class="banner banner-info">
+        Found @health.LogFiles log file(s), but none has a line the tracker can read.
+        Logs written before Star Citizen 4.9 are skipped. Newest log line: @FormatDate(health.NewestLogLine).
     </p>
 }
 else if (health.Moves == 0 && health.InceptionDate is not null)

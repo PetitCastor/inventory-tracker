@@ -40,16 +40,24 @@ public sealed class FileLoggerProvider(string filePath) : ILoggerProvider
     {
         lock (_gate)
         {
+            // Apart from the append: a rollover that fails (tracker.log.1 open in an editor)
+            // must not cost the entry, or every later one would fail the same way.
+            try
+            {
+                var info = new FileInfo(FilePath);
+                if (info.Exists && info.Length > MaxBytes) File.Move(FilePath, FilePath + ".1", overwrite: true);
+            }
+            catch (Exception)
+            {
+                // Keep appending to the oversized file; the next entry tries again.
+            }
+
             try
             {
                 if (Path.GetDirectoryName(FilePath) is { Length: > 0 } dir) Directory.CreateDirectory(dir);
-
-                var info = new FileInfo(FilePath);
-                if (info.Exists && info.Length > MaxBytes) File.Move(FilePath, FilePath + ".1", overwrite: true);
-
                 File.AppendAllText(FilePath, entry);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception)
             {
                 // A locked or read-only file costs the entry, not the app.
             }
