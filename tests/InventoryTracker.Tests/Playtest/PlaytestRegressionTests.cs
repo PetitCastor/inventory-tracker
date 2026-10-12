@@ -65,7 +65,10 @@ public sealed class PlaytestRegressionTests
         // 16:01:33 request 57 stored it straight back, naming the same geid.
         using (var dropped = PlaytestReplay.Until("16:00:30"))
         {
+            // It fell at Area18, the station whose inventory it was dropped out of.
             Assert.Equal(InventoryKind.World, dropped.RootOf(Defiance)?.Kind);
+            Assert.Equal(PlaytestReplay.Area18.Key, dropped.RootOf(Defiance)?.Key);
+            Assert.True(dropped.Named(Defiance)?.IsDropped);
         }
 
         using var stored = PlaytestReplay.Until("16:02:00");

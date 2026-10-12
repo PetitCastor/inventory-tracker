@@ -265,9 +265,16 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 // left an inventory and became a loose world entity.
                 if (req.MoveType == "Drop")
                 {
+                    // The line names no place for the floor, so it is where the player stood:
+                    // the station whose inventory the item came out of when it says so, the
+                    // player's tracked location otherwise (out of a backpack, say).
+                    var floor = req.SourceInventory.Kind == InventoryKind.Location
+                        ? req.SourceInventory.SubId
+                        : state.CurrentLocation?.LocationId;
+
                     var dropped = new ItemMoved(
                         req.Timestamp, req.RequestNo, Player: "", PlayerId: "", req.MoveType,
-                        req.SourceInventory, InventoryRef.World, req.ItemClass, ItemGeid: null,
+                        req.SourceInventory, InventoryRef.WorldAt(floor), req.ItemClass, ItemGeid: null,
                         Amount: 1);
                     Record(cn, tx, sessionId, lineOffset, dropped, req.Caller, state, stats);
 

@@ -1,0 +1,98 @@
+@page "/dropped"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject TrackerState State
+
+<PageTitle>Dropped — Star Citizen inventory</PageTitle>
+
+<h1>Dropped <span class="badge-count">@_groups.Sum(g => g.Items.Sum(i => i.Holding.Quantity))</span></h1>
+
+@* Everything the ledger last saw land on the floor and never saw picked up again. The game
+   despawns loose items, and nothing in the logs says when, so these are leads, not holdings. *@
+@if (_groups.Count == 0)
+{
+    <p class="empty">Nothing dropped. Items you drop in game are listed here until you pick them up.</p>
+}
+else
+{
+    @foreach (var group in _groups)
+    {
+        <section class="place">
+            <h2>@group.Label <span class="badge-count">@group.Items.Sum(i => i.Holding.Quantity)</span></h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Qty</th>
+                        <th>Dropped (UTC)</th>
+                        <th>Confidence</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var item in group.Items)
+                {
+                    <tr>
+                        <td>
+                            @if (item.Holding.Geid is { } geid)
+                            {
+                                <a href="item/@geid">@item.Display</a>
+                            }
+                            else
+                            {
+                                @item.Display
+                            }
+                        </td>
+                        <td class="qty">@item.Holding.Quantity&times;</td>
+                        <td class="when">@item.Holding.LastMove.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td>
+                            <span class="conf conf-@item.Holding.Confidence.ToString().ToLowerInvariant()"
+                                  title="@string.Join("; ", item.Holding.Caveats)">
+                                @item.Holding.Confidence
+                            </span>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </section>
+    }
+}
+
+@code {
+    /// <summary>The items dropped in one place, newest first.</summary>
+    private sealed record Group(string Label, DateTimeOffset Newest, IReadOnlyList<NamedHolding> Items);
+
+    private List<Group> _groups = [];
+
+    protected override void OnInitialized()
+    {
+        State.Changed += OnChanged;
+        Load();
+    }
+
+    /// <summary>
+    /// Groups by the place the item fell in, newest drop first, so what was just dropped by
+    /// mistake is at the top. A station can go by several ids — a drop out of its inventory
+    /// names one, a drop out of a backpack the one the player last arrived under — so ids are
+    /// folded to the place's canonical one first.
+    /// </summary>
+    private void Load()
+    {
+        var snapshot = State.Current;
+        var resolver = snapshot.Resolver;
+
+        _groups = snapshot.Holdings
+            .Where(h => h.Holding.IsDropped)
+            .GroupBy(h => resolver?.Places.ByLocationId(h.Holding.Root!.Key)?.Id ?? h.Holding.Root!.Key)
+            .Select(g => new Group(
+                g.Key.Length == 0 || resolver is null ? "Unknown place" : resolver.PlaceLabel(g.Key),
+                g.Max(h => h.Holding.LastMove),
+                g.OrderByDescending(h => h.Holding.LastMove).ToList()))
+            .OrderByDescending(g => g.Newest)
+            .ToList();
+    }
+
+    private void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

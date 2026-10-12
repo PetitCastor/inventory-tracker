@@ -88,6 +88,13 @@ public sealed record ItemHolding(
     /// </summary>
     public bool IsAtStation => Root is { Kind: InventoryKind.Location };
 
+    /// <summary>
+    /// True when the item was dropped on the floor, loose or inside something dropped. These
+    /// get their own page: a drop is as often a mistake as a choice, and the game despawns
+    /// what is left lying anywhere but a hangar.
+    /// </summary>
+    public bool IsDropped => Root is { Kind: InventoryKind.World };
+
     public Confidence Confidence => Score switch
     {
         >= 0.70 => Confidence.High,

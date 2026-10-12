@@ -28,8 +28,9 @@ public static partial class InventoryEventParser
     /// <see cref="Data.TrackerDb.Initialize"/>.
     /// <para>3 -> 4: attachment lines keep their status, and every sighting is stored.</para>
     /// <para>4 -> 5: a closed connection voids the requests the server never processed.</para>
+    /// <para>5 -> 6: a drop records the location it fell in.</para>
     /// </summary>
-    public const int Version = 5;
+    public const int Version = 6;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the

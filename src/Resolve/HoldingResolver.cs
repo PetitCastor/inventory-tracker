@@ -294,7 +294,11 @@ public sealed class HoldingResolver
         if (arrivedBy == "Drop")
         {
             score *= 0.3;
-            caveats.Add("dropped as a loose world entity — these despawn");
+            // A hangar keeps what is dropped in it, across a logout and a server change (two
+            // items dropped at Keeger at 17:55 on 2026-10-12 were picked up after both at
+            // 17:57). It shares the station's location id, so no line tells it from the rest
+            // of the station, where the floor is cleared.
+            caveats.Add("dropped on the floor — kept if in a hangar, cleared away anywhere else, and the logs do not say which");
         }
 
         // A game update played since this placement is the one thing observed to invalidate
@@ -434,8 +438,11 @@ public sealed class HoldingResolver
                         kind, "", passedWorn ? "carried on your character" : "equipped on your character"));
                     return chain;
 
+                // The key is the location the item was dropped in, when the logs said.
                 case InventoryKind.World:
-                    chain.Add(new HoldingLink(kind, "", "dropped in the world"));
+                    chain.Add(new HoldingLink(kind, key, key.Length == 0
+                        ? "dropped in the world"
+                        : $"dropped at {PlaceLabel(key)}"));
                     return chain;
 
                 // A later login no longer listed it on the player, and no line said where it
@@ -559,6 +566,12 @@ public sealed class HoldingResolver
         caveats.Add("container nesting was deeper than we follow");
         return chain;
     }
+
+    /// <summary>What to call a location id, as plainly as the catalogue and the logs allow.</summary>
+    public string PlaceLabel(string locationId) =>
+        Places.ByLocationId(locationId) is { } place
+            ? place.NameConfirmed ? place.Label : $"{place.Label} (unconfirmed)"
+            : _locationNames.GetValueOrDefault(locationId) ?? $"location {locationId}";
 
     private static List<MoveRecord> LoadMoves(SqliteConnection cn)
     {
