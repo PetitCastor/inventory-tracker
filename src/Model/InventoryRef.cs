@@ -53,15 +53,25 @@ public readonly record struct InventoryRef(InventoryKind Kind, string OwnerId, s
     public static readonly InventoryRef Equipped = new(InventoryKind.Equipped, "", "", "EQUIPPED");
     public static readonly InventoryRef World = new(InventoryKind.World, "", "", "WORLD");
 
+    /// <summary>
+    /// The floor of the location the player stood in when they dropped the item, or the
+    /// placeless <see cref="World"/> when the logs never said where they were.
+    /// </summary>
+    public static InventoryRef WorldAt(string? locationId) =>
+        locationId is null ? World : new(InventoryKind.World, "", locationId, "WORLD");
+
     /// <summary>True when this handle can actually hold an item over time.</summary>
     public bool IsHolding =>
         Kind is InventoryKind.Location or InventoryKind.Container
              or InventoryKind.Equipped or InventoryKind.World;
 
-    /// <summary>Location id for Location refs, container geid for Container refs, else empty.</summary>
+    /// <summary>
+    /// Location id for Location refs and for World refs (where the item was dropped), container
+    /// geid for Container refs, else empty.
+    /// </summary>
     public string HoldingKey => Kind switch
     {
-        InventoryKind.Location => SubId,
+        InventoryKind.Location or InventoryKind.World => SubId,
         InventoryKind.Container => OwnerId,
         _ => "",
     };

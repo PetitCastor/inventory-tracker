@@ -19,7 +19,7 @@
         "placement.within_build_same_place": 1,
         "placement.brier": 0,
         "live.parity": 1,
-        "live.cold_parity": 0.9585
+        "live.cold_parity": 0.9485
       }
     }
   }

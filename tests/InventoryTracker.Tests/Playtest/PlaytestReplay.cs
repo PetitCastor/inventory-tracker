@@ -9,13 +9,13 @@ using Microsoft.Data.Sqlite;
 namespace InventoryTracker.Tests.Playtest;
 
 /// <summary>
-/// Replays the live playtest of 2026-09-25 up to a chosen moment, through the real parser,
-/// ingestor, ledger and resolver.
+/// Replays a live playtest up to a chosen moment, through the real parser, ingestor, ledger
+/// and resolver.
 /// <para>
-/// The fixtures under <c>Fixtures/Playtest20260925/logbackups</c> are that day's logs trimmed
-/// to the lines the tracker reads, with the player's handle replaced and network identifiers
-/// removed. Each step of the playtest was checked in game by the player, so what the ledger
-/// should say at each moment is known — see the fixture's README.
+/// The fixtures under <c>Fixtures/Playtest&lt;yyyyMMdd&gt;/logbackups</c> are that day's logs
+/// trimmed to the lines the tracker reads, with the player's handle replaced and network
+/// identifiers removed. Each step of the playtest was checked in game by the player, so what
+/// the ledger should say at each moment is known — see each fixture's README.
 /// </para>
 /// <para>
 /// A replay cut at <c>until</c> keeps every line up to and including that moment. The files
@@ -39,19 +39,19 @@ internal sealed class PlaytestReplay : IDisposable
 
     public IReadOnlyList<ItemHolding> Holdings { get; }
 
-    private PlaytestReplay(DateTimeOffset until, bool live)
+    private PlaytestReplay(string fixture, DateTimeOffset until, bool live)
     {
         var backups = Path.Combine(_dir, "logbackups");
         Directory.CreateDirectory(backups);
 
-        var files = Directory.GetFiles(FixtureDir(), "*.log")
+        var files = Directory.GetFiles(FixtureDir(fixture), "*.log")
             .Select(path => (Path: path, Lines: File.ReadAllLines(path)))
             .Where(f => f.Lines.Length > 0 && StampOf(f.Lines[0]) is { } first && first <= until)
             .OrderBy(f => StampOf(f.Lines[0]))
             .ToList();
 
         // Discovery orders files by last write, so the copies are stamped in playing order.
-        var written = new DateTime(2026, 9, 25, 0, 0, 0, DateTimeKind.Utc);
+        var written = until.UtcDateTime.Date;
         for (var i = 0; i < files.Count; i++)
         {
             var (path, lines) = files[i];
@@ -74,8 +74,14 @@ internal sealed class PlaytestReplay : IDisposable
     }
 
     /// <summary>Replays the playtest up to and including <paramref name="utc"/> (a UTC time on 2026-09-25).</summary>
-    public static PlaytestReplay Until(string utc, bool live = false) =>
-        new(DateTimeOffset.Parse($"2026-09-25T{utc}Z", CultureInfo.InvariantCulture), live);
+    public static PlaytestReplay Until(string utc, bool live = false) => On("2026-09-25", utc, live);
+
+    /// <summary>
+    /// Replays the playtest of <paramref name="day"/> (<c>yyyy-MM-dd</c>), whose logs are under
+    /// <c>Fixtures/Playtest&lt;yyyyMMdd&gt;</c>, up to and including <paramref name="utc"/>.
+    /// </summary>
+    public static PlaytestReplay On(string day, string utc, bool live = false) =>
+        new($"Playtest{day.Replace("-", "")}", DateTimeOffset.Parse($"{day}T{utc}Z", CultureInfo.InvariantCulture), live);
 
     /// <summary>The row for one named entity, or null when the ledger does not hold it anywhere.</summary>
     public ItemHolding? Named(string geid) => Holdings.SingleOrDefault(h => h.Geid == geid);
@@ -122,6 +128,6 @@ internal sealed class PlaytestReplay : IDisposable
             : null;
     }
 
-    private static string FixtureDir([CallerFilePath] string path = "") =>
-        Path.Combine(Path.GetDirectoryName(path)!, "..", "Fixtures", "Playtest20260925", "logbackups");
+    private static string FixtureDir(string fixture, [CallerFilePath] string path = "") =>
+        Path.Combine(Path.GetDirectoryName(path)!, "..", "Fixtures", fixture, "logbackups");
 }
