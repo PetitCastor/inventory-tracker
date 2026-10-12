@@ -10,7 +10,7 @@
 <PageTitle>Set up — Star Citizen inventory</PageTitle>
 
 <h1>Welcome</h1>
-<p class="subtle">Two things before tracking starts: where Star Citizen writes its logs, and how far back to read.</p>
+<p class="subtle">Before tracking starts: where Star Citizen writes its logs, and, only after a persistence wipe, where to stop reading back.</p>
 
 <div class="settings-field">
     <label for="log-dir">Game.log folder</label>
@@ -27,10 +27,19 @@
 <p class="subtle">Pick the LIVE (or PTU) folder that contains <code>Game.log</code>.</p>
 
 <div class="settings-field">
-    <label for="inception">Inception date</label>
-    <input id="inception" type="date" @bind="_inceptionDate" />
+    <label for="inception">Wipe date (optional)</label>
+    <div class="input-row date-row">
+        <input id="inception" type="date" @bind="_inceptionDate" />
+        @if (_inceptionDate is not null)
+        {
+            <button type="button" @onclick="() => _inceptionDate = null">Clear</button>
+        }
+    </div>
 </div>
-<p class="subtle">Everything logged before this date is ignored. Defaults to today — tracking starts from now forward.</p>
+<p class="subtle">
+    Leave empty to read your whole history: the tracker only knows about an item once it sees it move, so the further back it reads, the more it finds.
+    Set a date only if Star Citizen wiped persistence since you started playing. Everything logged before it is forgotten.
+</p>
 
 <div class="settings-actions">
     <button @onclick="StartTracking" disabled="@_starting">Start tracking</button>
@@ -53,10 +62,11 @@
     protected override void OnInitialized()
     {
         _logDir = Options.LogDir;
-        // Prefill the inception date to today (UTC) — start tracking from install forward.
-        _inceptionDate = Options.InceptionDate is { } d
-            ? DateOnly.FromDateTime(d.UtcDateTime)
-            : DateOnly.FromDateTime(DateTime.UtcNow);
+
+        // Left empty unless already set. It used to default to today, which hid everything a
+        // new player owned until they happened to move it: the logs only record moves, so a
+        // cutoff today leaves the tracker nothing to place their existing items with.
+        _inceptionDate = Options.InceptionDate is { } d ? DateOnly.FromDateTime(d.UtcDateTime) : null;
     }
 
     private async Task BrowseFolder()

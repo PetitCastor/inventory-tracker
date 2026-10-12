@@ -15,13 +15,18 @@ public sealed class AppConfig
     public string? DatabasePath { get; set; }
     public int? Port { get; set; }
 
-    /// <summary>Everything logged before this is ignored. Null means no inception date is set.</summary>
+    /// <summary>
+    /// The wipe date: everything logged before it is ignored, items included. Null — the
+    /// default — reads the whole history. Only worth setting after a persistence wipe, since
+    /// the tracker learns about an item only from a line that moves it. The JSON key keeps
+    /// its original name so existing config files still load.
+    /// </summary>
     public DateTimeOffset? InceptionDate { get; set; }
 
     /// <summary>
     /// False until the first-run setup wizard has been completed. A brand-new config.json
     /// leaves this false, which is exactly the signal the UI uses to gate the app behind
-    /// <c>/setup</c> until the user has confirmed a log directory and inception date.
+    /// <c>/setup</c> until the user has confirmed a log directory and, optionally, a wipe date.
     /// </summary>
     public bool SetupComplete { get; set; }
 

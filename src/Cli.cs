@@ -65,7 +65,7 @@ internal static class Cli
         Console.WriteLine($"Database: {db.Path}");
         Console.WriteLine($"Config  : {AppConfig.DefaultPath}");
         Console.WriteLine($"Cutoff  : {InventoryEventParser.Cutoff:yyyy-MM-dd} (4.9)");
-        if (fromDate is { } fd) Console.WriteLine($"From    : {fd:yyyy-MM-dd} (inception date)");
+        if (fromDate is { } fd) Console.WriteLine($"From    : {fd:yyyy-MM-dd} (wipe date)");
         Console.WriteLine();
 
         var started = DateTime.UtcNow;
@@ -232,7 +232,7 @@ internal static class Cli
           --refresh-names    Download the star-citizen.wiki item catalogue (~62 requests)
           --names            Report how many observed classes the catalogue can name
 
-          Log directory, database path, port and inception date are not set here —
+          Log directory, database path, port and wipe date are not set here —
           edit {AppConfig.DefaultPath} and relaunch.
         """);
 

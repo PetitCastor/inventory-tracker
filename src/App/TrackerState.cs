@@ -19,6 +19,16 @@ public sealed record NamedHolding(ItemHolding Holding, ResolvedName Name)
 public sealed class TrackerState(TrackerDb db, WikiNameService names, TrackerOptions options)
 {
     private readonly Lock _gate = new();
+
+    /// <summary>
+    /// One rebuild at a time. Rebuild is called from the ingest pass, the wiki refreshes, the
+    /// tray and the pages, and each reads the store then publishes what it read. Two at once
+    /// let the one that read first publish last, replacing a snapshot that had the newest
+    /// moves with one that did not — and nothing rebuilds again until something else moves.
+    /// Run in turn, the last to publish is always the last to read.
+    /// </summary>
+    private readonly Lock _rebuildGate = new();
+
     private Snapshot _current = Snapshot.Empty;
 
     public event Action? Changed;
@@ -42,20 +52,24 @@ public sealed class TrackerState(TrackerDb db, WikiNameService names, TrackerOpt
     /// <summary>Re-reads the store and re-resolves every item, then notifies subscribers.</summary>
     public void Rebuild()
     {
-        var resolver = HoldingResolver.Load(db);
-        var holdings = resolver.ResolveAll()
-            .Select(h => new NamedHolding(h, names.Resolve(h.ItemClass)))
-            .ToList();
-
-        // Read fresh each time rather than captured at construction: Settings can change
-        // the log directory or inception date while the app is running.
-        var health = IngestHealth.Load(db, options.LogDir, options.InceptionDate);
-
-        lock (_gate)
+        lock (_rebuildGate)
         {
-            _current = new Snapshot(holdings, resolver, DateTimeOffset.UtcNow, health);
+            var resolver = HoldingResolver.Load(db);
+            var holdings = resolver.ResolveAll()
+                .Select(h => new NamedHolding(h, names.Resolve(h.ItemClass)))
+                .ToList();
+
+            // Read fresh each time rather than captured at construction: Settings can change
+            // the log directory or wipe date while the app is running.
+            var health = IngestHealth.Load(db, options.LogDir, options.InceptionDate);
+
+            lock (_gate)
+            {
+                _current = new Snapshot(holdings, resolver, DateTimeOffset.UtcNow, health);
+            }
         }
 
+        // Outside the gate: subscribers only queue a re-render, and read Current when it runs.
         Changed?.Invoke();
     }
 }

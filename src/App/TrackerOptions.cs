@@ -12,7 +12,7 @@ public sealed class TrackerOptions
     /// <summary>Fixed so the bookmarked URL keeps working across restarts.</summary>
     public int Port { get; set; } = AppConfig.DefaultPort;
 
-    /// <summary>Everything logged before this is ignored. Null means no inception date is set.</summary>
+    /// <summary>The wipe date; see <see cref="AppConfig.InceptionDate"/>. Null reads the whole history.</summary>
     public DateTimeOffset? InceptionDate { get; set; }
 
     /// <summary>False until the first-run setup wizard has been completed; see <see cref="AppConfig.SetupComplete"/>.</summary>
@@ -23,7 +23,7 @@ public sealed class TrackerOptions
     /// <summary>
     /// Reads config.json (see <see cref="AppConfig"/>) — the only place these settings
     /// come from. Edit that file and relaunch to change log dir, database path, port,
-    /// or inception date.
+    /// or wipe date.
     /// </summary>
     public static TrackerOptions Load()
     {
@@ -40,7 +40,7 @@ public sealed class TrackerOptions
     }
 
     /// <summary>
-    /// Persists a new log directory and inception date to config.json, applies them here,
+    /// Persists a new log directory and wipe date to config.json, applies them here,
     /// restarts the watcher if the directory changed, then wipes and re-ingests under its
     /// lock. Setup and Settings both drive a log-source change through this single path so
     /// the two forms cannot answer "what happens when you change it" differently.

@@ -23,7 +23,11 @@ InventoryTracker.exe                     tray app + UI at http://localhost:5730
 InventoryTracker.exe --scan --holdings   console mode, no UI
 ```
 
-On first launch you pick your Star Citizen log folder (usually pre-filled, since the tracker checks the common install locations) and an inception date. Anything logged before that date is ignored.
+On first launch you pick your Star Citizen log folder. It is usually pre-filled, since the tracker checks the common install locations.
+
+The tracker learns about an item only when a log line moves it, so by default it reads your whole history. You can set a wipe date if Star Citizen wiped persistence. Everything logged before that date is then ignored, including items that have not moved since.
+
+While the app runs, its own log goes to `tracker.log`, next to `config.json` in `%LOCALAPPDATA%\InventoryTracker`. Settings shows when the game's log was last read.
 
 ## Building it
 

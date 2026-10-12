@@ -59,6 +59,12 @@ public static class TrayHost
         builder.WebHost.UseUrls(options.Url);
         builder.Logging.SetMinimumLevel(LogLevel.Information);
 
+        // A WinExe has no console, so this file is the only place the log ends up. The
+        // framework's own Information lines (one per HTTP request) would bury the tracker's.
+        builder.Logging.AddProvider(new FileLoggerProvider(FileLoggerProvider.DefaultPath));
+        builder.Logging.AddFilter<FileLoggerProvider>("Microsoft", LogLevel.Warning);
+        builder.Logging.AddFilter<FileLoggerProvider>("System", LogLevel.Warning);
+
         // Exit has nothing to flush (every write is already committed), but the default 30 s
         // wait for open browser circuits to drain makes it look hung.
         builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(3));
@@ -151,6 +157,10 @@ public static class TrayHost
                 MessageBoxIcon.Error);
             return 1;
         }
+
+        app.Services.GetRequiredService<ILogger<WebApplication>>().LogInformation(
+            "InventoryTracker {Version} started on {Url}, reading {LogDir}",
+            UpdateService.CurrentVersion, options.Url, options.LogDir);
 
         var tray = BuildTrayIcon(app, options);
         try
