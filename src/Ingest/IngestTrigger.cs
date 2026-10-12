@@ -16,8 +16,12 @@ public enum IngestTrigger
     /// <summary>The slow safety-net timer, with no change seen.</summary>
     Sweep,
 
-    /// <summary>"Rescan logs now", or something outside the logs that place names depend on.</summary>
+    /// <summary>"Rescan logs now". Always publishes a snapshot.</summary>
     Manual,
+
+    /// <summary>Something outside the logs that place names depend on changed — the wiki's
+    /// location list arrived — so names are resolved again.</summary>
+    Places,
 
     /// <summary>The wipe and re-read after the log source or wipe date changed.</summary>
     Reset,

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 
 namespace InventoryTracker.App;
@@ -18,8 +19,8 @@ internal sealed class FileLogger(FileLoggerProvider provider, string category) :
 
         // Local time with its offset: the log is read next to the game's clock and the
         // player's own, and Game.log's UTC stamps can still be matched through the offset.
-        var entry = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} {Label(logLevel)} {category}: " +
-                    formatter(state, exception);
+        var entry = DateTimeOffset.Now.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture) +
+                    $" {Label(logLevel)} {category}: " + formatter(state, exception);
         if (exception is not null) entry += Environment.NewLine + exception;
 
         provider.Write(entry + Environment.NewLine);

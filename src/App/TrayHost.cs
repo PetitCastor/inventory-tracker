@@ -158,7 +158,9 @@ public static class TrayHost
             return 1;
         }
 
-        app.Services.GetRequiredService<ILogger<WebApplication>>().LogInformation(
+        // Under the app's own category: ILogger<WebApplication> logs as Microsoft.AspNetCore.*,
+        // which the file filter above holds to Warning, so this line never reached tracker.log.
+        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(TrayHost).FullName!).LogInformation(
             "InventoryTracker {Version} started on {Url}, reading {LogDir}",
             UpdateService.CurrentVersion, options.Url, options.LogDir);
 

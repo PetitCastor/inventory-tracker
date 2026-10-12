@@ -1,6 +1,7 @@
 using InventoryTracker.Data;
 using InventoryTracker.Naming;
 using InventoryTracker.Resolve;
+using Microsoft.Extensions.Logging;
 
 namespace InventoryTracker.App;
 
@@ -16,7 +17,9 @@ public sealed record NamedHolding(ItemHolding Holding, ResolvedName Name)
 /// ingest pass; pages subscribe to <see cref="Changed"/> so tailing the live log updates
 /// an open browser without a refresh.
 /// </summary>
-public sealed class TrackerState(TrackerDb db, WikiNameService names, TrackerOptions options)
+/// <param name="log">Optional so tests can build one bare; the host always supplies it.</param>
+public sealed class TrackerState(
+    TrackerDb db, WikiNameService names, TrackerOptions options, ILogger<TrackerState>? log = null)
 {
     private readonly Lock _gate = new();
 
@@ -70,6 +73,19 @@ public sealed class TrackerState(TrackerDb db, WikiNameService names, TrackerOpt
         }
 
         // Outside the gate: subscribers only queue a re-render, and read Current when it runs.
-        Changed?.Invoke();
+        // One at a time, each shielded: the snapshot is already published, so a page that
+        // throws must neither cost the pages after it their update nor fail the caller — an
+        // ingest pass would record a failure, keep the rebuild owed and run another.
+        foreach (var handler in Changed?.GetInvocationList() ?? [])
+        {
+            try
+            {
+                ((Action)handler)();
+            }
+            catch (Exception ex)
+            {
+                log?.LogWarning(ex, "A snapshot subscriber failed");
+            }
+        }
     }
 }

@@ -50,11 +50,16 @@ public sealed class TrackerOptions
     {
         var config = AppConfig.Load();
         var logDirChanged = !string.Equals(config.LogDir, logDir, StringComparison.OrdinalIgnoreCase);
+        var newDate = inceptionDate is { } d
+            ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+            : (DateTimeOffset?)null;
+
+        // What the running watcher has been ingesting with, compared before it is overwritten.
+        var sourceUnchanged =
+            string.Equals(LogDir, logDir, StringComparison.OrdinalIgnoreCase) && InceptionDate == newDate;
 
         config.LogDir = logDir;
-        config.InceptionDate = inceptionDate is { } d
-            ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
-            : null;
+        config.InceptionDate = newDate;
         if (markSetupComplete) config.SetupComplete = true;
         config.Save();
 
@@ -63,6 +68,17 @@ public sealed class TrackerOptions
         if (markSetupComplete) SetupComplete = true;
 
         if (logDirChanged) watcher.RestartWatching();
+
+        // First run with the folder and date the app started with: the startup pass is
+        // already reading exactly that, and with no wipe date by default it is the whole
+        // history. Wiping it to read it all again would double the wait behind the spinner;
+        // a pass queued behind the startup one returns once that is done. Settings always
+        // rebuilds — that button is an explicit request to.
+        if (markSetupComplete && sourceUnchanged)
+        {
+            await watcher.RebuildNowAsync();
+            return;
+        }
 
         // The wipe and the re-ingest go together under the watcher's ingest lock; doing the
         // reset here would race a background pass already in flight.

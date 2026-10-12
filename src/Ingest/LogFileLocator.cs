@@ -133,6 +133,9 @@ public static partial class LogFileLocator
     /// </summary>
     public static long? LiveLength(string logDir)
     {
+        // An empty directory would probe "Game.log" in the process's working directory.
+        if (string.IsNullOrWhiteSpace(logDir)) return null;
+
         try
         {
             using var fs = new FileStream(

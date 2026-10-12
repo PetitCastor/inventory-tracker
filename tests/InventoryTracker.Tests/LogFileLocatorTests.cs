@@ -16,6 +16,9 @@ public sealed class LogFileLocatorTests : IDisposable
     {
         Assert.Null(LogFileLocator.LiveLength(_dir));
         Assert.Null(LogFileLocator.LiveLength(Path.Combine(_dir, "missing")));
+
+        // Unset, it must not fall back to a Game.log in the process's working directory.
+        Assert.Null(LogFileLocator.LiveLength(""));
     }
 
     [Fact]

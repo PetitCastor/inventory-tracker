@@ -87,4 +87,32 @@ public sealed class LogWatchServiceTests : IDisposable
         Assert.NotNull(_watcher.LastMovesAt);
         Assert.Equal(2, completed);
     }
+
+    [Fact]
+    public async Task A_subscriber_that_throws_does_not_fail_the_pass()
+    {
+        // The loop runs passes inline; an exception escaping one would stop ExecuteAsync and
+        // with it the host.
+        _watcher.PassCompleted += () => throw new InvalidOperationException("page gone");
+        Append(Store);
+
+        await _watcher.RebuildNowAsync();
+
+        var pass = Assert.IsType<IngestPass>(_watcher.LastPass);
+        Assert.Null(pass.Error);
+        Assert.NotEmpty(_state.Current.Holdings);
+    }
+
+    [Fact]
+    public void A_snapshot_subscriber_that_throws_neither_fails_the_rebuild_nor_starves_the_others()
+    {
+        var reached = 0;
+        _state.Changed += () => throw new InvalidOperationException("circuit gone");
+        _state.Changed += () => reached++;
+
+        _state.Rebuild();
+
+        Assert.Equal(1, reached);
+        Assert.NotEqual(DateTimeOffset.MinValue, _state.Current.BuiltAt);
+    }
 }

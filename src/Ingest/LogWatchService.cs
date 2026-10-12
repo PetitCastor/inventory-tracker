@@ -117,8 +117,10 @@ public sealed class LogWatchService(
     /// <summary>Resolves place names again on the next pass, then nudges one.</summary>
     public void RequestPlaceResolution()
     {
+        // Not a manual scan: that would force a rebuild, and the pass rebuilds anyway when a
+        // name actually changes.
         _placesStale = true;
-        RequestScan();
+        Wake();
     }
 
     /// <summary>Nudges the service to ingest now — used by the tray's "Rescan" command.</summary>
@@ -168,7 +170,17 @@ public sealed class LogWatchService(
     /// </summary>
     public Task ResetAndRebuildAsync() => Task.Run(() =>
     {
-        _ingestLock.Wait();
+        // Same guard as Ingest: a "Save and rebuild" still queued at exit must not fault the
+        // page that started it once the host has disposed the lock.
+        try
+        {
+            _ingestLock.Wait();
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
         try
         {
             db.ResetIngest();
@@ -184,22 +196,23 @@ public sealed class LogWatchService(
         }
         finally
         {
-            _ingestLock.Release();
+            try { _ingestLock.Release(); }
+            catch (ObjectDisposedException) { }
         }
 
         RaisePassCompleted();
     });
 
     /// <summary>
-    /// Re-points the watcher after Settings changes the log directory, and scans the new
-    /// location right away rather than waiting for the next sweep.
+    /// Re-points the watcher after Settings changes the log directory. No scan of its own:
+    /// the only caller resets and re-reads right after, and a pass queued here would only
+    /// run a second forced rebuild behind it.
     /// </summary>
     public void RestartWatching()
     {
         _watcher?.Dispose();
         _watcher = null;
         StartWatching();
-        RequestScan();
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -229,11 +242,11 @@ public sealed class LogWatchService(
                 if (await _wake.WaitAsync(PollInterval, ct))
                 {
                     await Task.Delay(Debounce, ct);
-                    trigger = Interlocked.Exchange(ref _manualPending, 0) == 1
-                        ? IngestTrigger.Manual
+                    trigger = Interlocked.Exchange(ref _manualPending, 0) == 1 ? IngestTrigger.Manual
+                        : _placesStale ? IngestTrigger.Places
                         : IngestTrigger.Watcher;
                 }
-                else if ((LogFileLocator.LiveLength(options.LogDir) ?? -1) != Interlocked.Read(ref _seenLength))
+                else if (await ProbeLiveLengthAsync(ct) != Interlocked.Read(ref _seenLength))
                 {
                     trigger = IngestTrigger.Poll;
                 }
@@ -261,6 +274,27 @@ public sealed class LogWatchService(
                 // of ExecuteAsync stops the host, which would take the whole tracker down.
                 log.LogError(ex, "Watch loop iteration failed");
             }
+        }
+    }
+
+    /// <summary>How long one length probe may take before the tick treats it as no change.</summary>
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Game.log's length, or -1. Off the loop thread with a timeout: on an unreachable network
+    /// share the open blocks for the network timeout, and the loop would stop answering wakes
+    /// and shutdown meanwhile. A probe that times out reads as unchanged; the sweep still runs.
+    /// </summary>
+    private async Task<long> ProbeLiveLengthAsync(CancellationToken ct)
+    {
+        try
+        {
+            var dir = options.LogDir;
+            return await Task.Run(() => LogFileLocator.LiveLength(dir) ?? -1, ct).WaitAsync(ProbeTimeout, ct);
+        }
+        catch (TimeoutException)
+        {
+            return Interlocked.Read(ref _seenLength);
         }
     }
 
@@ -398,11 +432,7 @@ public sealed class LogWatchService(
             // An UnrecognisedMove counts too: it means the game's log grammar just drifted,
             // and the health snapshot the UI reads needs to reflect that as soon as possible
             // rather than waiting for some unrelated change to trigger the next rebuild.
-            if (stats.MovesInserted > 0 ||
-                stats.ContainersIdentified > 0 ||
-                stats.UnrecognisedMoves > 0 ||
-                renamed > 0 ||
-                state.Current.BuiltAt == DateTimeOffset.MinValue)
+            if (stats.ChangedHoldings || renamed > 0 || state.Current.BuiltAt == DateTimeOffset.MinValue)
             {
                 _rebuildOwed = true;
             }

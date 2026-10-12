@@ -45,7 +45,7 @@ public sealed class FileLoggerProvider(string filePath) : ILoggerProvider
             try
             {
                 var info = new FileInfo(FilePath);
-                if (info.Exists && info.Length > MaxBytes) File.Move(FilePath, FilePath + ".1", overwrite: true);
+                if (info.Exists && info.Length > MaxBytes) Roll(info.Length);
             }
             catch (Exception)
             {
@@ -61,6 +61,23 @@ public sealed class FileLoggerProvider(string filePath) : ILoggerProvider
             {
                 // A locked or read-only file costs the entry, not the app.
             }
+        }
+    }
+
+    /// <summary>
+    /// Moves the full file aside. If tracker.log.1 stays locked — an editor or antivirus
+    /// holding it — the move fails on every entry, so past twice the cap the current file is
+    /// emptied instead: losing old lines beats a log that grows without bound.
+    /// </summary>
+    private void Roll(long length)
+    {
+        try
+        {
+            File.Move(FilePath, FilePath + ".1", overwrite: true);
+        }
+        catch (Exception) when (length > 2 * MaxBytes)
+        {
+            File.WriteAllText(FilePath, "");
         }
     }
 

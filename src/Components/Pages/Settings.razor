@@ -7,6 +7,7 @@
 @inject TrackerOptions Options
 @inject LogWatchService Watcher
 @inject PlaceNameService Places
+@inject InventoryTracker.Data.TrackerDb Db
 @inject InventoryTracker.App.DesktopShell Shell
 @inject UpdateService Updates
 @inject Microsoft.Extensions.Hosting.IHostApplicationLifetime Lifetime
@@ -124,11 +125,11 @@
 <h2>Ingest health</h2>
 @{ var notYetBuilt = State.Current.BuiltAt == DateTimeOffset.MinValue; }
 <dl class="facts">
-    <dt>Log files found</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.LogFiles.ToString())</dd>
-    <dt>@(Options.InceptionDate is null ? "Files with data" : "Files with data since the wipe date")</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.FilesWithLinesSinceInception.ToString())</dd>
-    <dt>Unrecognised move lines</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.UnrecognisedMoveLines.ToString())</dd>
+    <dt>Log files found</dt><dd>@(notYetBuilt ? "not read yet" : _health.LogFiles.ToString())</dd>
+    <dt>@(Options.InceptionDate is null ? "Files with data" : "Files with data since the wipe date")</dt><dd>@(notYetBuilt ? "not read yet" : _health.FilesWithLinesSinceInception.ToString())</dd>
+    <dt>Unrecognised move lines</dt><dd>@(notYetBuilt ? "not read yet" : _health.UnrecognisedMoveLines.ToString())</dd>
     <dt>Newest log line</dt>
-    <dd>@(State.Current.Health.NewestLogLine is { } newest ? $"{newest:yyyy-MM-dd HH:mm:ss} UTC" : "none read yet")</dd>
+    <dd>@(_health.NewestLogLine is { } newest ? $"{newest:yyyy-MM-dd HH:mm:ss} UTC" : "none read yet")</dd>
     @* Local time, unlike the rows above: this answers "did it read the move I just made?",
        which is asked against the clock on the wall. *@
     <dt>Last log read</dt>
@@ -146,7 +147,9 @@
             @("not run yet")
         }
     </dd>
-    <dt>Last new moves</dt>
+    @* When the pass ran, not when the moves happened: a startup or rebuild pass reads old
+       moves too, and the label must not suggest they are recent. *@
+    <dt>Last read with new moves</dt>
     <dd>@(Watcher.LastMovesAt is { } movesAt ? movesAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "none since launch")</dd>
     <dt>Log file</dt><dd><code>@FileLoggerProvider.DefaultPath</code></dd>
 </dl>
@@ -188,6 +191,7 @@
 
 @code {
     private IReadOnlyList<NamedHolding> _holdings = [];
+    private IngestHealth _health = IngestHealth.Empty;
     private List<(string Id, int Count)> _unnamedLocations = [];
     private List<string> _unknownContainers = [];
     private List<string> _unnamedItems = [];
@@ -237,6 +241,7 @@
     private void RefreshDiagnostics()
     {
         _holdings = State.Current.Holdings;
+        LoadHealth();
         _catalogueAge = State.Names.LastRefresh();
         _placesAge = Places.LastRefresh();
 
@@ -268,9 +273,26 @@
 
     private void OnChanged() => InvokeAsync(() => { RefreshDiagnostics(); StateHasChanged(); });
 
-    /// <summary>Most passes find nothing and publish no snapshot, so the last-read row would
-    /// otherwise freeze at the last pass that did.</summary>
-    private void OnPassCompleted() => InvokeAsync(StateHasChanged);
+    /// <summary>
+    /// Most passes find nothing and publish no snapshot, so the last-read row would otherwise
+    /// freeze at the last pass that did. The health rows are re-read here too, from the store
+    /// rather than the snapshot: "last read 21:40, 120 lines" next to a newest log line from an
+    /// hour ago would look like a stuck reader. One aggregate query; cheap every 2 s.
+    /// </summary>
+    private void OnPassCompleted() => InvokeAsync(() => { LoadHealth(); StateHasChanged(); });
+
+    private void LoadHealth()
+    {
+        try
+        {
+            _health = IngestHealth.Load(Db, Options.LogDir, Options.InceptionDate);
+        }
+        catch (Exception)
+        {
+            // A busy or locked store costs this refresh; the snapshot's copy stands in.
+            _health = State.Current.Health;
+        }
+    }
 
     public void Dispose()
     {
