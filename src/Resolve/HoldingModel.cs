@@ -81,6 +81,13 @@ public sealed record ItemHolding(
     /// <summary>The end of the chain — the station, or the container we lost track of.</summary>
     public HoldingLink? Root => Chain.Count > 0 ? Chain[^1] : null;
 
+    /// <summary>
+    /// True when the item was put away at a station, directly or inside something stored there.
+    /// The tracker exists to find what the player deliberately stored; what is worn, carried,
+    /// dropped or of unknown whereabouts is not shown, in the station view or in search.
+    /// </summary>
+    public bool IsAtStation => Root is { Kind: InventoryKind.Location };
+
     public Confidence Confidence => Score switch
     {
         >= 0.70 => Confidence.High,

@@ -91,7 +91,7 @@ else if (health.Moves == 0)
         <circle cx="10.5" cy="10.5" r="6.5" />
         <path d="m20 20-4.35-4.35" stroke-linecap="round" />
     </svg>
-    <input type="text" placeholder="Search items by name or class…" class="search-input"
+    <input type="text" placeholder="Search what's stored at stations…" class="search-input"
            @bind="_query" @bind:event="oninput" />
 </div>
 
@@ -102,7 +102,7 @@ else if (health.Moves == 0)
         <h2>Search results <span class="badge-count">@results.Count</span></h2>
         @if (results.Count == 0)
         {
-            <p class="empty">Nothing matches "@_query".</p>
+            <p class="empty">Nothing stored at a station matches "@_query".</p>
         }
         else
         {
@@ -269,16 +269,16 @@ else
         }
     }
 
-    @* The page is focused on station inventories: equipped/carried/dropped/unplaced-container
-       holdings (anything whose root is not a Location) are deliberately not listed here for
-       now — search above still finds them. *@
+    @* The page is about what the player stored at stations: equipped/carried/dropped/unplaced
+       holdings (anything not ItemHolding.IsAtStation) are deliberately not listed here, nor
+       found by search. *@
     @if (_systems.Count == 0 && !EmptinessExplained(State.Current))
     {
         @* With no station listed, anything tracked at all is somewhere this page does not show;
            saying nothing is tracked would read as the tracker not working. *@
         @if (State.Current.Holdings.Count > 0)
         {
-            <p class="empty">Nothing stored at a station yet. Search above finds what's on your character.</p>
+            <p class="empty">Nothing stored at a station yet. Items on your character are not listed here.</p>
         }
         else
         {
@@ -370,9 +370,8 @@ else
         // Only places holding something now belong in the picker, so it doesn't fill up with
         // stations the player has simply never visited.
         var holdingKeys = snapshot.Holdings
-            .Select(h => h.Holding.Root)
-            .Where(root => root is { Kind: InventoryKind.Location })
-            .Select(root => root!.Key)
+            .Where(h => h.Holding.IsAtStation)
+            .Select(h => h.Holding.Root!.Key)
             .ToHashSet(StringComparer.Ordinal);
 
         var known = catalogue.Places.SelectMany(p => p.AliasIds).ToHashSet(StringComparer.Ordinal);
@@ -442,7 +441,7 @@ else
         // Chain runs from the item's immediate holder out to the station; the station dropped
         // and the rest reversed, it reads as the containers to open, outermost first.
         var here = State.Current.Holdings
-            .Where(h => h.Holding.Root is { Kind: InventoryKind.Location } root && aliases.Contains(root.Key))
+            .Where(h => h.Holding.IsAtStation && aliases.Contains(h.Holding.Root!.Key))
             .Select(h => (Holding: h, Inside: h.Holding.Chain.Take(h.Holding.Chain.Count - 1).Reverse().ToList()))
             .ToList();
 
@@ -630,13 +629,16 @@ else
     </table>;
 
     /// <summary>
-    /// Every holding whose display name or item class contains the query, unpooled — search
-    /// exists precisely to find one named instance out of a pool, so collapsing rows here would
-    /// defeat the point (unlike the station tables, which pool because the game itself never
-    /// distinguishes the pooled units).
+    /// Every holding stored at a station, at any station and at any depth, whose display name
+    /// or item class contains the query. It covers what the station view covers and nothing
+    /// more: what is on the character is never listed. Unpooled — search exists precisely to
+    /// find one named instance out of a pool, so collapsing rows here would defeat the point
+    /// (unlike the station tables, which pool because the game itself never distinguishes the
+    /// pooled units).
     /// </summary>
     private List<NamedHolding> SearchResults() =>
         State.Current.Holdings
+            .Where(h => h.Holding.IsAtStation)
             .Where(h => h.Display.Contains(_query, StringComparison.OrdinalIgnoreCase)
                      || h.ClassName.Contains(_query, StringComparison.OrdinalIgnoreCase))
             .OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase)
