@@ -248,8 +248,8 @@
         // A link labelled "location <id>" or "container <id>" is the resolver's way of
         // saying it had nothing better than the raw id.
         _unnamedLocations = _holdings
-            .Where(h => h.Holding.Root is { Kind: InventoryKind.Location } root
-                && root.Label.StartsWith("location ", StringComparison.Ordinal))
+            .Where(h => h.Holding.IsAtStation
+                && h.Holding.Root!.Label.StartsWith("location ", StringComparison.Ordinal))
             .GroupBy(h => h.Holding.Root!.Key)
             .Select(g => (Id: g.Key, Count: g.Sum(h => h.Holding.Quantity)))
             .OrderByDescending(x => x.Count)
