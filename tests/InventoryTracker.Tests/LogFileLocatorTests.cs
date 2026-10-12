@@ -12,6 +12,33 @@ public sealed class LogFileLocatorTests : IDisposable
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 
     [Fact]
+    public void LiveLength_is_null_without_a_live_log()
+    {
+        Assert.Null(LogFileLocator.LiveLength(_dir));
+        Assert.Null(LogFileLocator.LiveLength(Path.Combine(_dir, "missing")));
+    }
+
+    [Fact]
+    public void LiveLength_follows_a_log_another_process_still_holds_open()
+    {
+        // The game keeps its handle on Game.log for the whole session. The poll has to see
+        // every write through that, and must not be locked out by it.
+        var path = Path.Combine(_dir, "Game.log");
+        using var game = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+
+        game.Write("<2026-10-11T22:06:37.065Z> one\n"u8);
+        game.Flush();
+        var before = LogFileLocator.LiveLength(_dir);
+
+        game.Write("<2026-10-11T22:06:45.983Z> two\n"u8);
+        game.Flush();
+        var after = LogFileLocator.LiveLength(_dir);
+
+        Assert.Equal(31, before);
+        Assert.Equal(62, after);
+    }
+
+    [Fact]
     public void DefaultLogDir_is_probed_without_throwing()
     {
         // Regression: DefaultLogDir was declared above the arrays its probe reads, and

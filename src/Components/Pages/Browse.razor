@@ -34,7 +34,7 @@
         Reading your Star Citizen logs&hellip; this page updates by itself when done.
     </p>
 }
-@* These three are mutually exclusive and each one fully explains why the page below has
+@* These are mutually exclusive and each one fully explains why the page below has
    nothing in it, so at most one is shown and it replaces the generic "no locations" message
    further down (see EmptiesExplained). *@
 else if (health.LogFiles == 0)
@@ -47,15 +47,25 @@ else if (health.LogFiles == 0)
 else if (health.FilesWithLinesSinceInception == 0)
 {
     <p class="banner banner-info">
-        Found @health.LogFiles log file(s), but none has anything after your inception date
+        Found @health.LogFiles log file(s), but none has anything after your wipe date
         (@FormatDate(health.InceptionDate)). Newest log line: @FormatDate(health.NewestLogLine).
-        <a href="settings">Move the inception date back in Settings</a>.
+        <a href="settings">Clear or move back the wipe date in Settings</a>.
+    </p>
+}
+else if (health.Moves == 0 && health.InceptionDate is not null)
+{
+    @* The tracker learns an item only from a line that moves it, so with a recent date this is
+       what a full inventory looks like until things start moving. Say so, or it reads as broken. *@
+    <p class="banner banner-info">
+        Logs since @FormatDate(health.InceptionDate) were read, but no item has moved since then.
+        Items that have sat still since your wipe date are unknown to the tracker.
+        <a href="settings">Clear the wipe date in Settings</a> to use your whole history.
     </p>
 }
 else if (health.Moves == 0)
 {
     <p class="banner banner-info">
-        Logs since @FormatDate(health.InceptionDate) were read, but no item movement was found yet.
+        Your logs were read, but no item movement was found yet.
     </p>
 }
 
@@ -346,7 +356,7 @@ else
         }
 
         // The catalogue lists every station the game ever paired with a local-inventory name,
-        // whether or not anything was ever recorded there since the tracker's inception date.
+        // whether or not anything was ever recorded there since the tracker's wipe date.
         // Only places holding something now belong in the picker, so it doesn't fill up with
         // stations the player has simply never visited.
         var holdingKeys = snapshot.Holdings
@@ -634,7 +644,7 @@ else
         || snapshot.Health.Moves == 0;
 
     /// <summary>Calendar-day formatting for the health banners; "-" stands in for a date that
-    /// was never set (no inception date) or never seen (no log line read yet).</summary>
+    /// was never set (no wipe date) or never seen (no log line read yet).</summary>
     private static string FormatDate(DateTimeOffset? when) => when?.ToString("yyyy-MM-dd") ?? "-";
 
     private static string Ago(DateTimeOffset when)

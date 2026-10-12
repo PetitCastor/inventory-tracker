@@ -114,6 +114,9 @@
     .input-row { display: flex; align-items: center; gap: 0.5rem; flex: 1; max-width: 34rem; }
     .input-row input { flex: 1; max-width: none; }
 
+    /* A date needs a fraction of a path's width; stretched to 34rem it reads as a text box. */
+    .input-row.date-row { max-width: 18rem; }
+
     .icon-btn {
         display: inline-flex;
         align-items: center;

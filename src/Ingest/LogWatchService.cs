@@ -10,7 +10,14 @@ namespace InventoryTracker.Ingest;
 /// Keeps the store current: backfills every rotated log on start, then follows the live
 /// Game.log as the game writes to it.
 /// <para>
-/// The watcher fires far more often than there is useful work, so writes are coalesced
+/// Three things start a pass. FileSystemWatcher is the fast path, but it reads the directory
+/// entry, which NTFS updates only lazily while the game holds the file open — it can stay
+/// silent for minutes. The length poll every <see cref="PollInterval"/> is what actually
+/// follows a running game; see <see cref="LogFileLocator.LiveLength"/>. The sweep every
+/// <see cref="SweepInterval"/> covers anything else that changed with Game.log unchanged.
+/// </para>
+/// <para>
+/// The watcher fires far more often than there is useful work, so its events are coalesced
 /// into one ingest pass per <see cref="Debounce"/> window.
 /// </para>
 /// </summary>
@@ -25,12 +32,41 @@ public sealed class LogWatchService(
     private static readonly TimeSpan Debounce = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// A safety net for the cases FileSystemWatcher misses: network paths, and the game
-    /// rotating Game.log while we are not looking.
+    /// How often Game.log's length is checked. Opening a handle and reading its length is
+    /// cheap, and a pass only follows when the length moved.
     /// </summary>
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
+
+    /// <summary>A pass even when nothing was seen to change, in case the poll and the
+    /// watcher both missed it.</summary>
     private static readonly TimeSpan SweepInterval = TimeSpan.FromMinutes(2);
 
+    /// <summary>Failed passes in a row before a routine IOException is worth a warning:
+    /// one or two are the game rotating Game.log, more means the file stays unreadable.</summary>
+    private const int FailuresBeforeWarning = 3;
+
     private readonly SemaphoreSlim _wake = new(0, 1);
+
+    /// <summary>What the pending wake was for. Last writer wins; it only labels the pass.</summary>
+    private volatile IngestTrigger _wakeTrigger = IngestTrigger.Manual;
+
+    /// <summary>Game.log's length when the last pass started, or -1 when there was none.
+    /// The poll compares against it. Written by whichever thread runs the pass.</summary>
+    private long _seenLength = -1;
+
+    /// <summary>UTC ticks of the last pass's start, for the sweep.</summary>
+    private long _lastPassTicks;
+
+    /// <summary>Set when a pass changed the store but could not publish a snapshot, so the
+    /// next pass publishes even if it reads nothing new. Guarded by <see cref="_ingestLock"/>.</summary>
+    private bool _rebuildOwed;
+
+    /// <summary>Failed passes in a row. Guarded by <see cref="_ingestLock"/>.</summary>
+    private int _consecutiveFailures;
+
+    private readonly Lock _statusGate = new();
+    private IngestPass? _lastPass;
+    private DateTimeOffset? _lastMovesAt;
 
     /// <summary>Serialises ingest passes so a "rebuild now" and the background loop never
     /// hit the store at the same time.</summary>
@@ -50,6 +86,22 @@ public sealed class LogWatchService(
     /// </summary>
     private volatile bool _placesStale = true;
 
+    /// <summary>The most recent pass, or null before the first one finishes.</summary>
+    public IngestPass? LastPass
+    {
+        get { lock (_statusGate) return _lastPass; }
+    }
+
+    /// <summary>When a pass last found new moves, or null if none has since launch.</summary>
+    public DateTimeOffset? LastMovesAt
+    {
+        get { lock (_statusGate) return _lastMovesAt; }
+    }
+
+    /// <summary>Raised after every pass, including the ones that found nothing and so
+    /// published no snapshot — Settings shows when the logs were last read.</summary>
+    public event Action? PassCompleted;
+
     /// <summary>Resolves place names again on the next pass, then nudges one.</summary>
     public void RequestPlaceResolution()
     {
@@ -58,8 +110,11 @@ public sealed class LogWatchService(
     }
 
     /// <summary>Nudges the service to ingest now — used by the tray's "Rescan" command.</summary>
-    public void RequestScan()
+    public void RequestScan() => Wake(IngestTrigger.Manual);
+
+    private void Wake(IngestTrigger trigger)
     {
+        _wakeTrigger = trigger;
         try { _wake.Release(); }
         catch (SemaphoreFullException) { /* a pass is already pending */ }
         catch (ObjectDisposedException) { /* shutting down; a watcher event raced Dispose */ }
@@ -67,7 +122,7 @@ public sealed class LogWatchService(
 
     /// <summary>Runs one ingest pass and returns only when it has finished, so the caller
     /// can show a rebuild-complete state.</summary>
-    public Task RebuildNowAsync() => Task.Run(() => Ingest());
+    public Task RebuildNowAsync() => Task.Run(() => Ingest(IngestTrigger.Manual));
 
     /// <summary>
     /// Discards everything derived from the logs and re-ingests from scratch, as one
@@ -89,7 +144,7 @@ public sealed class LogWatchService(
             // Session ids restart once the table is emptied, so carried state could
             // otherwise land on an unrelated new session with the same id.
             _ingestor = null;
-            IngestLocked();
+            IngestLocked(IngestTrigger.Reset);
         }
         finally
         {
@@ -116,7 +171,7 @@ public sealed class LogWatchService(
         // icon, Kestrel and the browser launch all wait on it.
         await Task.Yield();
 
-        Ingest(ct);
+        Ingest(IngestTrigger.Startup, ct);
         if (ct.IsCancellationRequested) return;
 
         StartWatching();
@@ -130,18 +185,33 @@ public sealed class LogWatchService(
 
         while (!ct.IsCancellationRequested)
         {
+            IngestTrigger trigger;
             try
             {
-                // Either the watcher woke us or the sweep timer expired; both mean "look again".
-                await _wake.WaitAsync(SweepInterval, ct);
-                await Task.Delay(Debounce, ct);
+                if (await _wake.WaitAsync(PollInterval, ct))
+                {
+                    await Task.Delay(Debounce, ct);
+                    trigger = _wakeTrigger;
+                }
+                else if ((LogFileLocator.LiveLength(options.LogDir) ?? -1) != Interlocked.Read(ref _seenLength))
+                {
+                    trigger = IngestTrigger.Poll;
+                }
+                else if (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastPassTicks) >= SweepInterval.Ticks)
+                {
+                    trigger = IngestTrigger.Sweep;
+                }
+                else
+                {
+                    continue;
+                }
             }
             catch (OperationCanceledException)
             {
                 break;
             }
 
-            Ingest(ct);
+            Ingest(trigger, ct);
         }
     }
 
@@ -205,15 +275,15 @@ public sealed class LogWatchService(
             EnableRaisingEvents = true,
         };
 
-        _watcher.Changed += (_, _) => RequestScan();
-        _watcher.Created += (_, _) => RequestScan();
+        _watcher.Changed += (_, _) => Wake(IngestTrigger.Watcher);
+        _watcher.Created += (_, _) => Wake(IngestTrigger.Watcher);
     }
 
     /// <summary>
     /// <paramref name="ct"/> is the host's stop token: shutdown waits for the pass in flight, so
     /// it has to be able to cut a long backfill short. The next launch resumes from the watermark.
     /// </summary>
-    private void Ingest(CancellationToken ct = default)
+    private void Ingest(IngestTrigger trigger, CancellationToken ct = default)
     {
         try
         {
@@ -226,7 +296,7 @@ public sealed class LogWatchService(
 
         try
         {
-            IngestLocked(ct);
+            IngestLocked(trigger, ct);
         }
         finally
         {
@@ -237,9 +307,26 @@ public sealed class LogWatchService(
         }
     }
 
-    /// <summary>One ingest pass. The caller must already hold <see cref="_ingestLock"/>.</summary>
-    private void IngestLocked(CancellationToken ct = default)
+    /// <summary>
+    /// One ingest pass. The caller must already hold <see cref="_ingestLock"/>.
+    /// <para>
+    /// A reset or a manual rescan always publishes a snapshot. A reset in particular can
+    /// wipe the store and re-read nothing — a wipe date after every log line — and without
+    /// the forced rebuild the UI would keep showing the rows that were just deleted.
+    /// </para>
+    /// </summary>
+    private void IngestLocked(IngestTrigger trigger, CancellationToken ct = default)
     {
+        var started = DateTimeOffset.UtcNow;
+        Interlocked.Exchange(ref _lastPassTicks, started.UtcTicks);
+
+        // Sampled before reading, so a write that lands mid-pass still looks new to the poll.
+        Interlocked.Exchange(ref _seenLength, LogFileLocator.LiveLength(options.LogDir) ?? -1);
+
+        IngestStats? stats = null;
+        var rebuilt = false;
+        string? error = null;
+
         try
         {
             // A settings change swaps the source out from under the carried state; start over.
@@ -250,7 +337,7 @@ public sealed class LogWatchService(
                 _ingestor = new LogIngestor(db, options.LogDir, options.InceptionDate);
             }
 
-            var stats = _ingestor.IngestAll(ct);
+            stats = _ingestor.IngestAll(ct);
             var renamed = ResolvePlaces(stats);
 
             // Re-resolving is cheap, but pushing a no-op update to every open page is noise.
@@ -261,11 +348,34 @@ public sealed class LogWatchService(
                 stats.ContainersIdentified > 0 ||
                 stats.UnrecognisedMoves > 0 ||
                 renamed > 0 ||
+                trigger is IngestTrigger.Reset or IngestTrigger.Manual ||
                 state.Current.BuiltAt == DateTimeOffset.MinValue)
             {
+                _rebuildOwed = true;
+            }
+
+            // Owed across passes: the store is already committed, so a rebuild that throws
+            // here would otherwise leave the UI behind until some later pass happens to read
+            // something new.
+            if (_rebuildOwed)
+            {
                 state.Rebuild();
+                _rebuildOwed = false;
+                rebuilt = true;
+            }
+
+            if (stats.MovesInserted > 0)
+            {
+                lock (_statusGate) _lastMovesAt = started;
                 log.LogInformation(
-                    "Ingested {Moves} moves from {Files} file(s)", stats.MovesInserted, stats.FilesParsed);
+                    "Ingested {Moves} moves from {Files} file(s) ({Trigger})",
+                    stats.MovesInserted, stats.FilesParsed, trigger);
+            }
+            else if (trigger is IngestTrigger.Startup or IngestTrigger.Reset)
+            {
+                log.LogInformation(
+                    "{Trigger} pass read {Lines} line(s) from {Files} file(s); no new moves",
+                    trigger, stats.LinesRead, stats.FilesSeen);
             }
 
             if (stats.UnrecognisedMoves > 0)
@@ -275,21 +385,45 @@ public sealed class LogWatchService(
                     "parser's patterns. The game's log format has probably changed; tracking is incomplete.",
                     stats.UnrecognisedMoves);
             }
+
+            if (_consecutiveFailures >= FailuresBeforeWarning)
+            {
+                log.LogInformation("Log reading recovered after {Count} failed passes", _consecutiveFailures);
+            }
+
+            _consecutiveFailures = 0;
         }
         catch (OperationCanceledException)
         {
             // Shutting down mid-pass; the next launch picks up from the watermark.
+            return;
         }
         catch (IOException ex)
         {
             // The game holds Game.log open and rotates it out from under us; the next
-            // pass picks up where this one stopped.
-            log.LogDebug(ex, "Log temporarily unreadable");
+            // pass picks up where this one stopped. Only a run of these is a problem.
+            error = ex.Message;
+            if (++_consecutiveFailures == FailuresBeforeWarning)
+            {
+                log.LogWarning(ex, "Logs unreadable for {Count} passes in a row", _consecutiveFailures);
+            }
+            else
+            {
+                log.LogDebug(ex, "Log temporarily unreadable");
+            }
         }
         catch (Exception ex)
         {
-            log.LogError(ex, "Ingest pass failed");
+            // Every pass would fail the same way, so only the first of a run is logged.
+            error = ex.Message;
+            if (++_consecutiveFailures == 1) log.LogError(ex, "Ingest pass failed");
         }
+
+        var pass = new IngestPass(
+            started, trigger, DateTimeOffset.UtcNow - started,
+            stats?.LinesRead ?? 0, stats?.MovesInserted ?? 0, rebuilt, error);
+        lock (_statusGate) _lastPass = pass;
+        PassCompleted?.Invoke();
     }
 
     /// <summary>

@@ -122,6 +122,31 @@ public static partial class LogFileLocator
             .ToList();
     }
 
+    /// <summary>
+    /// The live Game.log's current length in bytes, or null when there is none.
+    /// <para>
+    /// Read through an open handle on purpose. The game keeps its own handle on the file, and
+    /// while it does NTFS updates the size and last-write time in the directory entry only
+    /// lazily, which is all <see cref="FileInfo"/> and FileSystemWatcher look at. Both can go
+    /// minutes without seeing a write; the handle always reports the real length.
+    /// </para>
+    /// </summary>
+    public static long? LiveLength(string logDir)
+    {
+        try
+        {
+            using var fs = new FileStream(
+                Path.Combine(logDir, "Game.log"), FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            return fs.Length;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // Missing, mid-rotation, or an unusable path: nothing to compare yet.
+            return null;
+        }
+    }
+
     /// <summary>The first parseable line's timestamp, used to tell one Game.log from the
     /// next after a rotation. Null when the file has no parseable line near its head.</summary>
     public static DateTimeOffset? FirstTimestamp(string path)

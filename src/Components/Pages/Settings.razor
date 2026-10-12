@@ -30,10 +30,22 @@
 </div>
 
 <div class="settings-field">
-    <label for="inception">Inception date</label>
-    <input id="inception" type="date" @bind="_inceptionDate" />
+    <label for="inception">Wipe date (optional)</label>
+    <div class="input-row date-row">
+        <input id="inception" type="date" @bind="_inceptionDate" />
+        @if (_inceptionDate is not null)
+        {
+            <button type="button" @onclick="() => _inceptionDate = null">Clear</button>
+        }
+    </div>
 </div>
-<p class="subtle">Everything logged before this date is ignored. Only applies to newly-ingested log lines — use "Save and rebuild" below to apply it to history already stored.</p>
+@* The tracker only knows an item once a log line moves it, so a date also hides everything
+   that has sat still since then. Worth saying here, where the date is chosen. *@
+<p class="subtle">
+    Leave empty to read your whole history: the tracker only knows about an item once it sees it move, so the further back it reads, the more it finds.
+    Set a date only after a Star Citizen persistence wipe. Everything logged before it is forgotten, including items that have not moved since.
+    "Save and rebuild" applies a change to the history already stored.
+</p>
 
 <div class="settings-actions">
     <button @onclick="SaveAndRebuild" disabled="@_rebuilding">Save and rebuild from logs</button>
@@ -113,10 +125,30 @@
 @{ var notYetBuilt = State.Current.BuiltAt == DateTimeOffset.MinValue; }
 <dl class="facts">
     <dt>Log files found</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.LogFiles.ToString())</dd>
-    <dt>Files with data since inception</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.FilesWithLinesSinceInception.ToString())</dd>
+    <dt>@(Options.InceptionDate is null ? "Files with data" : "Files with data since the wipe date")</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.FilesWithLinesSinceInception.ToString())</dd>
     <dt>Unrecognised move lines</dt><dd>@(notYetBuilt ? "not read yet" : State.Current.Health.UnrecognisedMoveLines.ToString())</dd>
     <dt>Newest log line</dt>
     <dd>@(State.Current.Health.NewestLogLine is { } newest ? $"{newest:yyyy-MM-dd HH:mm:ss} UTC" : "none read yet")</dd>
+    @* Local time, unlike the rows above: this answers "did it read the move I just made?",
+       which is asked against the clock on the wall. *@
+    <dt>Last log read</dt>
+    <dd>
+        @if (Watcher.LastPass is { } pass)
+        {
+            @($"{pass.At.ToLocalTime():HH:mm:ss} ({pass.Trigger.ToString().ToLowerInvariant()}) — {pass.LinesRead:N0} line(s), {pass.MovesInserted} new move(s), {pass.Duration.TotalMilliseconds:F0} ms")
+            @if (pass.Error is { } passError)
+            {
+                <span class="rebuild-status error"> failed: @passError</span>
+            }
+        }
+        else
+        {
+            @("not run yet")
+        }
+    </dd>
+    <dt>Last new moves</dt>
+    <dd>@(Watcher.LastMovesAt is { } movesAt ? movesAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "none since launch")</dd>
+    <dt>Log file</dt><dd><code>@FileLoggerProvider.DefaultPath</code></dd>
 </dl>
 
 <h2>Confidence spread</h2>
@@ -188,6 +220,7 @@
     protected override void OnInitialized()
     {
         State.Changed += OnChanged;
+        Watcher.PassCompleted += OnPassCompleted;
 
         _logDir = Options.LogDir;
         _inceptionDate = Options.InceptionDate is { } d ? DateOnly.FromDateTime(d.UtcDateTime) : null;
@@ -235,12 +268,20 @@
 
     private void OnChanged() => InvokeAsync(() => { RefreshDiagnostics(); StateHasChanged(); });
 
-    public void Dispose() => State.Changed -= OnChanged;
+    /// <summary>Most passes find nothing and publish no snapshot, so the last-read row would
+    /// otherwise freeze at the last pass that did.</summary>
+    private void OnPassCompleted() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        State.Changed -= OnChanged;
+        Watcher.PassCompleted -= OnPassCompleted;
+    }
 
     /// <summary>
-    /// The inception date only gates what gets ingested from here on — it does not remove
-    /// rows already in the store. Wiping and re-ingesting is the only way to make an
-    /// earlier cutoff apply to history that was captured before it was set.
+    /// The wipe date only gates what gets ingested from here on — it does not remove
+    /// rows already in the store. Wiping and re-ingesting is the only way to make a
+    /// changed date apply to history that was captured before it was set.
     /// </summary>
     private async Task SaveAndRebuild()
     {
