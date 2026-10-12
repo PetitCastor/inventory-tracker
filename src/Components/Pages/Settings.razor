@@ -129,7 +129,7 @@
     <dt>@(Options.InceptionDate is null ? "Files with data" : "Files with data since the wipe date")</dt><dd>@(notYetBuilt ? "not read yet" : _health.FilesWithLinesSinceInception.ToString())</dd>
     <dt>Unrecognised move lines</dt><dd>@(notYetBuilt ? "not read yet" : _health.UnrecognisedMoveLines.ToString())</dd>
     <dt>Newest log line</dt>
-    <dd>@(_health.NewestLogLine is { } newest ? $"{newest:yyyy-MM-dd HH:mm:ss} UTC" : "none read yet")</dd>
+    <dd>@(notYetBuilt ? "not read yet" : _health.NewestLogLine is { } newest ? $"{newest:yyyy-MM-dd HH:mm:ss} UTC" : "none read yet")</dd>
     @* Local time, unlike the rows above: this answers "did it read the move I just made?",
        which is asked against the clock on the wall. *@
     <dt>Last log read</dt>

@@ -49,14 +49,15 @@ public sealed class TrackerOptions
         string logDir, DateOnly? inceptionDate, LogWatchService watcher, bool markSetupComplete = false)
     {
         var config = AppConfig.Load();
-        var logDirChanged = !string.Equals(config.LogDir, logDir, StringComparison.OrdinalIgnoreCase);
         var newDate = inceptionDate is { } d
             ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
             : (DateTimeOffset?)null;
 
-        // What the running watcher has been ingesting with, compared before it is overwritten.
-        var sourceUnchanged =
-            string.Equals(LogDir, logDir, StringComparison.OrdinalIgnoreCase) && InceptionDate == newDate;
+        // Against what the running watcher has been using, read before it is overwritten — not
+        // against config.json, whose LogDir can still be unset on a fresh install and would
+        // restart the watcher for a folder that never changed.
+        var logDirChanged = !string.Equals(LogDir, logDir, StringComparison.OrdinalIgnoreCase);
+        var sourceUnchanged = !logDirChanged && InceptionDate == newDate;
 
         config.LogDir = logDir;
         config.InceptionDate = newDate;

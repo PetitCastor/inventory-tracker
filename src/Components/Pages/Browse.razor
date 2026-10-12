@@ -44,20 +44,21 @@ else if (health.LogFiles == 0)
         <a href="settings">Check the log location in Settings</a>.
     </p>
 }
+else if (health.FilesWithLinesSinceInception == 0 && health.NewestLogLine is null)
+{
+    @* First among the empty-file cases: with no timestamped line anywhere — a fresh install,
+       or the game only just started a new log — neither a wipe date nor 4.9 is to blame. *@
+    <p class="banner banner-info">
+        Found @health.LogFiles log file(s), but the game has not written anything to them yet.
+        This page updates by itself once it does.
+    </p>
+}
 else if (health.FilesWithLinesSinceInception == 0 && health.InceptionDate is not null)
 {
     <p class="banner banner-info">
         Found @health.LogFiles log file(s), but none has anything after your wipe date
         (@FormatDate(health.InceptionDate)). Newest log line: @FormatDate(health.NewestLogLine).
         <a href="settings">Clear or move back the wipe date in Settings</a>.
-    </p>
-}
-else if (health.FilesWithLinesSinceInception == 0 && health.NewestLogLine is null)
-{
-    @* No timestamped line anywhere: a fresh install, or the game only just started a new log. *@
-    <p class="banner banner-info">
-        Found @health.LogFiles log file(s), but the game has not written anything to them yet.
-        This page updates by itself once it does.
     </p>
 }
 else if (health.FilesWithLinesSinceInception == 0)

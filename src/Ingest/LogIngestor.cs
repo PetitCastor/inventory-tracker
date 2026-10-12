@@ -32,17 +32,22 @@ public sealed record IngestStats
     /// </summary>
     public int UnrecognisedMoves { get; set; }
 
+    /// <summary>Instance-level store lines recorded. Kept apart from <see cref="MovesInserted"/>:
+    /// one usually doubles a Queued line for the same action.</summary>
+    public int StoresRecorded { get; set; }
+
     /// <summary>
-    /// Whether this pass wrote anything the holdings or the health banner are built from, and
-    /// so whether the UI needs a new snapshot. Not just new moves: a completion read in a later
-    /// pass than its move turns a placement into a failed one, and a geid spawn landing after
-    /// its completion names the item — both cross pass boundaries routinely, with a pass every
-    /// two seconds. Place evidence is left out; it reaches the UI through name resolution.
+    /// Whether this pass wrote anything the holdings are built from, and so whether the UI
+    /// needs a new snapshot. Not just new moves: a completion read in a later pass than its
+    /// move turns a placement into a failed one, and a geid spawn landing after its completion
+    /// names the item — both cross pass boundaries routinely, with a pass every two seconds.
+    /// Place evidence is left out; it reaches the UI through name resolution. The health
+    /// banner is checked separately by the watcher.
     /// </summary>
     public bool ChangedHoldings =>
-        MovesInserted > 0 || CompletionsApplied > 0 || ContainersIdentified > 0 || CapacitiesSeen > 0 ||
-        LocationsNamed > 0 || LocationConflicts > 0 || GeidsRecovered > 0 || AttachmentsSeen > 0 ||
-        RequestsLost > 0 || UnrecognisedMoves > 0;
+        MovesInserted > 0 || StoresRecorded > 0 || CompletionsApplied > 0 || ContainersIdentified > 0 ||
+        CapacitiesSeen > 0 || LocationsNamed > 0 || LocationConflicts > 0 || GeidsRecovered > 0 ||
+        AttachmentsSeen > 0 || RequestsLost > 0 || UnrecognisedMoves > 0;
 }
 
 /// <summary>
@@ -330,11 +335,13 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                     stored.Timestamp, RequestNo: 0, Player: "", PlayerId: "", MoveType: "StoreItem",
                     InventoryRef.Invalid, stored.Target, stored.ClassName, stored.Geid, Amount: 1);
 
-                // Counted like any other move, or a pass that reads only this line would leave
-                // the UI without the item it just placed.
+                // Counted on its own, not as a move: it usually doubles a Queued line the player
+                // made one action for, and MovesInserted is what the UI reports as new moves.
+                // It still has to count, or a pass that reads only this line would leave the
+                // UI without the item it just placed.
                 if (InsertMove(cn, tx, sessionId, lineOffset, synthetic, caller: null, itemIx: 0) is not null)
                 {
-                    stats.MovesInserted++;
+                    stats.StoresRecorded++;
                 }
 
                 TouchContainer(cn, tx, stored.Target, stored.Timestamp, state.CurrentLocation);

@@ -12,6 +12,7 @@ public sealed class IngestStatsTests
 
     [Theory]
     [InlineData(nameof(IngestStats.MovesInserted))]
+    [InlineData(nameof(IngestStats.StoresRecorded))]
     [InlineData(nameof(IngestStats.CompletionsApplied))]
     [InlineData(nameof(IngestStats.ContainersIdentified))]
     [InlineData(nameof(IngestStats.CapacitiesSeen))]

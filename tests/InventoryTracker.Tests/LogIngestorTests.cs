@@ -57,11 +57,12 @@ public sealed class LogIngestorTests : IDisposable
         "User[Pilot, 204821708183] on Inventory[cds_combat_superheavy_suit_01_04_01_783810961476, 783810961476]";
 
     [Fact]
-    public void A_store_line_on_its_own_counts_as_a_new_move()
+    public void A_store_line_on_its_own_is_reported_as_a_change()
     {
         // The watcher only publishes a snapshot when a pass reports a change. A store line
         // inserted a move row without counting it, so a pass that read nothing else left the
-        // UI without the item it had just placed.
+        // UI without the item it had just placed. It is not a new move for the player, though:
+        // it usually doubles the Queued line of the same action.
         var ingestor = new LogIngestor(_db, _dir);
         Append(
             "<2026-08-27T00:41:00.000Z> [Notice] <OnInventoryStoreItem> " +
@@ -70,7 +71,8 @@ public sealed class LogIngestorTests : IDisposable
 
         var stats = ingestor.IngestAll();
 
-        Assert.Equal(1, stats.MovesInserted);
+        Assert.Equal(1, stats.StoresRecorded);
+        Assert.Equal(0, stats.MovesInserted);
         Assert.True(stats.ChangedHoldings);
         Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move"));
     }

@@ -141,6 +141,10 @@ public sealed class LogWatchService(
     /// can show a rebuild-complete state.</summary>
     public Task RebuildNowAsync() => Task.Run(() => Ingest(IngestTrigger.Manual));
 
+    /// <summary>One pass as the loop would run it for <paramref name="trigger"/>, for tests:
+    /// the unforced triggers are the ones whose rebuild decisions need checking.</summary>
+    internal Task RunPassAsync(IngestTrigger trigger) => Task.Run(() => Ingest(trigger));
+
     /// <summary>
     /// Raised outside the ingest lock, and shielded: a subscriber that throws must not stop
     /// the loop or fail a reset whose wipe and re-read already succeeded, and a slow one must
@@ -208,12 +212,7 @@ public sealed class LogWatchService(
     /// the only caller resets and re-reads right after, and a pass queued here would only
     /// run a second forced rebuild behind it.
     /// </summary>
-    public void RestartWatching()
-    {
-        _watcher?.Dispose();
-        _watcher = null;
-        StartWatching();
-    }
+    public void RestartWatching() => StartWatching();
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -287,16 +286,26 @@ public sealed class LogWatchService(
     /// </summary>
     private async Task<long> ProbeLiveLengthAsync(CancellationToken ct)
     {
+        // A probe abandoned by the timeout below still holds a pool thread until the open
+        // gives up. Never stack another on top of it: on a share that hangs for good, one
+        // stuck thread is the cost, not one more every tick.
+        if (_probe is { IsCompleted: false }) return Interlocked.Read(ref _seenLength);
+
         try
         {
             var dir = options.LogDir;
-            return await Task.Run(() => LogFileLocator.LiveLength(dir) ?? -1, ct).WaitAsync(ProbeTimeout, ct);
+            _probe = Task.Run(() => LogFileLocator.LiveLength(dir) ?? -1, ct);
+            return await _probe.WaitAsync(ProbeTimeout, ct);
         }
         catch (TimeoutException)
         {
             return Interlocked.Read(ref _seenLength);
         }
     }
+
+    /// <summary>The last length probe, kept so a hung one is not joined by more.
+    /// Only the loop touches it.</summary>
+    private Task<long>? _probe;
 
     private async Task RefreshCatalogueAsync(CancellationToken ct)
     {
@@ -344,23 +353,37 @@ public sealed class LogWatchService(
         }
     }
 
+    /// <summary>
+    /// Replaces any watcher already running. Setup can restart watching while the startup
+    /// pass is still going, and ExecuteAsync starts one when that pass ends: without the
+    /// dispose the first is orphaned, keeps waking the loop, and outlives a later folder change.
+    /// </summary>
     private void StartWatching()
     {
-        if (!Directory.Exists(options.LogDir))
+        lock (_watcherGate)
         {
-            log.LogWarning("Log directory {Dir} does not exist; watching disabled", options.LogDir);
-            return;
+            _watcher?.Dispose();
+            _watcher = null;
+
+            if (!Directory.Exists(options.LogDir))
+            {
+                log.LogWarning("Log directory {Dir} does not exist; watching disabled", options.LogDir);
+                return;
+            }
+
+            _watcher = new FileSystemWatcher(options.LogDir, "Game.log")
+            {
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
+                EnableRaisingEvents = true,
+            };
+
+            _watcher.Changed += (_, _) => Wake();
+            _watcher.Created += (_, _) => Wake();
         }
-
-        _watcher = new FileSystemWatcher(options.LogDir, "Game.log")
-        {
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
-            EnableRaisingEvents = true,
-        };
-
-        _watcher.Changed += (_, _) => Wake();
-        _watcher.Created += (_, _) => Wake();
     }
+
+    /// <summary>The loop and a Settings change can both start watching.</summary>
+    private readonly Lock _watcherGate = new();
 
     /// <summary>
     /// <paramref name="ct"/> is the host's stop token: shutdown waits for the pass in flight, so
@@ -432,7 +455,8 @@ public sealed class LogWatchService(
             // An UnrecognisedMove counts too: it means the game's log grammar just drifted,
             // and the health snapshot the UI reads needs to reflect that as soon as possible
             // rather than waiting for some unrelated change to trigger the next rebuild.
-            if (stats.ChangedHoldings || renamed > 0 || state.Current.BuiltAt == DateTimeOffset.MinValue)
+            if (stats.ChangedHoldings || renamed > 0 || state.Current.BuiltAt == DateTimeOffset.MinValue ||
+                (stats.LinesRead > 0 && BannerStale()))
             {
                 _rebuildOwed = true;
             }
@@ -523,6 +547,25 @@ public sealed class LogWatchService(
     }
 
     /// <summary>
+    /// Whether Browse's health banner would now read differently from the published snapshot.
+    /// A pass that reads only non-inventory lines — the game logging in and loading — changes
+    /// none of the holdings, but can turn "the game has not written anything yet" or "no logs
+    /// found" false. Only the facts the banners branch on are compared: the newest line's time
+    /// moves on every pass while the game writes, and rebuilding for it would mean a rebuild
+    /// every two seconds.
+    /// </summary>
+    private bool BannerStale()
+    {
+        var shown = state.Current.Health;
+        var now = IngestHealth.Load(db, options.LogDir, options.InceptionDate);
+
+        return now.LogFiles != shown.LogFiles
+               || (now.FilesWithLinesSinceInception == 0) != (shown.FilesWithLinesSinceInception == 0)
+               || (now.Moves == 0) != (shown.Moves == 0)
+               || (now.NewestLogLine is null) != (shown.NewestLogLine is null);
+    }
+
+    /// <summary>
     /// Names a place seen for the first time, and looks again at any still waiting on
     /// confirmation — but only when there is something new to go on: the watcher fires on
     /// every write to Game.log, and most passes read no place evidence at all. A failure here
@@ -542,7 +585,10 @@ public sealed class LogWatchService(
         }
         catch (Exception ex)
         {
+            // Some names may already be written. The retry only counts the ones it changes
+            // itself, so owe the snapshot now or those would never reach the page.
             _placesStale = true;
+            _rebuildOwed = true;
             log.LogWarning(ex, "Could not resolve place names");
             return 0;
         }
