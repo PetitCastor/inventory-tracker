@@ -1,0 +1,31 @@
+# Every merge to main cuts a release (see the publish job in workflows/ci.yml), so
+# updates are grouped: one weekly PR per ecosystem rather than one per package.
+# Security updates are not affected by the schedule or the groups and still open
+# as soon as an advisory lands.
+version: 2
+
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      nuget:
+        patterns: ["*"]
+    ignore:
+      # Microsoft.Data.Sqlite majors track the .NET release the app targets
+      # (net10.0-windows); move it together with the TargetFramework, not on its own.
+      - dependency-name: Microsoft.Data.Sqlite
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns: ["*"]
