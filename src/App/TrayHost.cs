@@ -97,11 +97,9 @@ public static class TrayHost
         // button in Settings — the startup check in Run() uses its own short-lived
         // HttpClient instead, since it runs before this container exists.
         //
-        // HttpClient.Timeout bounds the whole request including streaming the response body,
-        // not just the initial round trip, so it has to be generous enough for the exe
-        // download itself (this client backs both the release check and DownloadAsync). The
-        // check step gets its own short-lived cancellation instead, so a hung/offline check
-        // still fails fast without capping how long the download is allowed to take.
+        // With ResponseHeadersRead, HttpClient.Timeout only bounds the request through its
+        // headers. UpdateService applies its own five-minute token to the download body; the
+        // check step below uses the client's timeout while reading the release JSON.
         builder.Services.AddHttpClient(UpdateClient, c =>
         {
             c.Timeout = TimeSpan.FromMinutes(5);
@@ -296,10 +294,9 @@ public static class TrayHost
     {
         try
         {
-            // Timeout has to cover the exe download below too (HttpClient.Timeout bounds the
-            // whole request, body included, not just the round trip to get headers) — the
-            // check itself is bounded separately by checkTimeout so a hung/offline check
-            // still fails fast without capping how long the download gets.
+            // The client timeout covers the check through its JSON body. DownloadAsync has
+            // a separate five-minute bound because ResponseHeadersRead leaves body reads to
+            // its cancellation token.
             using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
             http.DefaultRequestHeaders.UserAgent.ParseAdd(UpdateService.UserAgent);
             http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
@@ -314,23 +311,45 @@ public static class TrayHost
 
             // No message loop is running yet (Application.Run is further down in Run()), so
             // the download is pumped by hand to keep the window responsive and repainting.
-            var download = updates.DownloadAsync(info, new Progress<double>(progress.SetProgress));
-            while (!download.IsCompleted)
+            var applyUpdate = TryDownloadAndApplyStartupUpdateAsync(
+                updates,
+                info,
+                path =>
+                {
+                    progress.SetStatus("Restarting…");
+                    Application.DoEvents();
+                    UpdateService.InstallAndRestart(path);
+                },
+                new Progress<double>(progress.SetProgress));
+            while (!applyUpdate.IsCompleted)
             {
                 Application.DoEvents();
                 Thread.Sleep(15);
             }
-            var path = download.GetAwaiter().GetResult();
-
-            progress.SetStatus("Restarting…");
-            Application.DoEvents();
-
-            UpdateService.InstallAndRestart(path);
-            return true;
+            return applyUpdate.GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
             Trace.WriteLine($"Update check skipped: {ex.Message}");
+            return false;
+        }
+    }
+
+    internal static async Task<bool> TryDownloadAndApplyStartupUpdateAsync(
+        UpdateService updates,
+        UpdateInfo info,
+        Action<string> install,
+        IProgress<double>? progress = null)
+    {
+        try
+        {
+            var path = await updates.DownloadAsync(info, progress);
+            install(path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"Startup update skipped: {ex.Message}");
             return false;
         }
     }

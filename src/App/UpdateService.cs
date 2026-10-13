@@ -25,6 +25,15 @@ public sealed class UpdateService(HttpClient http)
     /// <summary>Outbound identification for both the GitHub API and the download itself.</summary>
     public const string UserAgent = "InventoryTracker-Updater/1.0";
 
+    private readonly TimeSpan _downloadTimeout = TimeSpan.FromMinutes(5);
+    private readonly TimeProvider _timeProvider = TimeProvider.System;
+
+    internal UpdateService(HttpClient http, TimeSpan downloadTimeout, TimeProvider timeProvider) : this(http)
+    {
+        _downloadTimeout = downloadTimeout;
+        _timeProvider = timeProvider;
+    }
+
     /// <summary>
     /// The version of the running build, read from the assembly version publish.ps1 stamps
     /// from VERSION. Local dev builds (no -p:Version) get the compiler's own default of
@@ -90,28 +99,42 @@ public sealed class UpdateService(HttpClient http)
     {
         var dir = Path.Combine(Path.GetTempPath(), "InventoryTrackerUpdate");
         Directory.CreateDirectory(dir);
-        var target = Path.Combine(dir, $"InventoryTracker-{info.TagName}.exe");
+        var target = Path.Combine(dir, $"InventoryTracker-{info.TagName}-{Guid.NewGuid():N}.exe");
+        var targetCreated = false;
+        using var timeout = new CancellationTokenSource(_downloadTimeout, _timeProvider);
+        using var download = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+        var downloadToken = download.Token;
 
-        using var response = await http.GetAsync(info.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-        response.EnsureSuccessStatusCode();
-
-        var total = response.Content.Headers.ContentLength ?? info.SizeBytes;
-
-        await using (var source = await response.Content.ReadAsStreamAsync(ct))
-        await using (var dest = File.Create(target))
+        try
         {
-            var buffer = new byte[81920];
-            long readTotal = 0;
-            int read;
-            while ((read = await source.ReadAsync(buffer, ct)) > 0)
-            {
-                await dest.WriteAsync(buffer.AsMemory(0, read), ct);
-                readTotal += read;
-                if (total is > 0) progress?.Report(100.0 * readTotal / total.Value);
-            }
-        }
+            using var response = await http.GetAsync(info.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, downloadToken);
+            response.EnsureSuccessStatusCode();
 
-        return target;
+            var total = response.Content.Headers.ContentLength ?? info.SizeBytes;
+
+            await using (var source = await response.Content.ReadAsStreamAsync(downloadToken))
+            await using (var dest = new FileStream(target, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+            {
+                targetCreated = true;
+                var buffer = new byte[81920];
+                long readTotal = 0;
+                int read;
+                while ((read = await source.ReadAsync(buffer, downloadToken)) > 0)
+                {
+                    await dest.WriteAsync(buffer.AsMemory(0, read), downloadToken);
+                    readTotal += read;
+                    if (total is > 0) progress?.Report(100.0 * readTotal / total.Value);
+                }
+            }
+
+            downloadToken.ThrowIfCancellationRequested();
+            return target;
+        }
+        catch
+        {
+            if (targetCreated) File.Delete(target);
+            throw;
+        }
     }
 
     /// <summary>

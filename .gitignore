@@ -17,3 +17,9 @@ package-lock.json
 
 # Reliability study reports (tests/InventoryTracker.Tests/Reliability).
 artifacts/
+
+# Correction program: coordination notes and raw evidence (logs, probes, test output).
+tasks/
+
+# Local docs and review notes.
+docs/

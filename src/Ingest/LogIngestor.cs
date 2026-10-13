@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using InventoryTracker.Data;
 using InventoryTracker.Model;
 using Microsoft.Data.Sqlite;
@@ -104,6 +105,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     /// go unmatched, which costs a confirmation flag rather than a placement.
     /// </summary>
     private const int PreloadLimit = 500;
+    private const int CorrelationStateVersion = 4;
 
     public string LogDir { get; } = logDir;
 
@@ -221,6 +223,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             cn, tx, session.Id, reader.Offset, firstTs, lastTs, newestLineTs, unrecognisedThisPass,
             state.CurrentLocation, state.FirstLocation, session.Build ?? LogFileLocator.BuildOf(file.Path),
             complete: !file.IsLive);
+        SaveCorrelationState(cn, tx, session.Id, reader.Offset, state);
         tx.Commit();
 
         // Only once committed: a pass that throws leaves no entry behind, so the next one
@@ -244,6 +247,12 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         }
 
         var state = new SessionState { CurrentLocation = session.CurrentLocation };
+        if (TryLoadCorrelationState(cn, session.Id, session.Offset, state))
+        {
+            PreloadLastBurst(cn, session.Id, state);
+            return state;
+        }
+
         PreloadPendingRequests(cn, session.Id, state);
         PreloadLastBurst(cn, session.Id, state);
         return state;
@@ -262,7 +271,10 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         {
             // Arrives ~1ms *before* the matching ItemMoved, so stash the caller for it.
             case MoveRequested req:
-                state.PendingCallers[req.RequestNo] = req.Caller;
+                ObserveRequest(req.RequestNo, state, lineOffset);
+                state.MoveByRequest.Remove(req.RequestNo);
+                if (req.MoveType != "Drop") state.IssuedRequests.Add(req.RequestNo);
+                state.PendingCallers[req.RequestNo] = new CallerCorrelation(req.Caller, req.Timestamp, state.Generation, lineOffset);
 
                 // Drop emits no Queued line, so this is the only record that the item
                 // left an inventory and became a loose world entity.
@@ -291,6 +303,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             // A multi-select drag: this line is the batch's only record, so fan it out.
             case MoveBatchRequested batch:
             {
+                ObserveRequest(batch.RequestNo, state, lineOffset);
+                state.MoveByRequest.Remove(batch.RequestNo);
                 for (var i = 0; i < batch.ItemClasses.Count; i++)
                 {
                     var one = new ItemMoved(
@@ -309,8 +323,20 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
             case ItemMoved move:
             {
-                var caller = state.PendingCallers.GetValueOrDefault(move.RequestNo);
+                if (!state.IssuedRequests.Remove(move.RequestNo)) ObserveRequest(move.RequestNo, state, lineOffset);
+                var pendingCaller = state.PendingCallers.GetValueOrDefault(move.RequestNo);
                 state.PendingCallers.Remove(move.RequestNo);
+
+                var caller = pendingCaller is { Generation: var callerGeneration, At: var callerAt } &&
+                             callerGeneration == state.Generation &&
+                             WithinWindow(move.Timestamp, callerAt, CompletionPairingWindow)
+                    ? pendingCaller.Caller
+                    : null;
+
+                // If a watcher resumes from the Queued line after its earlier Add line,
+                // the persisted row is the only durable copy of the caller needed to
+                // normalize an INVALID target. Reuse it for this same line before dedupe.
+                caller ??= ReadExistingCaller(cn, sessionId, lineOffset, itemIx: 0);
 
                 var normalized = InventoryEventParser.Normalize(move, caller);
                 if (normalized is null) break; // no real destination — tells us nothing
@@ -323,16 +349,24 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             // for it. The two share a request number and nothing else.
             case EntitySpawned spawn:
             {
-                state.PendingGeids[spawn.RequestNo] = (spawn.Geid, spawn.ClassName, spawn.Timestamp);
-
-                if (state.MoveByRequest.TryGetValue(spawn.RequestNo, out var pending))
+                // A supported snapshot describes the file through its byte watermark. If the
+                // cursor is rewound, spawn lines below that checkpoint are already represented
+                // there (or were already consumed). Skip only those physical lines; a later
+                // line carrying the same GEID remains a distinct event.
+                if (state.ReplaySpawnCheckpoint is { } checkpoint)
                 {
-                    foreach (var m in pending)
-                    {
-                        if (spawn.Timestamp - m.At > GeidPairingWindow) continue;
-                        if (ApplyGeid(cn, tx, m.Id, spawn.Geid, spawn.ClassName)) stats.GeidsRecovered++;
-                    }
+                    var wasPendingAtCheckpoint = state.ReplayPendingSpawnOffsets.Remove(lineOffset);
+                    if (lineOffset < state.ReplayResumeOffset ||
+                        (lineOffset < checkpoint && !wasPendingAtCheckpoint)) break;
                 }
+
+                if (!state.PendingGeids.TryGetValue(spawn.RequestNo, out var pendingSpawns))
+                {
+                    pendingSpawns = [];
+                    state.PendingGeids[spawn.RequestNo] = pendingSpawns;
+                }
+                pendingSpawns.Add(new PendingGeid(spawn.Geid, spawn.ClassName, spawn.Timestamp, state.Generation, lineOffset));
+                ApplySpawnToPendingMove(cn, tx, state, spawn.RequestNo, pendingSpawns.Count - 1, stats);
                 break;
             }
 
@@ -377,9 +411,14 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                     var applied = 0;
                     foreach (var m in moves)
                     {
-                        // A number alone does not bind a completion to a move: they restart
-                        // per file and again on every shard change.
-                        if (done.Timestamp - m.At > CompletionPairingWindow) continue;
+                        // Timestamps can arrive out of order; neither sign proves the
+                        // request numbers identify the same occurrence.
+                        var physicallyAfterMove = lineOffset > m.LineOffset;
+                        var sameGeneration = physicallyAfterMove && m.Generation == state.Generation &&
+                                             WithinWindow(done.Timestamp, m.At, CompletionPairingWindow);
+                        var lateAfterDisconnect = physicallyAfterMove && m.AllowLateCompletion && done.Timestamp >= m.At &&
+                                                  done.Timestamp - m.At <= CompletionPairingWindow;
+                        if (!sameGeneration && !lateAfterDisconnect) continue;
 
                         UpdateResult(cn, tx, m.Id, done.Result);
                         applied++;
@@ -410,6 +449,21 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             // record, only the fact that one was probably missed.
             case ChannelDisconnected closed:
                 stats.RequestsLost += VoidUnprocessed(cn, tx, sessionId, closed.Timestamp);
+                state.Generation++;
+                state.LastRequestNo = null;
+                RememberRequestCheckpoint(state, lineOffset, requestNo: null);
+                state.PendingCallers.Clear();
+                state.PendingGeids.Clear();
+                state.IssuedRequests.Clear();
+                foreach (var requestMoves in state.MoveByRequest.Values)
+                {
+                    for (var i = 0; i < requestMoves.Count; i++)
+                    {
+                        var pending = requestMoves[i];
+                        if (pending.At <= closed.Timestamp && closed.Timestamp - pending.At <= CompletionPairingWindow)
+                            requestMoves[i] = pending with { AllowLateCompletion = true };
+                    }
+                }
                 break;
 
             case UnrecognisedMove:
@@ -508,6 +562,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 break;
             }
         }
+
+        TrimCorrelationState(state, ev.Timestamp);
     }
 
     /// <summary>
@@ -557,17 +613,37 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         TouchContainer(cn, tx, move.Target, move.Timestamp, state.CurrentLocation);
 
         // The spawn that names the instance sometimes lands before the move it fulfils.
-        if (move.ItemGeid is null &&
-            state.PendingGeids.TryGetValue(move.RequestNo, out var spawned) &&
-            spawned.ClassName == move.ItemClass &&
-            move.Timestamp - spawned.At <= GeidPairingWindow)
+        var spawnIndex = move.ItemGeid is null
+            ? FindPendingSpawn(state, move.RequestNo, move, state.Generation)
+            : -1;
+        if (move.ItemGeid is null && spawnIndex >= 0)
         {
-            move = move with { ItemGeid = spawned.Geid };
-            stats.GeidsRecovered++;
+            move = move with { ItemGeid = state.PendingGeids[move.RequestNo][spawnIndex].Geid };
         }
 
-        var id = InsertMove(cn, tx, sessionId, lineOffset, move, caller, itemIx);
-        if (id is null) return; // already ingested on an earlier pass
+        var insertedId = InsertMove(cn, tx, sessionId, lineOffset, move, caller, itemIx);
+        var existing = insertedId is null
+            ? FindExistingMove(cn, tx, sessionId, lineOffset, itemIx)
+            : new ExistingMove(insertedId.Value, move.ItemGeid);
+        if (existing is null) return;
+        var id = existing.Id;
+
+        if (spawnIndex >= 0)
+        {
+            var spawnConsumed = insertedId is not null;
+            if (spawnConsumed)
+                stats.GeidsRecovered++;
+            else if (move.ItemGeid is not null && existing.ItemGeid is null &&
+                ApplyGeid(cn, tx, id, move.ItemGeid, move.ItemClass))
+            {
+                stats.GeidsRecovered++;
+                spawnConsumed = true;
+            }
+            // An idempotent replay can find the original row already named by a different
+            // GEID. In that case this spawn belongs to a later occurrence and must remain
+            // pending; failed enrichment is not consumption.
+            if (spawnConsumed) state.PendingGeids[move.RequestNo].RemoveAt(spawnIndex);
+        }
 
         // The counter restarts on shard changes, so a repeated number always means the
         // older request has finished and its slot can be reused. A batch keeps every row
@@ -578,25 +654,77 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             list = [];
             state.MoveByRequest[move.RequestNo] = list;
         }
-        list.Add(new PendingMove(id.Value, move.Timestamp));
+        list.Add(new PendingMove(id, move.Timestamp, move.ItemClass, state.Generation, lineOffset,
+            HasGeid: existing.ItemGeid is not null || move.ItemGeid is not null,
+            AllowLateCompletion: false));
 
-        stats.MovesInserted++;
+        if (insertedId is not null) stats.MovesInserted++;
+    }
+
+    private static ExistingMove? FindExistingMove(
+        SqliteConnection cn, SqliteTransaction tx, long sessionId, long lineOffset, int itemIx)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "SELECT id, item_geid FROM move WHERE session_id = $s AND line_offset = $o AND item_ix = $ix";
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$o", lineOffset);
+        cmd.Parameters.AddWithValue("$ix", itemIx);
+        using var reader = cmd.ExecuteReader();
+        return reader.Read()
+            ? new ExistingMove(reader.GetInt64(0), reader.IsDBNull(1) ? null : reader.GetString(1))
+            : null;
+    }
+
+    private static string? ReadExistingCaller(SqliteConnection cn, long sessionId, long lineOffset, int itemIx)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT caller FROM move WHERE session_id = $s AND line_offset = $o AND item_ix = $ix";
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$o", lineOffset);
+        cmd.Parameters.AddWithValue("$ix", itemIx);
+        var caller = cmd.ExecuteScalar();
+        return caller is null or DBNull ? null : Convert.ToString(caller, CultureInfo.InvariantCulture);
     }
 
     /// <summary>A move row still waiting for its completion line, and possibly its geid.</summary>
-    private readonly record struct PendingMove(long Id, DateTimeOffset At);
+    private sealed record ExistingMove(long Id, string? ItemGeid);
+
+    private sealed record PendingMove(
+        long Id,
+        DateTimeOffset At,
+        string ClassName,
+        long Generation,
+        long LineOffset,
+        bool HasGeid,
+        bool AllowLateCompletion);
+
+    private sealed record PendingGeid(string Geid, string ClassName, DateTimeOffset At, long Generation, long LineOffset);
+    private sealed record CallerCorrelation(string Caller, DateTimeOffset At, long Generation, long LineOffset);
+    private sealed record RequestCheckpoint(long LineOffset, long Generation, int? RequestNo);
 
     /// <summary>
-    /// Per-file parse state. None of this is persisted: it only correlates lines that
-    /// are close together within one log file.
+    /// Per-file semantic parse state is partly transient and partly persisted as a bounded,
+    /// versioned correlation snapshot. Cursor-local replay guards and location/burst context
+    /// remain in memory; request generations, callers, moves, spawns and issued requests survive
+    /// watcher passes when their snapshot matches the file checkpoint.
     /// </summary>
     private sealed class SessionState
     {
-        public Dictionary<int, string> PendingCallers { get; } = [];
-        public Dictionary<int, List<PendingMove>> MoveByRequest { get; } = [];
+        public Dictionary<int, CallerCorrelation> PendingCallers { get; set; } = [];
+        public Dictionary<int, List<PendingMove>> MoveByRequest { get; set; } = [];
 
         /// <summary>Entity spawns by request number, for moves that arrive after them.</summary>
-        public Dictionary<int, (string Geid, string ClassName, DateTimeOffset At)> PendingGeids { get; } = [];
+        public Dictionary<int, List<PendingGeid>> PendingGeids { get; set; } = [];
+        public HashSet<int> IssuedRequests { get; set; } = [];
+        public List<RequestCheckpoint> RequestHistory { get; set; } = [];
+
+        public long Generation { get; set; }
+        public int? LastRequestNo { get; set; }
+        public long? ReplaySpawnCheckpoint { get; set; }
+        public long ReplayResumeOffset { get; set; }
+        public HashSet<long> ReplayPendingSpawnOffsets { get; set; } = [];
+        public bool UseConservativePreloadGeneration { get; set; }
 
         public List<string> PendingLocationIds { get; } = [];
         public DateTimeOffset PendingSince { get; set; }
@@ -761,6 +889,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             del.CommandText = """
                 DELETE FROM move WHERE session_id = $s;
                 DELETE FROM attachment_sighting WHERE session_id = $s;
+                DELETE FROM ingest_correlation WHERE session_id = $s;
                 """;
             del.Parameters.AddWithValue("$s", session.Id);
             del.ExecuteNonQuery();
@@ -794,7 +923,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     {
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
-            SELECT request_no, id, ts FROM move
+            SELECT request_no, id, ts, item_class, item_geid, result, line_offset FROM move
             WHERE session_id = $s AND (result IS NULL OR result = $lost)
             ORDER BY id DESC LIMIT $limit
             """;
@@ -807,11 +936,263 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         {
             // Descending, so the first rows for a number are the most recent ones.
             var pending = new PendingMove(
-                r.GetInt64(1), DateTimeOffset.Parse(r.GetString(2), CultureInfo.InvariantCulture));
+                r.GetInt64(1), DateTimeOffset.Parse(r.GetString(2), CultureInfo.InvariantCulture),
+                r.GetString(3), state.UseConservativePreloadGeneration ? long.MinValue : state.Generation,
+                r.GetInt64(6), !r.IsDBNull(4),
+                !r.IsDBNull(5) && r.GetString(5) == LostResult);
 
             if (state.MoveByRequest.TryGetValue(r.GetInt32(0), out var list)) list.Add(pending);
             else state.MoveByRequest[r.GetInt32(0)] = [pending];
         }
+    }
+
+    private static void ObserveRequest(int requestNo, SessionState state, long lineOffset)
+    {
+        if (state.LastRequestNo is { } previous && requestNo < previous)
+        {
+            // Request counters restart on shard changes. Preserve recent lost rows only so
+            // their explicit late completion can repair the result; their spawns/callers
+            // can never cross into the next generation.
+            state.Generation++;
+            state.PendingCallers.Clear();
+            state.PendingGeids.Clear();
+            state.IssuedRequests.Clear();
+        }
+
+        state.LastRequestNo = requestNo;
+        RememberRequestCheckpoint(state, lineOffset, requestNo);
+    }
+
+    private static void RememberRequestCheckpoint(SessionState state, long lineOffset, int? requestNo)
+    {
+        state.RequestHistory.Add(new RequestCheckpoint(lineOffset, state.Generation, requestNo));
+        if (state.RequestHistory.Count > PreloadLimit)
+            state.RequestHistory.RemoveRange(0, state.RequestHistory.Count - PreloadLimit);
+    }
+
+    private static bool WithinWindow(DateTimeOffset left, DateTimeOffset right, TimeSpan window) =>
+        (left - right).Duration() <= window;
+
+    private static int FindPendingSpawn(SessionState state, int requestNo, ItemMoved move, long generation)
+    {
+        if (!state.PendingGeids.TryGetValue(requestNo, out var spawns)) return -1;
+        return spawns.FindIndex(spawn =>
+            spawn.Generation == generation &&
+            spawn.ClassName == move.ItemClass &&
+            WithinWindow(move.Timestamp, spawn.At, GeidPairingWindow));
+    }
+
+    private static void ApplySpawnToPendingMove(
+        SqliteConnection cn,
+        SqliteTransaction tx,
+        SessionState state,
+        int requestNo,
+        int spawnIndex,
+        IngestStats stats)
+    {
+        if (!state.MoveByRequest.TryGetValue(requestNo, out var moves) ||
+            !state.PendingGeids.TryGetValue(requestNo, out var spawns)) return;
+
+        var spawn = spawns[spawnIndex];
+        var moveIndex = moves.FindIndex(move =>
+            !move.HasGeid && move.Generation == state.Generation &&
+            move.ClassName == spawn.ClassName &&
+            WithinWindow(spawn.At, move.At, GeidPairingWindow));
+        if (moveIndex < 0) return;
+
+        var pending = moves[moveIndex];
+        if (!ApplyGeid(cn, tx, pending.Id, spawn.Geid, spawn.ClassName)) return;
+
+        moves[moveIndex] = pending with { HasGeid = true };
+        spawns.RemoveAt(spawnIndex);
+        if (spawns.Count == 0) state.PendingGeids.Remove(requestNo);
+        stats.GeidsRecovered++;
+    }
+
+    private static void TrimCorrelationState(SessionState state, DateTimeOffset at)
+    {
+        foreach (var caller in state.PendingCallers
+                     .Where(x => x.Value.Generation != state.Generation ||
+                                 !WithinWindow(at, x.Value.At, CompletionPairingWindow))
+                     .Select(x => x.Key).ToArray())
+            state.PendingCallers.Remove(caller);
+
+        foreach (var requestNo in state.PendingCallers.Keys
+                     .OrderByDescending(x => state.PendingCallers[x].At)
+                     .Skip(PreloadLimit).ToArray())
+            state.PendingCallers.Remove(requestNo);
+
+        foreach (var requestNo in state.IssuedRequests
+                     .OrderByDescending(x => state.PendingCallers.TryGetValue(x, out var caller) ? caller.At : at)
+                     .Skip(PreloadLimit).ToArray())
+            state.IssuedRequests.Remove(requestNo);
+
+        foreach (var (requestNo, spawns) in state.PendingGeids.ToArray())
+        {
+            spawns.RemoveAll(spawn => spawn.Generation != state.Generation ||
+                                      !WithinWindow(at, spawn.At, GeidPairingWindow));
+            if (spawns.Count == 0) state.PendingGeids.Remove(requestNo);
+        }
+
+        var excessSpawns = state.PendingGeids
+            .SelectMany(pair => pair.Value.Select(spawn => (pair.Key, Spawn: spawn)))
+            .OrderByDescending(x => x.Spawn.At).Skip(PreloadLimit).ToArray();
+        foreach (var excess in excessSpawns)
+        {
+            if (!state.PendingGeids.TryGetValue(excess.Key, out var spawns)) continue;
+            spawns.Remove(excess.Spawn);
+            if (spawns.Count == 0) state.PendingGeids.Remove(excess.Key);
+        }
+
+        foreach (var (requestNo, moves) in state.MoveByRequest.ToArray())
+        {
+            moves.RemoveAll(move =>
+                !WithinWindow(at, move.At, CompletionPairingWindow) &&
+                !WithinWindow(at, move.At, GeidPairingWindow));
+            if (moves.Count == 0) state.MoveByRequest.Remove(requestNo);
+        }
+
+        var excessMoves = state.MoveByRequest.Values.SelectMany(x => x)
+            .OrderByDescending(x => x.At).Skip(PreloadLimit).ToHashSet();
+        foreach (var (requestNo, moves) in state.MoveByRequest.ToArray())
+        {
+            moves.RemoveAll(excessMoves.Contains);
+            if (moves.Count == 0) state.MoveByRequest.Remove(requestNo);
+        }
+    }
+
+    private static bool TryLoadCorrelationState(
+        SqliteConnection cn, long sessionId, long offset, SessionState state)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = """
+            SELECT state_version, byte_offset, generation, state_json
+            FROM ingest_correlation WHERE session_id = $s
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        int storedVersion;
+        long storedOffset;
+        long storedGeneration;
+        string json;
+        using (var reader = cmd.ExecuteReader())
+        {
+            if (!reader.Read())
+            {
+                state.UseConservativePreloadGeneration = true;
+                return false;
+            }
+            storedVersion = reader.GetInt32(0);
+            storedOffset = reader.GetInt64(1);
+            storedGeneration = reader.GetInt64(2);
+            json = reader.GetString(3);
+        }
+
+        var snapshot = JsonSerializer.Deserialize<CorrelationSnapshot>(json)
+            ?? throw new InvalidDataException("The saved ingest correlation state is empty.");
+        if (snapshot.Version != CorrelationStateVersion || snapshot.Generation != storedGeneration)
+        {
+            // An older or internally inconsistent payload cannot safely restore request
+            // ownership. Keep late lost completions available, but fence preloaded rows from
+            // new spawns. The checkpoint still lets replay ignore physical spawns already
+            // covered by that older snapshot.
+            state.Generation = storedGeneration;
+            state.ReplaySpawnCheckpoint = storedOffset;
+            state.ReplayResumeOffset = offset;
+            state.UseConservativePreloadGeneration = true;
+            return false;
+        }
+
+        state.Generation = snapshot.Generation;
+        state.LastRequestNo = snapshot.LastRequestNo;
+        state.MoveByRequest = snapshot.MoveByRequest;
+        state.PendingGeids = snapshot.PendingGeids;
+        if (storedVersion == CorrelationStateVersion && storedOffset == offset)
+        {
+            state.PendingCallers = snapshot.PendingCallers;
+            state.IssuedRequests = snapshot.IssuedRequests;
+            state.RequestHistory = snapshot.RequestHistory;
+        }
+        else
+        {
+            // The payload is understood but its cursor envelope is incompatible. Restore
+            // request-counter state from the latest bounded observation before this cursor;
+            // the final counter in the snapshot belongs to a later physical position and
+            // can otherwise turn replayed Add lines into a false generation boundary.
+            state.RequestHistory = snapshot.RequestHistory
+                .Where(checkpoint => checkpoint.LineOffset < offset)
+                .OrderBy(checkpoint => checkpoint.LineOffset)
+                .TakeLast(PreloadLimit)
+                .ToList();
+            var priorRequest = state.RequestHistory.LastOrDefault();
+            state.Generation = priorRequest?.Generation ?? 0;
+            state.LastRequestNo = priorRequest?.RequestNo;
+
+            // Keep generation-tagged moves and unconsumed spawns. Restore only callers
+            // whose Add line is physically before the resumed cursor and belongs to the
+            // reconstructed generation; later Add lines will be replayed. Issued requests
+            // must share that restored caller ownership.
+            state.PendingCallers = snapshot.PendingCallers
+                .Where(pair => pair.Value.LineOffset < offset && pair.Value.Generation == state.Generation)
+                .ToDictionary(pair => pair.Key, pair => pair.Value);
+            state.IssuedRequests = snapshot.IssuedRequests
+                .Where(state.PendingCallers.ContainsKey).ToHashSet();
+            state.ReplaySpawnCheckpoint = storedOffset;
+            state.ReplayResumeOffset = offset;
+            state.ReplayPendingSpawnOffsets = snapshot.PendingGeids.Values
+                .SelectMany(spawns => spawns).Select(spawn => spawn.LineOffset).ToHashSet();
+            state.PendingGeids = snapshot.PendingGeids
+                .SelectMany(pair => pair.Value.Select(spawn => (pair.Key, Spawn: spawn)))
+                .Where(x => x.Spawn.LineOffset < offset && x.Spawn.Generation == state.Generation)
+                .GroupBy(x => x.Key)
+                .ToDictionary(group => group.Key, group => group.Select(x => x.Spawn).ToList());
+        }
+        return true;
+    }
+
+    private static void SaveCorrelationState(
+        SqliteConnection cn, SqliteTransaction tx, long sessionId, long offset, SessionState state)
+    {
+        var snapshot = new CorrelationSnapshot
+        {
+            Version = CorrelationStateVersion,
+            Generation = state.Generation,
+            LastRequestNo = state.LastRequestNo,
+            PendingCallers = state.PendingCallers,
+            MoveByRequest = state.MoveByRequest,
+            PendingGeids = state.PendingGeids,
+            IssuedRequests = state.IssuedRequests,
+            RequestHistory = state.RequestHistory,
+        };
+
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            INSERT INTO ingest_correlation(session_id, state_version, byte_offset, generation, state_json)
+            VALUES($s, $v, $o, $g, $j)
+            ON CONFLICT(session_id) DO UPDATE SET
+                state_version = excluded.state_version,
+                byte_offset = excluded.byte_offset,
+                generation = excluded.generation,
+                state_json = excluded.state_json
+            """;
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$v", CorrelationStateVersion);
+        cmd.Parameters.AddWithValue("$o", offset);
+        cmd.Parameters.AddWithValue("$g", state.Generation);
+        cmd.Parameters.AddWithValue("$j", JsonSerializer.Serialize(snapshot));
+        cmd.ExecuteNonQuery();
+    }
+
+    private sealed class CorrelationSnapshot
+    {
+        public int Version { get; set; }
+        public long Generation { get; set; }
+        public int? LastRequestNo { get; set; }
+        public Dictionary<int, CallerCorrelation> PendingCallers { get; set; } = [];
+        public Dictionary<int, List<PendingMove>> MoveByRequest { get; set; } = [];
+        public Dictionary<int, List<PendingGeid>> PendingGeids { get; set; } = [];
+        public HashSet<int> IssuedRequests { get; set; } = [];
+        public List<RequestCheckpoint> RequestHistory { get; set; } = [];
     }
 
     private static void SaveSession(

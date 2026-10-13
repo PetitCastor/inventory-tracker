@@ -211,8 +211,8 @@ public sealed class HoldingResolver
             : null;
 
     /// <summary>
-    /// Everything the ledger believes is currently held, one row per (place, item class):
-    /// named entities individually, and unnamed units as a count.
+    /// Everything the ledger believes is currently held, by (place, item class): named entities
+    /// individually, and unnamed units as a count per provenance group.
     /// </summary>
     public IReadOnlyList<ItemHolding> ResolveAll()
     {
@@ -220,7 +220,7 @@ public sealed class HoldingResolver
 
         foreach (var where in _ledger.Occupied)
         {
-            foreach (var (itemClass, named, loose) in _ledger.Contents(where))
+            foreach (var (itemClass, named, _) in _ledger.Contents(where))
             {
                 foreach (var instance in named)
                 {
@@ -230,11 +230,13 @@ public sealed class HoldingResolver
                         movedByUpdate: instance.MovedByUpdate));
                 }
 
-                if (loose is { Quantity: > 0 })
+                // One row per group, so a row's caveats and score hold for every unit it counts:
+                // ten units found at their source and one guess are not eleven guesses.
+                foreach (var group in _ledger.LooseIn(where, itemClass))
                 {
                     rows.Add(Build(
-                        where, itemClass, geid: null, loose.Quantity, loose.Since, loose.ArrivedBy,
-                        loose.Confirmed, loose.Inferred, ambiguous: true, loose.DuplicateRisk, loose.MovedByUpdate));
+                        where, itemClass, geid: null, group.Quantity, group.Since, group.ArrivedBy,
+                        group.Confirmed, group.Inferred, ambiguous: true, group.DuplicateRisk, group.MovedByUpdate));
                 }
             }
         }
@@ -247,7 +249,7 @@ public sealed class HoldingResolver
     {
         if (!_ledger.InstanceAt.TryGetValue(geid, out var where)) return null;
 
-        var instance = _ledger.NamedIn(where, ClassOf(geid)).FirstOrDefault(i => i.Geid == geid);
+        var instance = _ledger.Find(geid);
         if (instance is null) return null;
 
         return Build(
