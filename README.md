@@ -8,7 +8,7 @@ Inventory Tracker reads Star Citizen's `Game.log` while you play and works out w
 
 Star Citizen never logs a full inventory snapshot. It does log every *movement*: an item leaving one place and arriving in another. The tracker replays those movements in order, so "where are my pants?" becomes a lookup.
 
-It runs as a tray app with a local web UI at `http://localhost:5730`. Browse by system and station, open a container to see what it holds, or follow one item's full history.
+It runs as a tray app with a local web UI at `http://localhost:5730`. Browse your locations by system and station and open a container to see what it holds, see what is in each ship's lockers and what you dropped on the floor, or follow one item's full history.
 
 The tracker never sees your starting inventory, so it infers everything from the moves. Each result carries a confidence score and, where it applies, a note on what is uncertain (an unconfirmed move, a guessed container location, a possible duplicate). Treat the results as a well-evidenced minimum of what you own and where, not a guarantee.
 

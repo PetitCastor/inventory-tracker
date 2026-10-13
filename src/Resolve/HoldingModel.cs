@@ -95,6 +95,9 @@ public sealed record ItemHolding(
     /// </summary>
     public bool IsDropped => Root is { Kind: InventoryKind.World };
 
+    /// <summary>True when the item is in one of a ship's lockers, however deep.</summary>
+    public bool IsInShip => Root is { Kind: InventoryKind.Ship };
+
     public Confidence Confidence => Score switch
     {
         >= 0.70 => Confidence.High,

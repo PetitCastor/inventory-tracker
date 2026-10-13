@@ -104,6 +104,12 @@ public sealed class HoldingResolver
 
     private readonly LedgerReplay _ledger;
 
+    /// <summary>Ship classes and what the game calls them, from the wiki: "GLSN_Shiv" -> "Grey's Shiv".</summary>
+    private readonly Dictionary<string, string> _shipNames;
+
+    /// <summary>The newest retrieval of a ship of each class.</summary>
+    private readonly Dictionary<string, (DateTimeOffset At, string? LocationId)> _retrievals;
+
     /// <summary>The moment ages are measured against: now, unless a replay study pins it.</summary>
     private readonly DateTimeOffset _asOf;
 
@@ -124,8 +130,12 @@ public sealed class HoldingResolver
         HashSet<string> wornContainers,
         PlaceCatalog places,
         DateTimeOffset asOf,
-        List<GameUpdate> updates)
+        List<GameUpdate> updates,
+        Dictionary<string, string> shipNames,
+        Dictionary<string, (DateTimeOffset At, string? LocationId)> retrievals)
     {
+        _shipNames = shipNames;
+        _retrievals = retrievals;
         _asOf = asOf;
         _updates = updates;
         _moves = moves;
@@ -183,8 +193,22 @@ public sealed class HoldingResolver
         var (worn, enumerations) = LoadSightings(cn);
         return new HoldingResolver(
             LoadMoves(cn), worn, enumerations, LoadLocationNames(cn), LoadContainers(cn),
-            LoadWornContainers(cn), PlaceCatalog.Load(cn), asOf ?? DateTimeOffset.UtcNow, LoadUpdates(cn));
+            LoadWornContainers(cn), PlaceCatalog.Load(cn), asOf ?? DateTimeOffset.UtcNow, LoadUpdates(cn),
+            WikiVehicleCatalog.Load(cn), LoadRetrievals(cn));
     }
+
+    /// <summary>What to call a ship class: its in-game name when the wiki knows it, else the class.</summary>
+    public string ShipLabel(string shipClass) => _shipNames.GetValueOrDefault(shipClass) ?? shipClass;
+
+    /// <summary>
+    /// Where and when a ship of this class last came out of storage, or null when the logs never
+    /// saw one retrieved. Several ships of one class cannot be told apart by their lockers, so
+    /// the newest retrieval of any of them stands for all.
+    /// </summary>
+    public ShipRetrieval? LastRetrieved(string shipClass) =>
+        _retrievals.TryGetValue(shipClass, out var r)
+            ? new ShipRetrieval(r.At, r.LocationId, r.LocationId is { } id ? PlaceLabel(id) : null)
+            : null;
 
     /// <summary>
     /// Everything the ledger believes is currently held, one row per (place, item class):
@@ -482,6 +506,17 @@ public sealed class HoldingResolver
                 case InventoryKind.Container:
                 {
                     var info = _containers.GetValueOrDefault(key);
+
+                    // A ship's locker goes wherever the ship is flown, so it ends the chain on the
+                    // ship rather than on the station it was last opened at. Its contents are as
+                    // certain as any container's: the locker kept its geid and what was in it
+                    // through a store and a retrieve of the ship.
+                    if (ShipStorage.TryShipClass(info?.ClassName, out var shipClass))
+                    {
+                        chain.Add(new HoldingLink(InventoryKind.Ship, shipClass, $"in your {ShipLabel(shipClass)}"));
+                        return chain;
+                    }
+
                     var label = info?.ClassName ?? SizeLabel(info?.Capacity, key);
                     var lootable = IsLootable(info?.ClassName);
 
@@ -572,6 +607,27 @@ public sealed class HoldingResolver
         Places.ByLocationId(locationId) is { } place
             ? place.NameConfirmed ? place.Label : $"{place.Label} (unconfirmed)"
             : _locationNames.GetValueOrDefault(locationId) ?? $"location {locationId}";
+
+    /// <summary>The newest retrieval per ship class, from ships whose class a pilot seat named.</summary>
+    private static Dictionary<string, (DateTimeOffset At, string? LocationId)> LoadRetrievals(SqliteConnection cn)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = """
+            SELECT class_name, retrieved_ts, retrieved_loc_id FROM vehicle
+            WHERE class_name IS NOT NULL AND retrieved_ts IS NOT NULL
+            ORDER BY retrieved_ts
+            """;
+
+        var map = new Dictionary<string, (DateTimeOffset, string?)>(StringComparer.OrdinalIgnoreCase);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            map[r.GetString(0)] = (
+                DateTimeOffset.Parse(r.GetString(1), CultureInfo.InvariantCulture),
+                r.IsDBNull(2) ? null : r.GetString(2));
+        }
+        return map;
+    }
 
     private static List<MoveRecord> LoadMoves(SqliteConnection cn)
     {

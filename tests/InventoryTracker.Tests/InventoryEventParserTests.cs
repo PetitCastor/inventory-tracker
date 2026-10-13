@@ -128,6 +128,42 @@ public class InventoryEventParserTests
     }
 
     [Fact]
+    public void Reads_a_ship_locker_named_by_its_class_alone()
+    {
+        // A ship's locker carries no geid in its name, unlike every other container.
+        var ev = Event(
+            "<2026-10-12T18:45:50.678Z> [Notice] <Inventory Token Flow> Requesting access token for " +
+            "User[Pilot, 204821708183] on Inventory[PersonalStorage_GLSN_Shiv-001, 876737713106] [Inventory]");
+
+        var container = Assert.IsType<ContainerIdentified>(ev);
+        Assert.Equal("876737713106", container.Geid);
+        Assert.Equal("PersonalStorage_GLSN_Shiv-001", container.ClassName);
+    }
+
+    [Fact]
+    public void Reads_the_ship_a_pilot_seat_was_left_in()
+    {
+        var ev = Event(
+            "<2026-10-12T18:48:00.486Z> [Notice] <Vehicle Control Flow> CVehicleMovementBase::ClearDriver: " +
+            "Local client node [204821708183] releasing control token for 'GLSN_Shiv_876737712932' " +
+            "[876737712932] [Team_CGP4][Vehicle]");
+
+        var flown = Assert.IsType<VehicleFlown>(ev);
+        Assert.Equal("876737712932", flown.Geid);
+        Assert.Equal("GLSN_Shiv", flown.ClassName);
+    }
+
+    [Fact]
+    public void Reads_a_ship_called_out_of_storage()
+    {
+        var ev = Event(
+            "<2026-10-12T18:43:27.741Z> [Notice] <CEntityComponentShipListProvider::SetVehicleSpawningInformations> " +
+            "SetVehicleSpawningInformations - VehicleEntityId: [876737712932], LandingArea: Pilot's");
+
+        Assert.Equal("876737712932", Assert.IsType<VehicleRetrieved>(ev).Geid);
+    }
+
+    [Fact]
     public void Reads_both_capacities_from_a_drag()
     {
         var ev = Event(
