@@ -6,14 +6,62 @@ namespace InventoryTracker.App;
 /// <summary>Where the tray app reads from and writes to, and which port the UI listens on.</summary>
 public sealed class TrackerOptions
 {
-    public string LogDir { get; set; } = LogFileLocator.DefaultLogDir;
+    private readonly object _logSourceGate = new();
+    private string _logDir = LogFileLocator.DefaultLogDir;
+    private DateTimeOffset? _inceptionDate;
+
+    public string LogDir
+    {
+        get { lock (_logSourceGate) return _logDir; }
+        set { lock (_logSourceGate) _logDir = value; }
+    }
     public string DatabasePath { get; set; } = TrackerDb.DefaultPath;
 
     /// <summary>Fixed so the bookmarked URL keeps working across restarts.</summary>
     public int Port { get; set; } = AppConfig.DefaultPort;
 
     /// <summary>The wipe date; see <see cref="AppConfig.InceptionDate"/>. Null reads the whole history.</summary>
-    public DateTimeOffset? InceptionDate { get; set; }
+    public DateTimeOffset? InceptionDate
+    {
+        get { lock (_logSourceGate) return _inceptionDate; }
+        set { lock (_logSourceGate) _inceptionDate = value; }
+    }
+
+    internal (string LogDir, DateTimeOffset? InceptionDate) CaptureLogSource(Action? afterLogDirCaptured = null)
+    {
+        lock (_logSourceGate)
+        {
+            var logDir = _logDir;
+            afterLogDirCaptured?.Invoke();
+            return (logDir, _inceptionDate);
+        }
+    }
+
+    internal void SetLogSource(
+        string logDir, DateTimeOffset? inceptionDate, Action? afterContention = null)
+    {
+        if (!Monitor.TryEnter(_logSourceGate))
+        {
+            afterContention?.Invoke();
+            lock (_logSourceGate)
+            {
+                _logDir = logDir;
+                _inceptionDate = inceptionDate;
+            }
+
+            return;
+        }
+
+        try
+        {
+            _logDir = logDir;
+            _inceptionDate = inceptionDate;
+        }
+        finally
+        {
+            Monitor.Exit(_logSourceGate);
+        }
+    }
 
     /// <summary>False until the first-run setup wizard has been completed; see <see cref="AppConfig.SetupComplete"/>.</summary>
     public bool SetupComplete { get; set; }
@@ -56,16 +104,16 @@ public sealed class TrackerOptions
         // Against what the running watcher has been using, read before it is overwritten — not
         // against config.json, whose LogDir can still be unset on a fresh install and would
         // restart the watcher for a folder that never changed.
-        var logDirChanged = !string.Equals(LogDir, logDir, StringComparison.OrdinalIgnoreCase);
-        var sourceUnchanged = !logDirChanged && InceptionDate == newDate;
+        var currentSource = CaptureLogSource();
+        var logDirChanged = !string.Equals(currentSource.LogDir, logDir, StringComparison.OrdinalIgnoreCase);
+        var sourceUnchanged = !logDirChanged && currentSource.InceptionDate == newDate;
 
         config.LogDir = logDir;
         config.InceptionDate = newDate;
         if (markSetupComplete) config.SetupComplete = true;
         config.Save();
 
-        LogDir = config.LogDir ?? logDir;
-        InceptionDate = config.InceptionDate;
+        SetLogSource(config.LogDir ?? logDir, config.InceptionDate);
         if (markSetupComplete) SetupComplete = true;
 
         if (logDirChanged) watcher.RestartWatching();

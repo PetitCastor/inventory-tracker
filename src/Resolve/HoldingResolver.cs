@@ -187,14 +187,50 @@ public sealed class HoldingResolver
     /// When to measure staleness from. Defaults to now; a replay study passes the end of its
     /// corpus so its scores do not drift with the calendar.
     /// </param>
-    public static HoldingResolver Load(TrackerDb db, DateTimeOffset? asOf = null)
+    public static HoldingResolver Load(TrackerDb db, DateTimeOffset? asOf = null) =>
+        Load(db, asOf, afterMovesRead: null, readAdditionalSnapshot: null, beforeReplay: null);
+
+    internal static HoldingResolver Load(
+        TrackerDb db, DateTimeOffset? asOf, Action? afterMovesRead,
+        Action<SqliteConnection>? readAdditionalSnapshot = null,
+        Action<SqliteConnection>? beforeReplay = null)
     {
         using var cn = db.Open();
-        var (worn, enumerations) = LoadSightings(cn);
+        var replayAsOf = asOf ?? DateTimeOffset.UtcNow;
+        List<MoveRecord> moves;
+        List<LedgerReplay.WornSighting> worn;
+        List<LedgerReplay.BodyEnumeration> enumerations;
+        Dictionary<string, string> locationNames;
+        Dictionary<string, ContainerInfo> containers;
+        HashSet<string> wornContainers;
+        PlaceCatalog places;
+        List<GameUpdate> updates;
+        Dictionary<string, string> shipNames;
+        Dictionary<string, (DateTimeOffset At, string? LocationId)> retrievals;
+
+        // Deferred keeps this a reader until SQLite actually serves the first SELECT.
+        // Materialize every table-backed input under that one generation, then dispose the
+        // transaction before the in-memory ledger replay and scoring work.
+        using (var transaction = cn.BeginTransaction(deferred: true))
+        {
+            (worn, enumerations) = LoadSightings(cn);
+            moves = LoadMoves(cn);
+            afterMovesRead?.Invoke();
+            locationNames = LoadLocationNames(cn);
+            containers = LoadContainers(cn);
+            wornContainers = LoadWornContainers(cn);
+            places = PlaceCatalog.Load(cn);
+            updates = LoadUpdates(cn);
+            shipNames = WikiVehicleCatalog.Load(cn);
+            retrievals = LoadRetrievals(cn);
+            readAdditionalSnapshot?.Invoke(cn);
+            transaction.Commit();
+        }
+
+        beforeReplay?.Invoke(cn);
         return new HoldingResolver(
-            LoadMoves(cn), worn, enumerations, LoadLocationNames(cn), LoadContainers(cn),
-            LoadWornContainers(cn), PlaceCatalog.Load(cn), asOf ?? DateTimeOffset.UtcNow, LoadUpdates(cn),
-            WikiVehicleCatalog.Load(cn), LoadRetrievals(cn));
+            moves, worn, enumerations, locationNames, containers, wornContainers, places,
+            replayAsOf, updates, shipNames, retrievals);
     }
 
     /// <summary>What to call a ship class: its in-game name when the wiki knows it, else the class.</summary>
