@@ -1,4 +1,5 @@
 using System.Text.Json;
+using InventoryTracker.App;
 using InventoryTracker.Data;
 using InventoryTracker.Ingest;
 using InventoryTracker.Naming;
@@ -55,6 +56,57 @@ public sealed class LogIngestorTests : IDisposable
         using var cmd = cn.CreateCommand();
         cmd.CommandText = sql;
         cmd.ExecuteNonQuery();
+    }
+
+    [Fact]
+    public void An_unreadable_backup_does_not_starve_live_and_is_retried_without_duplicates()
+    {
+        var backups = Path.Combine(_dir, "logbackups");
+        Directory.CreateDirectory(backups);
+        var backup = Path.Combine(backups, "Game Build(12881860) 12 Oct 26 (10 00 00).log");
+        var live = LivePath;
+        File.WriteAllText(backup, StoreLine("2026-10-12T10:00:00.000Z", 1) + "\n");
+        File.WriteAllText(live, StoreLine("2026-10-13T11:40:00.000Z", 2) + "\n");
+        File.SetLastWriteTimeUtc(backup, DateTime.UtcNow.AddHours(-1));
+        File.SetLastWriteTimeUtc(live, DateTime.UtcNow);
+
+        using (var blocker = new FileStream(backup, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var ingestor = new LogIngestor(_db, _dir);
+            IngestStats? first = null;
+            IngestStats? second = null;
+            var firstError = Record.Exception(() => first = ingestor.IngestAll());
+            var secondError = Record.Exception(() => second = ingestor.IngestAll());
+
+            Assert.Null(firstError);
+            Assert.Null(secondError);
+            Assert.Contains(Path.GetFileName(backup)!, Assert.Single(first!.FileErrors));
+            Assert.Contains(Path.GetFileName(backup)!, Assert.Single(second!.FileErrors));
+            Assert.Equal(1, Convert.ToInt32(Scalar("SELECT COUNT(*) FROM session WHERE path = '" + live.Replace("'", "''") + "'")));
+            Assert.Equal(1, Convert.ToInt32(Scalar("SELECT COUNT(*) FROM move")));
+            Assert.Equal("0", Scalar("SELECT byte_offset FROM session WHERE path = '" + backup.Replace("'", "''") + "'"));
+            Assert.Equal(1, IngestHealth.Load(_db, _dir, null).IncompleteFiles);
+        }
+
+        var resumed = new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal(1, resumed.MovesInserted);
+        Assert.Equal(2, Convert.ToInt32(Scalar("SELECT COUNT(*) FROM move")));
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM session WHERE complete = 1"));
+        Assert.Equal(0, IngestHealth.Load(_db, _dir, null).IncompleteFiles);
+    }
+
+    [Fact]
+    public void A_database_integrity_error_still_propagates_from_ingestion()
+    {
+        Append(StoreLine("2026-10-13T11:40:00.000Z", 2));
+        ExecuteSql("CREATE TRIGGER l09_reject_move BEFORE INSERT ON move BEGIN SELECT RAISE(ABORT, 'l09 global integrity'); END;");
+
+        var error = Assert.Throws<SqliteException>(() => new LogIngestor(_db, _dir).IngestAll());
+
+        Assert.Contains("l09 global integrity", error.Message);
+        Assert.Equal("0", Scalar("SELECT COUNT(*) FROM move"));
+        Assert.Equal("0", Scalar("SELECT byte_offset FROM session WHERE path = '" + LivePath.Replace("'", "''") + "'"));
     }
 
     private const string Arrive =

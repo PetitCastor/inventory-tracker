@@ -89,6 +89,38 @@ public sealed class LogWatchServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task An_unreadable_backup_is_reported_while_live_data_is_published()
+    {
+        var backupDir = Path.Combine(_dir, "logbackups");
+        Directory.CreateDirectory(backupDir);
+        var backup = Path.Combine(backupDir, "Game Build(12881860) 12 Oct 26 (10 00 00).log");
+        var live = Path.Combine(_dir, "Game.log");
+        var backupLine = Store.Replace("2026-08-27T00:40:00.000Z", "2026-10-12T10:30:00.000Z");
+        var liveLine = Store.Replace("2026-08-27T00:40:00.000Z", "2026-10-13T11:40:00.000Z");
+        File.WriteAllText(backup, backupLine + "\n");
+        File.WriteAllText(live, liveLine + "\n");
+        File.SetLastWriteTimeUtc(backup, DateTime.UtcNow.AddHours(-1));
+        File.SetLastWriteTimeUtc(live, DateTime.UtcNow);
+
+        using (var blocker = new FileStream(backup, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            await _watcher.RebuildNowAsync();
+
+            var incomplete = Assert.IsType<IngestPass>(_watcher.LastPass).Incomplete;
+            Assert.Contains(Path.GetFileName(backup), incomplete!);
+            Assert.Null(Assert.IsType<IngestPass>(_watcher.LastPass).Error);
+            Assert.Equal(1, IngestHealth.Load(_db, _dir, null).IncompleteFiles);
+            Assert.Equal(1, _state.Current.Health.Moves);
+        }
+
+        await _watcher.RunPassAsync(IngestTrigger.Poll);
+
+        Assert.Null(Assert.IsType<IngestPass>(_watcher.LastPass).Error);
+        Assert.Equal(0, IngestHealth.Load(_db, _dir, null).IncompleteFiles);
+        Assert.Equal(2, _state.Current.Health.Moves);
+    }
+
+    [Fact]
     public async Task A_pass_that_reads_only_noise_still_refreshes_a_banner_it_made_wrong()
     {
         // The game logs in and loads for minutes before any inventory line. Holdings do not

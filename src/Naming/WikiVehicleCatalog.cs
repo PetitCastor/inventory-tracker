@@ -14,63 +14,96 @@ namespace InventoryTracker.Naming;
 /// also returns "ARGO_MOLE_BTALA", the Alliance edition. Locally the match is exact.
 /// </para>
 /// </summary>
-public sealed class WikiVehicleCatalog(TrackerDb db, HttpClient http)
+public sealed class WikiVehicleCatalog(TrackerDb db, HttpClient http, WikiRefreshCoordinator? refresh = null)
 {
     private const string VehiclesUrl = "https://api.star-citizen.wiki/api/vehicles";
 
     /// <summary>Asked for; the vehicles endpoint answers 50 a page whatever is asked.</summary>
     private const int PageSize = 200;
 
-    /// <summary>
-    /// The documented limit is 60/min, and this runs straight after the item catalogue's ~60
-    /// requests, so it keeps to one a second: seven pages cost seven seconds.
-    /// </summary>
-    private static readonly TimeSpan BetweenRequests = TimeSpan.FromSeconds(1);
+    private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private readonly WikiRefreshCoordinator _refresh = refresh ?? WikiRefreshCoordinator.Shared;
 
-    /// <summary>Downloads the vehicle list and replaces the local copy. Safe to re-run.</summary>
+    internal WikiRefreshCoordinator RefreshCoordinator => _refresh;
+
+    private sealed record VehicleEntry(
+        string ClassName, string? GameName, string? Name, string? Manufacturer, string? WebUrl);
+
+    /// <summary>Downloads the complete vehicle list before replacing the local copy.</summary>
     public async Task<int> RefreshAsync(IProgress<string>? progress = null, CancellationToken ct = default)
     {
-        using var cn = db.Open();
-        var written = 0;
-        var page = 1;
-        var lastPage = 1;
-
-        do
+        await _refreshGate.WaitAsync(ct);
+        try
         {
+            var vehicles = new List<VehicleEntry>();
+            var page = 1;
+            var lastPage = 1;
+
+            do
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var url = $"{VehiclesUrl}?page[size]={PageSize}&page[number]={page}";
+                using var response = await _refresh.SendAsync(http, () => new HttpRequestMessage(HttpMethod.Get, url), ct);
+                response.EnsureSuccessStatusCode();
+                using var doc = await response.Content.ReadFromJsonAsync<JsonDocument>(ct)
+                    ?? throw new InvalidOperationException($"Empty response from {url}");
+
+                if (!doc.RootElement.TryGetProperty("meta", out var meta) ||
+                    meta.ValueKind != JsonValueKind.Object ||
+                    !meta.TryGetProperty("last_page", out var lp) ||
+                    lp.ValueKind != JsonValueKind.Number ||
+                    !lp.TryGetInt32(out var reportedLastPage) || reportedLastPage < page)
+                {
+                    throw new InvalidDataException($"The vehicle catalogue page {page} did not contain valid pagination metadata.");
+                }
+
+                lastPage = Math.Max(lastPage, reportedLastPage);
+
+                var data = doc.RootElement.GetProperty("data");
+                if (data.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException($"The vehicle catalogue page {page} did not contain an array.");
+
+                foreach (var element in data.EnumerateArray())
+                {
+                    if (Text(element, "class_name") is not { Length: > 0 } className) continue;
+
+                    vehicles.Add(new VehicleEntry(
+                        className,
+                        Text(element, "game_name"),
+                        Text(element, "name"),
+                        element.TryGetProperty("manufacturer", out var man) && man.ValueKind == JsonValueKind.Object
+                            ? Text(man, "name")
+                            : null,
+                        Text(element, "web_url")));
+                }
+
+                progress?.Report($"vehicles page {page}/{lastPage} ({vehicles.Count} vehicles)");
+                page++;
+
+            }
+            while (page <= lastPage);
+
             ct.ThrowIfCancellationRequested();
-
-            var url = $"{VehiclesUrl}?page[size]={PageSize}&page[number]={page}";
-            using var doc = await http.GetFromJsonAsync<JsonDocument>(url, ct)
-                ?? throw new InvalidOperationException($"Empty response from {url}");
-
-            if (doc.RootElement.TryGetProperty("meta", out var meta) &&
-                meta.TryGetProperty("last_page", out var lp))
-            {
-                lastPage = lp.GetInt32();
-            }
-
+            using var cn = db.Open();
             using var tx = cn.BeginTransaction();
-            foreach (var element in doc.RootElement.GetProperty("data").EnumerateArray())
+            using (var delete = cn.CreateCommand())
             {
-                if (Text(element, "class_name") is not { Length: > 0 } className) continue;
-
-                Upsert(cn, tx, className, Text(element, "game_name"), Text(element, "name"),
-                    element.TryGetProperty("manufacturer", out var man) && man.ValueKind == JsonValueKind.Object
-                        ? Text(man, "name")
-                        : null,
-                    Text(element, "web_url"));
-                written++;
+                delete.Transaction = tx;
+                delete.CommandText = "DELETE FROM wiki_vehicle";
+                delete.ExecuteNonQuery();
             }
+
+            foreach (var vehicle in vehicles)
+                Upsert(cn, tx, vehicle.ClassName, vehicle.GameName, vehicle.Name, vehicle.Manufacturer, vehicle.WebUrl);
             tx.Commit();
 
-            progress?.Report($"vehicles page {page}/{lastPage} ({written} vehicles)");
-            page++;
-
-            if (page <= lastPage) await Task.Delay(BetweenRequests, ct);
+            return vehicles.Count;
         }
-        while (page <= lastPage);
-
-        return written;
+        finally
+        {
+            _refreshGate.Release();
+        }
     }
 
     /// <summary>

@@ -81,7 +81,7 @@ public sealed class UpdateServiceTests
     public async Task DownloadAsync_CompleteResponse_ReturnsReadableFile()
     {
         var bytes = new byte[] { 1, 2, 3, 4 };
-        using var http = new HttpClient(new FixedHandler(bytes));
+        using var http = new HttpClient(new UnknownLengthHandler(bytes));
         var service = new UpdateService(http, TimeSpan.FromMinutes(5), TimeProvider.System);
         var info = NewInfo("test-complete", bytes.Length);
         var path = await service.DownloadAsync(info);
@@ -93,6 +93,95 @@ public sealed class UpdateServiceTests
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task CheckForUpdateAsync_SelectsOnlyExactInventoryTrackerAsset()
+    {
+        const string payload = """
+            {"tag_name":"v9.9","html_url":"https://example.invalid/release","assets":[
+              {"name":"Other.exe","browser_download_url":"https://example.invalid/other","size":10},
+              {"name":"InventoryTracker.exe.bak","browser_download_url":"https://example.invalid/backup","size":11},
+              {"name":"InventoryTracker.exe","browser_download_url":"https://example.invalid/tracker","size":12}]}
+            """;
+        using var http = new HttpClient(new JsonHandler(payload));
+        var service = new UpdateService(http);
+
+        var info = await service.CheckForUpdateAsync();
+
+        Assert.NotNull(info);
+        Assert.Equal("https://example.invalid/tracker", info.DownloadUrl);
+        Assert.Equal((long?)12, info.SizeBytes);
+    }
+
+    [Fact]
+    public async Task CheckForUpdateAsync_RejectsReleaseWithoutExactAsset()
+    {
+        const string payload = """
+            {"tag_name":"v9.9","assets":[
+              {"name":"Other.exe","browser_download_url":"https://example.invalid/other","size":10}]}
+            """;
+        using var http = new HttpClient(new JsonHandler(payload));
+        var service = new UpdateService(http);
+
+        Assert.Null(await service.CheckForUpdateAsync());
+    }
+
+    [Fact]
+    public async Task DownloadAsync_RejectsMissingOrNonPositiveExpectedSize()
+    {
+        var bytes = new byte[] { 1, 2, 3, 4 };
+        using var http = new HttpClient(new UnknownLengthHandler(bytes));
+        var service = new UpdateService(http);
+        var unknownSize = NewInfo("unknown-size", null);
+        var zeroSize = NewInfo("zero-size", 0);
+
+        try
+        {
+            await AssertRejectedWithoutArtifactAsync(service, unknownSize);
+            await AssertRejectedWithoutArtifactAsync(service, zeroSize);
+        }
+        finally
+        {
+            DeleteDownloadPaths(unknownSize);
+            DeleteDownloadPaths(zeroSize);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadAsync_RejectsTransferWhoseLengthDiffersFromExpectedSizeAndDeletesPartialFile()
+    {
+        var bytes = new byte[] { 1, 2, 3, 4 };
+        using var http = new HttpClient(new UnknownLengthHandler(bytes));
+        var service = new UpdateService(http);
+        var info = NewInfo("short-transfer", bytes.Length + 1);
+
+        try
+        {
+            await AssertRejectedWithoutArtifactAsync(service, info);
+        }
+        finally
+        {
+            DeleteDownloadPaths(info);
+        }
+    }
+
+    [Fact]
+    public async Task DownloadAsync_RejectsDeclaredResponseLengthThatDiffersFromExpectedSize()
+    {
+        var bytes = new byte[] { 1, 2, 3, 4 };
+        using var http = new HttpClient(new FixedHandler(bytes));
+        var service = new UpdateService(http);
+        var info = NewInfo("declared-length-mismatch", bytes.Length + 1);
+
+        try
+        {
+            await AssertRejectedWithoutArtifactAsync(service, info);
+        }
+        finally
+        {
+            DeleteDownloadPaths(info);
         }
     }
 
@@ -113,6 +202,14 @@ public sealed class UpdateServiceTests
     private static void DeleteDownloadPaths(UpdateInfo info)
     {
         foreach (var path in DownloadPaths(info)) File.Delete(path);
+    }
+
+    private static async Task AssertRejectedWithoutArtifactAsync(UpdateService service, UpdateInfo info)
+    {
+        Exception? error = await Record.ExceptionAsync(() => service.DownloadAsync(info));
+        var paths = DownloadPaths(info);
+        Assert.True(error is InvalidDataException && paths.Length == 0,
+            $"Expected InvalidDataException and no downloaded file; got {error?.GetType().Name ?? "no exception"} and {paths.Length} file(s).");
     }
 
     private sealed class BlockingHandler : HttpMessageHandler
@@ -167,6 +264,39 @@ public sealed class UpdateServiceTests
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) });
+    }
+
+    private sealed class JsonHandler(string json) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
+            });
+    }
+
+    private sealed class UnknownLengthHandler(byte[] bytes) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new UnknownLengthContent(bytes),
+            });
+    }
+
+    private sealed class UnknownLengthContent(byte[] bytes) : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            stream.WriteAsync(bytes).AsTask();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new MemoryStream(bytes));
     }
 
     private sealed class ManualTimeProvider : TimeProvider

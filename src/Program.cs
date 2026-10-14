@@ -17,15 +17,20 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--update-helper")
+        {
+            return UpdateService.RunInstallHelper(args.Skip(1).ToArray());
+        }
+
         // The tray app is a WinExe so it never flashes a console window. That also means
         // Console output goes nowhere unless we reattach, which the CLI paths need.
-        var tray = args.Length == 0 || args[0] == "--tray";
+        var tray = args.Length == 0 || args[0] is "--tray" or "--update-confirm" or "--skip-update-once";
         if (!tray)
         {
             AttachConsole(AttachParentProcess);
             return Cli.RunAsync(args).GetAwaiter().GetResult();
         }
 
-        return TrayHost.Run(args.Skip(1).ToArray());
+        return TrayHost.Run(args.Length > 0 && args[0] == "--tray" ? args.Skip(1).ToArray() : args);
     }
 }

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using InventoryTracker.Data;
 using InventoryTracker.Ingest;
@@ -24,6 +25,16 @@ public static class ReliabilityStudy
     /// <param name="LiveFiles">How many of the busiest files to replay as a live, growing log.</param>
     public sealed record Options(int LiveChunkSeconds = 5, int LiveFiles = 3);
 
+    internal sealed record PlacementObservation(DateTimeOffset At, int Build, bool SamePlace);
+
+    internal sealed record PlacementCalibration(
+        IReadOnlyList<PlacementObservation> Calibration,
+        IReadOnlyList<PlacementObservation> Evaluation,
+        IReadOnlyDictionary<int, double> LearnedFactors,
+        double? EvaluationBrier,
+        IReadOnlyList<int> WeakBuilds,
+        IReadOnlyDictionary<int, int> SupportByBuild);
+
     /// <summary>
     /// Move types whose source and target are the same grid by design. The ingestor drops
     /// them on purpose, so they are not counted as missed.
@@ -40,8 +51,9 @@ public static class ReliabilityStudy
         Directory.CreateDirectory(workDir);
 
         var files = LogFileLocator.Discover(logDir, InventoryEventParser.Cutoff);
-        var report = new ReliabilityReport(
-            corpus, files.Count, files.Sum(f => new FileInfo(f.Path).Length));
+        var manifest = files.Select(file => Identify(logDir, file.Path)).ToList();
+        var report = new ReliabilityReport(corpus, files.Count, manifest.Sum(file => file.Bytes));
+        report.SetManifest(manifest);
 
         var db = new TrackerDb(Path.Combine(workDir, "study.db"));
         db.Initialize();
@@ -150,6 +162,7 @@ public static class ReliabilityStudy
         report.Counts["ledger.named_moves"] = s.NamedMoves;
         report.Counts["ledger.class_moves"] = s.ClassMoves;
         report.Counts["ledger.class_units"] = s.ClassUnits;
+        report.Counts["ledger.units_accounted_proxy"] = s.ClassUnits - s.UnitsDuplicateRisk;
         report.Counts["ledger.units_from_named"] = s.UnitsFromNamed;
         report.Counts["ledger.units_from_loose"] = s.UnitsFromLoose;
         report.Counts["ledger.units_from_carried"] = s.UnitsFromCarried;
@@ -209,7 +222,10 @@ public static class ReliabilityStudy
         var survival = resolver.UpdateSurvivals;
         var checks = s.PlacementChecks;
         report.Counts["placement.checks"] = checks.Count;
+        report.Counts["placement.examples"] = checks.Count;
         report.Counts["placement.same_place"] = checks.Count(c => c.SamePlace);
+        if (checks.Count > 0)
+            report.Metrics["placement.accuracy"] = (double)checks.Count(c => c.SamePlace) / checks.Count;
         report.Counts["game_updates"] = updates.Count;
         if (checks.Count == 0) return;
 
@@ -235,7 +251,30 @@ public static class ReliabilityStudy
                 .DefaultIfEmpty(1.0)
                 .Min();
 
-        report.Metrics["placement.brier"] = checks.Average(c => Math.Pow(Predicted(c) - (c.SamePlace ? 1 : 0), 2));
+        var inSampleBrier = checks.Average(c => Math.Pow(Predicted(c) - (c.SamePlace ? 1 : 0), 2));
+        report.Metrics["placement.brier"] = inSampleBrier; // Keep the baseline key stable.
+        report.Metrics["placement.in_sample_brier"] = inSampleBrier;
+
+        var updateIncidences = checks.SelectMany(c => updates
+            .Where(u => u.At > c.At - c.Age && u.At <= c.At)
+            .Select(u => new PlacementObservation(c.At, u.Build, c.SamePlace))).ToList();
+        var calibration = CalibratePlacements(updateIncidences);
+        report.Counts["placement.calibration.incidences"] = calibration.Calibration.Count;
+        report.Counts["placement.evaluation.incidences"] = calibration.Evaluation.Count;
+        report.Counts["placement.evaluation.weak_builds"] = calibration.WeakBuilds.Count;
+        report.PlacementCalibrationThrough = calibration.Calibration.Count == 0
+            ? null
+            : calibration.Calibration.Max(o => o.At);
+        report.PlacementEvaluationFrom = calibration.Evaluation.Count == 0
+            ? null
+            : calibration.Evaluation.Min(o => o.At);
+        foreach (var (build, support) in calibration.SupportByBuild)
+            report.PlacementCalibrationSupportByBuild[build] = support;
+        foreach (var (build, factor) in calibration.LearnedFactors)
+            report.PlacementLearnedFactors[build] = factor;
+        report.PlacementWeakBuilds.AddRange(calibration.WeakBuilds);
+        if (calibration.EvaluationBrier is { } evaluationBrier)
+            report.Metrics["placement.evaluation_brier"] = evaluationBrier;
 
         string Bucket(TimeSpan age) => AgeBuckets.First(b => age < b.Upto).Label;
         string Cell(IEnumerable<LedgerReplay.PlacementCheck> cs)
@@ -284,6 +323,52 @@ public static class ReliabilityStudy
 
         var oldest = checks.Max(c => c.Age);
         report.Counts["placement.oldest_checked_hours"] = (long)oldest.TotalHours;
+    }
+
+    internal static PlacementCalibration CalibratePlacements(IReadOnlyList<PlacementObservation> observations)
+    {
+        var ordered = observations
+            .OrderBy(o => o.At)
+            .ThenBy(o => o.Build)
+            .ThenBy(o => o.SamePlace)
+            .ToList();
+        var timestamps = ordered.Select(o => o.At).Distinct().Order().ToArray();
+
+        var splitAt = timestamps.Length < 2
+            ? timestamps.Length
+            : Math.Clamp((int)Math.Ceiling(timestamps.Length * 0.7), 1, timestamps.Length - 1);
+        var cutoff = timestamps.Length == 0 ? (DateTimeOffset?)null : timestamps[splitAt - 1];
+        List<PlacementObservation> calibration = cutoff is null ? [] : ordered.Where(o => o.At <= cutoff.Value).ToList();
+        List<PlacementObservation> evaluation = cutoff is null || splitAt >= timestamps.Length
+            ? []
+            : ordered.Where(o => o.At > cutoff.Value).ToList();
+
+        var trainByBuild = calibration
+            .Where(o => o.Build > 0)
+            .GroupBy(o => o.Build)
+            .ToDictionary(g => g.Key, g => g.ToList());
+        var factors = trainByBuild
+            .Where(kv => kv.Value.Count >= 5)
+            .ToDictionary(
+                kv => kv.Key,
+                kv => Math.Clamp(kv.Value.Count(o => o.SamePlace) / (double)kv.Value.Count, 0.2, 1.0));
+        var weakBuilds = evaluation
+            .Where(o => o.Build <= 0 || !trainByBuild.TryGetValue(o.Build, out var train) || train.Count < 5)
+            .Select(o => o.Build)
+            .Distinct()
+            .Order()
+            .ToArray();
+
+        double? evaluationBrier = evaluation.Count == 0
+            ? null
+            : evaluation.Average(o =>
+            {
+                var predicted = o.Build > 0 ? factors.GetValueOrDefault(o.Build, 0.5) : 0.5;
+                return Math.Pow(predicted - (o.SamePlace ? 1 : 0), 2);
+            });
+
+        var supportByBuild = trainByBuild.ToDictionary(kv => kv.Key, kv => kv.Value.Count);
+        return new PlacementCalibration(calibration, evaluation, factors, evaluationBrier, weakBuilds, supportByBuild);
     }
 
     private static void MeasureHoldings(IReadOnlyList<ItemHolding> holdings, ReliabilityReport report)
@@ -455,6 +540,15 @@ public static class ReliabilityStudy
     }
 
     private static DateTimeOffset ParseTs(string s) => DateTimeOffset.Parse(s, CultureInfo.InvariantCulture);
+
+    private static CorpusFileIdentity Identify(string root, string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        var bytes = stream.Length;
+        var sha256 = Convert.ToHexString(SHA256.HashData(stream));
+        var relative = Path.GetRelativePath(root, path).Replace('\\', '/');
+        return new CorpusFileIdentity(relative, bytes, sha256);
+    }
 
     private static string Shorten(string line) => line.Length <= 260 ? line : line[..260] + "…";
 }

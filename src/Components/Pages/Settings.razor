@@ -1,8 +1,9 @@
 @page "/settings"
 @rendermode InteractiveServer
-@implements IDisposable
+@implements IAsyncDisposable
 @using InventoryTracker.App
 @using InventoryTracker.Ingest
+@using InventoryTracker.Naming
 @inject TrackerState State
 @inject TrackerOptions Options
 @inject LogWatchService Watcher
@@ -11,6 +12,7 @@
 @inject InventoryTracker.App.DesktopShell Shell
 @inject UpdateService Updates
 @inject Microsoft.Extensions.Hosting.IHostApplicationLifetime Lifetime
+@inject WikiRefreshTaskOwner OperationOwner
 
 <PageTitle>Settings — Star Citizen inventory</PageTitle>
 
@@ -63,6 +65,10 @@
         </span>
     }
 </div>
+@if (_rebuildError is not null)
+{
+    <p class="rebuild-status error" role="alert">@_rebuildError</p>
+}
 
 <dl class="facts">
     <dt>Log directory</dt><dd><code>@Options.LogDir</code></dd>
@@ -127,6 +133,7 @@
 <dl class="facts">
     <dt>Log files found</dt><dd>@(notYetBuilt ? "not read yet" : _health.LogFiles.ToString())</dd>
     <dt>@(Options.InceptionDate is null ? "Files with data" : "Files with data since the wipe date")</dt><dd>@(notYetBuilt ? "not read yet" : _health.FilesWithLinesSinceInception.ToString())</dd>
+    <dt>Rotated files not fully read</dt><dd>@(notYetBuilt ? "not read yet" : _health.IncompleteFiles.ToString())</dd>
     <dt>Unrecognised move lines</dt><dd>@(notYetBuilt ? "not read yet" : _health.UnrecognisedMoveLines.ToString())</dd>
     <dt>Newest log line</dt>
     <dd>@(notYetBuilt ? "not read yet" : _health.NewestLogLine is { } newest ? $"{newest:yyyy-MM-dd HH:mm:ss} UTC" : "none read yet")</dd>
@@ -140,6 +147,10 @@
             @if (pass.Error is { } passError)
             {
                 <span class="rebuild-status error"> failed: @passError</span>
+            }
+            @if (pass.Incomplete is { } incomplete)
+            {
+                <span class="rebuild-status error"> incomplete; will retry: @incomplete</span>
             }
         }
         else
@@ -202,11 +213,14 @@
     private DateOnly? _inceptionDate;
     private bool _rebuilding;
     private bool _rebuilt;
+    private string? _rebuildError;
 
     private bool _refreshingNames;
     private bool _namesRefreshed;
     private string? _namesProgress;
     private string? _namesError;
+    private readonly CancellationTokenSource _pageStopping = new();
+    private bool _disposed;
 
     private readonly string _currentVersion = UpdateService.CurrentVersion.ToString(3);
     private bool _checkingUpdate;
@@ -294,11 +308,22 @@
         }
     }
 
-    public void Dispose()
+    public ValueTask DisposeAsync()
     {
+        _disposed = true;
+        _pageStopping.Cancel();
+        _pageStopping.Dispose();
         State.Changed -= OnChanged;
         Watcher.PassCompleted -= OnPassCompleted;
+        return ValueTask.CompletedTask;
     }
+
+    private Task RunOwnedAsync(Func<CancellationToken, Task> operation) =>
+        OperationOwner.RunAsync(async ownerToken =>
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ownerToken, _pageStopping.Token);
+            await operation(linked.Token);
+        });
 
     /// <summary>
     /// The wipe date only gates what gets ingested from here on — it does not remove
@@ -308,18 +333,40 @@
     private async Task SaveAndRebuild()
     {
         _rebuilt = false;
+        _rebuildError = null;
         _rebuilding = true;
         StateHasChanged();
 
         try
         {
-            await Options.ApplyLogSourceAsync(_logDir, _inceptionDate, Watcher);
-            RefreshDiagnostics();
-            _rebuilt = true;
+            await RunOwnedAsync(async ct =>
+            {
+                await Options.ApplyLogSourceAsync(_logDir, _inceptionDate, Watcher, cancellationToken: ct);
+                await InvokeAsync(() =>
+                {
+                    RefreshDiagnostics();
+                    _rebuilt = true;
+                    StateHasChanged();
+                });
+            });
+        }
+        catch (OperationCanceledException ex) when (OperationOwner.IsStopping || Lifetime.ApplicationStopping.IsCancellationRequested || _pageStopping.IsCancellationRequested)
+        {
+            System.Diagnostics.Trace.WriteLine($"Settings rebuild canceled during shutdown: {ex.Message}");
+        }
+        catch (OperationCanceledException ex)
+        {
+            _rebuildError = $"Rebuild was canceled: {ex.Message}";
+        }
+        catch (Exception ex) when (FormOperationErrors.TryGetMessage(ex, out _))
+        {
+            FormOperationErrors.TryGetMessage(ex, out var message);
+            _rebuildError = $"Could not save settings and rebuild: {message}";
         }
         finally
         {
             _rebuilding = false;
+            if (!_disposed) StateHasChanged();
         }
     }
 
@@ -339,45 +386,61 @@
 
         var progress = new Progress<string>(p =>
         {
+            if (_disposed) return;
             _namesProgress = p;
             StateHasChanged();
         });
 
-        // Two downloads, each worth keeping on its own: a failed place list must not hide
-        // item names that did arrive.
-        var failures = new List<string>();
-
+        IReadOnlyList<WikiRefreshCallerPipeline.Failure> failures = [];
         try
         {
-            await State.Names.RefreshAsync(progress);
-        }
-        catch (Exception ex)
-        {
-            failures.Add($"item names ({ex.Message})");
-        }
+            await RunOwnedAsync(async ct =>
+            {
+                failures = await WikiRefreshCallerPipeline.RunAsync(
+                    () => State.Names.RefreshAsync(progress, ct: ct),
+                    () => Places.RefreshAsync(progress, ct: ct),
+                    Watcher.RequestPlaceResolution,
+                    () =>
+                    {
+                        State.Rebuild();
+                        RefreshDiagnostics();
+                    },
+                    ct);
+            });
 
-        try
-        {
-            await Places.RefreshAsync(progress);
+            var unexpectedFailure = failures.FirstOrDefault(failure =>
+                !FormOperationErrors.TryGetMessage(failure.Exception, out _));
+            if (unexpectedFailure is not null)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(unexpectedFailure.Exception).Throw();
+            }
 
-            // Places waiting on the list are resolved on the next pass, which rebuilds.
-            Watcher.RequestPlaceResolution();
+            if (failures.Count == 0)
+            {
+                _namesRefreshed = true;
+            }
+            else
+            {
+                _namesError = $"Could not download {string.Join(" or ", failures.Select(f => $"{f.Source} ({f.Exception.Message})"))} from the wiki.";
+            }
         }
-        catch (Exception ex)
+        catch (OperationCanceledException ex) when (OperationOwner.IsStopping || Lifetime.ApplicationStopping.IsCancellationRequested || _pageStopping.IsCancellationRequested)
         {
-            failures.Add($"the place list ({ex.Message})");
+            // Component shutdown cancels and joins this owned task; it is not a success.
+            System.Diagnostics.Trace.WriteLine($"Settings wiki refresh canceled during component shutdown: {ex.Message}");
         }
-
-        try
+        catch (OperationCanceledException ex)
         {
-            State.Rebuild();
-            RefreshDiagnostics();
+            _namesError = $"Wiki refresh was canceled: {ex.Message}";
+        }
+        catch (Exception ex) when (FormOperationErrors.TryGetMessage(ex, out _))
+        {
+            _namesError = $"Could not refresh names from the wiki: {ex.Message}";
         }
         finally
         {
             _refreshingNames = false;
-            _namesRefreshed = failures.Count == 0;
-            _namesError = failures.Count == 0 ? null : $"Could not download {string.Join(" or ", failures)} from the wiki.";
+            if (!_disposed) StateHasChanged();
         }
     }
 
@@ -394,55 +457,73 @@
         _checkingUpdate = true;
         StateHasChanged();
 
-        UpdateInfo? info;
         try
         {
-            info = await Updates.CheckForUpdateAsync();
-        }
-        catch (Exception ex)
-        {
-            _updateError = $"Could not check for updates: {ex.Message}";
-            _checkingUpdate = false;
-            return;
-        }
-
-        if (info is null)
-        {
-            _updateStatus = $"Up to date (v{_currentVersion}).";
-            _checkingUpdate = false;
-            return;
-        }
-
-        _checkingUpdate = false;
-        _downloadingUpdate = true;
-        _updateProgress = 0;
-        StateHasChanged();
-
-        try
-        {
-            var progress = new Progress<double>(p =>
+            await RunOwnedAsync(async ct =>
             {
-                _updateProgress = p;
-                InvokeAsync(StateHasChanged);
+                var info = await Updates.CheckForUpdateAsync(ct);
+                if (info is null)
+                {
+                    await InvokeAsync(() =>
+                    {
+                        _updateStatus = $"Up to date (v{_currentVersion}).";
+                        StateHasChanged();
+                    });
+                    return;
+                }
+
+                await InvokeAsync(() =>
+                {
+                    _checkingUpdate = false;
+                    _downloadingUpdate = true;
+                    _updateProgress = 0;
+                    StateHasChanged();
+                });
+
+                var progress = new Progress<double>(p =>
+                {
+                    if (_disposed) return;
+                    _updateProgress = p;
+                    InvokeAsync(StateHasChanged);
+                });
+
+                var path = await Updates.DownloadAsync(info, progress, ct: ct);
+                ct.ThrowIfCancellationRequested();
+                await InvokeAsync(() =>
+                {
+                    _updateStatus = $"Restarting into {info.TagName}…";
+                    StateHasChanged();
+                });
+
+                try
+                {
+                    UpdateService.InstallAndRestart(path);
+                }
+                catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+                {
+                    throw new IOException($"Could not start the updated application: {ex.Message}", ex);
+                }
+
+                Lifetime.StopApplication();
             });
-
-            var path = await Updates.DownloadAsync(info, progress);
-
-            _updateStatus = $"Restarting into {info.TagName}…";
-            StateHasChanged();
-
-            // Signal a normal shutdown first — same as every other exit path (tray menu,
-            // closing the window) — so LogWatchService and any in-flight store work get a
-            // chance to stop cleanly via StopAsync instead of being cut off mid-write.
-            UpdateService.InstallAndRestart(path);
-            Lifetime.StopApplication();
-            await Task.Delay(1000);
-            Environment.Exit(0);
         }
-        catch (Exception ex)
+        catch (OperationCanceledException ex) when (OperationOwner.IsStopping || Lifetime.ApplicationStopping.IsCancellationRequested || _pageStopping.IsCancellationRequested)
         {
-            _updateError = $"Could not install {info.TagName}: {ex.Message}";
+            System.Diagnostics.Trace.WriteLine($"Settings update operation canceled during shutdown: {ex.Message}");
+        }
+        catch (OperationCanceledException ex)
+        {
+            _updateError = $"Update operation was canceled: {ex.Message}";
+        }
+        catch (Exception ex) when (FormOperationErrors.TryGetMessage(ex, out _))
+        {
+            _updateError = $"Could not check or install the update: {ex.Message}";
+        }
+        finally
+        {
+            _checkingUpdate = false;
             _downloadingUpdate = false;
+            if (!_disposed) StateHasChanged();
         }
     }
 }

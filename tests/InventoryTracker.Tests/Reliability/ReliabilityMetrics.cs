@@ -55,7 +55,7 @@ public static class ReliabilityMetrics
         new("placement.within_build_same_place", "Placements confirmed within one game build", true, 0.95, null, true,
             "A later named move out of the place the ledger had the item. Checks the ledger itself, and that age alone does not stale a placement."),
         new("placement.brier", "Calibration error of placement trust (Brier score)", false, 0.05, null, false,
-            "Mean squared gap between the trust put in a placement and whether the game then confirmed it. 0 is perfect; trusting everything fully scores the share that was wrong."),
+            "Legacy baseline key for the in-sample placement Brier score. 0 is perfect; this is not an independent validation."),
         new("placement.across_update_same_place", "Placements confirmed across a game update", true, 0.90, null, true,
             "How often the ledger's belief held across an update, once it has moved what the update moved to where the player spawned."),
 

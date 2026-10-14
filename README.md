@@ -6,11 +6,11 @@ Inventory Tracker reads Star Citizen's `Game.log` while you play and works out w
 
 ## How it works
 
-Star Citizen never logs a full inventory snapshot. It does log every *movement*: an item leaving one place and arriving in another. The tracker replays those movements in order, so "where are my pants?" becomes a lookup.
+Star Citizen does not log a full inventory snapshot, and its logs do not capture every item movement. The tracker estimates item locations from observed log events and the latest plausible position it can derive from them, so "where are my pants?" becomes a useful lookup.
 
 It runs as a tray app with a local web UI at `http://localhost:5730`. Browse your locations by system and station and open a container to see what it holds, see what is in each ship's lockers and what you dropped on the floor, or follow one item's full history.
 
-The tracker never sees your starting inventory, so it infers everything from the moves. Each result carries a confidence score and, where it applies, a note on what is uncertain (an unconfirmed move, a guessed container location, a possible duplicate). Treat the results as a well-evidenced minimum of what you own and where, not a guarantee.
+The tracker cannot see your starting inventory, so items without observed events may be missing and inferred locations can be stale or uncertain. Each result carries a confidence score and, where it applies, a note on uncertainty (an unconfirmed move, a guessed container location, a possible duplicate). The score describes support in the available evidence; it is not a guarantee of truth. See the [replay reliability study](docs/reliability/README.md) for measured limits.
 
 ## Running it
 
@@ -37,7 +37,7 @@ dotnet test InventoryTracker.slnx
 .\publish.ps1
 ```
 
-`publish.ps1` builds a single self-contained `dist\InventoryTracker.exe` using the version in the `VERSION` file.
+`publish.ps1` builds a single self-contained `dist\InventoryTracker.exe` using the version in the `VERSION` file. For an isolated publish, pass `-OutputPath` with a new or empty directory; that mode leaves `dist\` and running processes alone.
 
 Every merge to `main` cuts a GitHub Release. If `VERSION` is ahead of the latest release (a deliberate minor or major bump), CI releases that version. Otherwise it bumps the patch number by itself.
 

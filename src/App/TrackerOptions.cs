@@ -96,21 +96,24 @@ public sealed class TrackerOptions
     /// </summary>
     public async Task ApplyLogSourceAsync(
         string logDir, DateOnly? inceptionDate, LogWatchService watcher, bool markSetupComplete = false,
-        string? configPath = null)
-        => await ApplyLogSourceAsync(logDir, inceptionDate, watcher, markSetupComplete, configPath, hooks: null);
+        string? configPath = null, CancellationToken cancellationToken = default)
+        => await ApplyLogSourceAsync(logDir, inceptionDate, watcher, markSetupComplete, configPath,
+            hooks: null, cancellationToken: cancellationToken);
 
     internal async Task ApplyLogSourceAsync(
         string logDir, DateOnly? inceptionDate, LogWatchService watcher, bool markSetupComplete,
-        string? configPath, TrackerOptionsApplyHooks? hooks)
+        string? configPath, TrackerOptionsApplyHooks? hooks, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         hooks?.BeforeGate?.Invoke();
         if (!_applyLogSourceGate.Wait(0))
         {
             hooks?.OnApplyContended?.Invoke();
-            await _applyLogSourceGate.WaitAsync();
+            await _applyLogSourceGate.WaitAsync(cancellationToken);
         }
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(logDir) || !Directory.Exists(logDir))
                 throw new DirectoryNotFoundException($"Log directory does not exist: {logDir}");
 
@@ -145,19 +148,37 @@ public sealed class TrackerOptions
             // rebuilds — that button is an explicit request to.
             if (markSetupComplete && sourceUnchanged)
             {
-                await watcher.RebuildNowAsync();
+                await watcher.RebuildNowAsync(cancellationToken);
                 return;
             }
 
             // The wipe and the re-ingest go together under the watcher's ingest lock; doing the
-            // reset here would race a background pass already in flight.
+            // reset here would race a background pass already in flight. The config and source
+            // are already committed, so finish this critical operation before reporting shutdown.
             if (hooks?.BeforeResetAsync is { } beforeReset) await beforeReset();
-            await watcher.ResetAndRebuildAsync();
+            await watcher.ResetAndRebuildAsync(CancellationToken.None);
+            cancellationToken.ThrowIfCancellationRequested();
         }
         finally
         {
             _applyLogSourceGate.Release();
         }
+    }
+}
+
+internal static class FormOperationErrors
+{
+    public static bool TryGetMessage(Exception exception, out string message)
+    {
+        if (exception is IOException or UnauthorizedAccessException or HttpRequestException or
+            InvalidDataException or TimeoutException or System.Text.Json.JsonException or Microsoft.Data.Sqlite.SqliteException)
+        {
+            message = exception.Message;
+            return true;
+        }
+
+        message = "";
+        return false;
     }
 }
 

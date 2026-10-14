@@ -40,6 +40,9 @@ public sealed record IngestStats
     /// <summary>Ships flown or retrieved: each says which ship a locker belongs to, or where it is.</summary>
     public int VehiclesSeen { get; set; }
 
+    /// <summary>Files this pass could not read; their stored offsets remain due for retry.</summary>
+    public List<string> FileErrors { get; } = [];
+
     /// <summary>
     /// Whether this pass wrote anything the holdings are built from, and so whether the UI
     /// needs a new snapshot. Not just new moves: a completion read in a later pass than its
@@ -141,7 +144,17 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         foreach (var file in files)
         {
             ct.ThrowIfCancellationRequested();
-            IngestFile(cn, file, stats, ct);
+            try
+            {
+                IngestFile(cn, file, stats, ct);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // A locked or unreadable file must not starve the remaining logs. IngestFile
+                // commits its watermark only after the read finishes, so the next pass retries
+                // this file at the same offset. SQLite and programming errors still propagate.
+                stats.FileErrors.Add($"{Path.GetFileName(file.Path)}: {ex.Message}");
+            }
         }
 
         return stats;

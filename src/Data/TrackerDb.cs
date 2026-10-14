@@ -31,10 +31,17 @@ public sealed class TrackerDb
     }
 
     /// <summary>The default store location, alongside the user's other app data.</summary>
-    public static string DefaultPath => System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "InventoryTracker",
-        "tracker.db");
+    public static string DefaultPath => ResolveDefaultPath(
+        Environment.GetEnvironmentVariable("INVENTORYTRACKER_DATA_DIR"),
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+
+    internal static string ResolveDefaultPath(string? dataDirectory, string localApplicationDataPath)
+    {
+        var root = string.IsNullOrEmpty(dataDirectory)
+            ? System.IO.Path.Combine(localApplicationDataPath, "InventoryTracker")
+            : dataDirectory;
+        return System.IO.Path.Combine(root, "tracker.db");
+    }
 
     public SqliteConnection Open()
     {

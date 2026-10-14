@@ -1,8 +1,13 @@
 using InventoryTracker.Data;
+using InventoryTracker.App;
 using Microsoft.Data.Sqlite;
 
 namespace InventoryTracker.Tests;
 
+[CollectionDefinition("TrackerDbTests environment", DisableParallelization = true)]
+public sealed class TrackerDbTestsEnvironmentCollection { }
+
+[Collection("TrackerDbTests environment")]
 public sealed class TrackerDbTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), $"itrk-db-{Guid.NewGuid():N}");
@@ -24,6 +29,75 @@ public sealed class TrackerDbTests : IDisposable
             SqliteConnection.ClearPool(cn);
         }
         Directory.Delete(_dir, recursive: true);
+    }
+
+    [Fact]
+    public void ResolveDefaultPath_uses_configured_data_directory()
+    {
+        var dataDirectory = Path.Combine(Path.GetTempPath(), "itrk-data");
+
+        var path = TrackerDb.ResolveDefaultPath(dataDirectory, "C:\\Users\\test\\AppData\\Local");
+
+        Assert.Equal(Path.Combine(dataDirectory, "tracker.db"), path);
+    }
+
+    [Fact]
+    public void ResolveDefaultPath_empty_data_directory_preserves_local_app_data_location()
+    {
+        var localAppData = Path.Combine(Path.GetTempPath(), "itrk-local");
+
+        var path = TrackerDb.ResolveDefaultPath(string.Empty, localAppData);
+
+        Assert.Equal(Path.Combine(localAppData, "InventoryTracker", "tracker.db"), path);
+    }
+
+    [Fact]
+    public void ResolveDefaultPath_missing_data_directory_preserves_local_app_data_location()
+    {
+        var localAppData = Path.Combine(Path.GetTempPath(), "itrk-local");
+
+        var path = TrackerDb.ResolveDefaultPath(null, localAppData);
+
+        Assert.Equal(Path.Combine(localAppData, "InventoryTracker", "tracker.db"), path);
+    }
+
+    [Fact]
+    public void Default_paths_use_data_directory_environment_variable()
+    {
+        var original = Environment.GetEnvironmentVariable("INVENTORYTRACKER_DATA_DIR");
+        var dataDirectory = Path.Combine(Path.GetTempPath(), $"itrk-env-{Guid.NewGuid():N}");
+        try
+        {
+            Environment.SetEnvironmentVariable("INVENTORYTRACKER_DATA_DIR", dataDirectory);
+
+            Assert.Equal(Path.Combine(dataDirectory, "tracker.db"), TrackerDb.DefaultPath);
+            Assert.Equal(Path.Combine(dataDirectory, "config.json"), AppConfig.DefaultPath);
+            Assert.Equal(Path.Combine(dataDirectory, "tracker.log"), FileLoggerProvider.DefaultPath);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("INVENTORYTRACKER_DATA_DIR", original);
+        }
+    }
+
+    [Fact]
+    public void Default_paths_use_local_app_data_when_data_directory_environment_variable_is_cleared()
+    {
+        var original = Environment.GetEnvironmentVariable("INVENTORYTRACKER_DATA_DIR");
+        try
+        {
+            Environment.SetEnvironmentVariable("INVENTORYTRACKER_DATA_DIR", null);
+            var localAppData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "InventoryTracker");
+
+            Assert.Equal(Path.Combine(localAppData, "tracker.db"), TrackerDb.DefaultPath);
+            Assert.Equal(Path.Combine(localAppData, "config.json"), AppConfig.DefaultPath);
+            Assert.Equal(Path.Combine(localAppData, "tracker.log"), FileLoggerProvider.DefaultPath);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("INVENTORYTRACKER_DATA_DIR", original);
+        }
     }
 
     [Fact]

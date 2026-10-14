@@ -1,5 +1,6 @@
 using System.Globalization;
 using InventoryTracker.Data;
+using InventoryTracker.Ingest;
 
 namespace InventoryTracker.App;
 
@@ -32,6 +33,9 @@ public sealed record IngestHealth(
     long UnrecognisedMoveLines,
     DateTimeOffset? NewestLogLine)
 {
+    /// <summary>Discovered rotated backups not fully ingested yet.</summary>
+    public int IncompleteFiles { get; init; }
+
     public static readonly IngestHealth Empty = new(
         LogDir: "",
         InceptionDate: null,
@@ -69,6 +73,24 @@ public sealed record IngestHealth(
         movesCmd.CommandText = "SELECT COUNT(*) FROM move";
         var moves = Convert.ToInt64(movesCmd.ExecuteScalar());
 
-        return new IngestHealth(logDir, inceptionDate, logFiles, filesWithLines, moves, unrecognised, newestLogLine);
+        using var incompleteCmd = cn.CreateCommand();
+        incompleteCmd.CommandText = "SELECT path FROM session WHERE complete = 0";
+        using var incompleteReader = incompleteCmd.ExecuteReader();
+        var pathComparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        var incompletePaths = new HashSet<string>(pathComparer);
+        while (incompleteReader.Read()) incompletePaths.Add(incompleteReader.GetString(0));
+
+        var cutoff = inceptionDate is { } date && date > InventoryEventParser.Cutoff
+            ? date
+            : InventoryEventParser.Cutoff;
+        var incompleteFiles = string.IsNullOrWhiteSpace(logDir)
+            ? 0
+            : LogFileLocator.Discover(logDir, cutoff)
+                .Count(file => !file.IsLive && incompletePaths.Contains(file.Path));
+
+        return new IngestHealth(logDir, inceptionDate, logFiles, filesWithLines, moves, unrecognised, newestLogLine)
+        {
+            IncompleteFiles = incompleteFiles,
+        };
     }
 }

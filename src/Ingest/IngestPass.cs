@@ -14,4 +14,8 @@ public sealed record IngestPass(
     int LinesRead,
     int MovesInserted,
     bool Rebuilt,
-    string? Error);
+    string? Error)
+{
+    /// <summary>File-level read failures; the pass continued and will retry them.</summary>
+    public string? Incomplete { get; init; }
+}

@@ -87,6 +87,9 @@ jobs:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: windows-latest
+    concurrency:
+      group: inventory-tracker-publish-${{ github.repository }}
+      cancel-in-progress: false
 
     permissions:
       contents: write

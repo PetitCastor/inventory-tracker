@@ -39,15 +39,23 @@ public sealed record ResolvedName(string ClassName, string Display, NameMatch Ma
 /// match precisely and search offline.
 /// </para>
 /// </summary>
-public sealed class WikiNameService(TrackerDb db, HttpClient http)
+public sealed class WikiNameService(TrackerDb db, HttpClient http, WikiRefreshCoordinator? refresh = null)
 {
+    private sealed class InflightRefresh
+    {
+        public TaskCompletionSource<int> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Cleanup { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationTokenSource Cancellation { get; } = new();
+        public int Waiters { get; set; }
+        public bool Started { get; set; }
+    }
+
     private const string ItemsUrl = "https://api.star-citizen.wiki/api/items";
 
     /// <summary>The API caps page size at 200 regardless of what is asked for.</summary>
     private const int PageSize = 200;
-
-    /// <summary>The documented limit is 60/min; stay well under it to be a good citizen.</summary>
-    private static readonly TimeSpan BetweenRequests = TimeSpan.FromMilliseconds(400);
 
     /// <summary>How many trailing "_token" segments to strip before giving up on a match.</summary>
     private const int MaxSuffixDrops = 3;
@@ -59,74 +67,157 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
     /// invalidating from a third.
     /// </summary>
     private readonly Lock _cacheGate = new();
+    private readonly object _refreshGate = new();
+    private readonly WikiRefreshCoordinator _refresh = refresh ?? WikiRefreshCoordinator.Shared;
+
+    internal WikiRefreshCoordinator RefreshCoordinator => _refresh;
 
     private Dictionary<string, WikiItem>? _cache;
 
     /// <summary>
-    /// Downloads the full item catalogue and replaces the local copy. Safe to re-run;
-    /// existing rows are updated in place.
+    /// Downloads the full item catalogue before replacing the local copy. A failed or
+    /// cancelled download leaves the previous generation and its cache intact.
     /// </summary>
     public async Task<int> RefreshAsync(IProgress<string>? progress = null, CancellationToken ct = default)
     {
-        using var cn = db.Open();
-        var written = 0;
-        var page = 1;
-        var lastPage = 1;
-
-        do
+        ct.ThrowIfCancellationRequested();
+        InflightRefresh refresh;
+        var start = false;
+        lock (_refreshGate)
         {
-            ct.ThrowIfCancellationRequested();
-
-            var url = $"{ItemsUrl}?page[size]={PageSize}&page[number]={page}";
-            using var doc = await http.GetFromJsonAsync<JsonDocument>(url, ct)
-                ?? throw new InvalidOperationException($"Empty response from {url}");
-
-            if (doc.RootElement.TryGetProperty("meta", out var meta) &&
-                meta.TryGetProperty("last_page", out var lp))
+            refresh = _inflightRefresh ??= new InflightRefresh();
+            refresh.Waiters++;
+            if (!refresh.Started)
             {
-                lastPage = lp.GetInt32();
+                refresh.Started = true;
+                start = true;
             }
-
-            using var tx = cn.BeginTransaction();
-            foreach (var element in doc.RootElement.GetProperty("data").EnumerateArray())
-            {
-                if (ReadItem(element) is { } item)
-                {
-                    Upsert(cn, tx, item);
-                    written++;
-                }
-            }
-            tx.Commit();
-
-            progress?.Report($"page {page}/{lastPage} ({written} items)");
-            page++;
-
-            if (page <= lastPage) await Task.Delay(BetweenRequests, ct);
-        }
-        while (page <= lastPage);
-
-        Stamp(cn, "wiki_refreshed_at", DateTimeOffset.UtcNow.ToString("O"));
-
-        lock (_cacheGate)
-        {
-            Volatile.Write(ref _cache, null);
         }
 
-        // Ships are named from the same wiki, so every place that refreshes the item names
-        // refreshes theirs too — after the items are done, so a failure here never leaves
-        // the item names written but unstamped and uncached. A ship the list does not name
-        // shows its class instead, and the next refresh tries again.
+        if (start) _ = CompleteRefreshAsync(refresh, progress);
         try
         {
-            await Task.Delay(BetweenRequests, ct);
-            await new WikiVehicleCatalog(db, http).RefreshAsync(progress, ct);
+            return await refresh.Completion.Task.WaitAsync(ct);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        finally
         {
-            progress?.Report($"vehicle names not downloaded: {ex.Message}");
+            var waitForCleanup = false;
+            lock (_refreshGate)
+            {
+                refresh.Waiters--;
+                if (refresh.Waiters == 0 && ct.IsCancellationRequested && !refresh.Cleanup.Task.IsCompleted)
+                {
+                    if (!refresh.Completion.Task.IsCompleted) refresh.Cancellation.Cancel();
+                    waitForCleanup = true;
+                }
+            }
+            if (waitForCleanup)
+            {
+                await refresh.Cleanup.Task.ConfigureAwait(false);
+                _ = refresh.Completion.Task.Exception;
+            }
         }
+    }
 
-        return written;
+    private InflightRefresh? _inflightRefresh;
+
+    private async Task CompleteRefreshAsync(
+        InflightRefresh refresh,
+        IProgress<string>? progress)
+    {
+        var ct = refresh.Cancellation.Token;
+        var cancellationToken = refresh.Cancellation.Token;
+        int? result = null;
+        Exception? failure = null;
+        var wasCanceled = false;
+        try
+        {
+            var items = new List<WikiItem>();
+            var page = 1;
+            var lastPage = 1;
+
+            do
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var url = $"{ItemsUrl}?page[size]={PageSize}&page[number]={page}";
+                using var doc = await FetchJsonAsync(url, ct);
+
+                if (!doc.RootElement.TryGetProperty("meta", out var meta) ||
+                    meta.ValueKind != JsonValueKind.Object ||
+                    !meta.TryGetProperty("last_page", out var lp) ||
+                    lp.ValueKind != JsonValueKind.Number ||
+                    !lp.TryGetInt32(out var reportedLastPage) || reportedLastPage < page)
+                {
+                    throw new InvalidDataException($"The item catalogue page {page} did not contain valid pagination metadata.");
+                }
+
+                lastPage = Math.Max(lastPage, reportedLastPage);
+
+                var data = doc.RootElement.GetProperty("data");
+                if (data.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException($"The item catalogue page {page} did not contain an array.");
+
+                foreach (var element in data.EnumerateArray())
+                {
+                    if (ReadItem(element) is { } item) items.Add(item);
+                }
+
+                progress?.Report($"page {page}/{lastPage} ({items.Count} items)");
+                page++;
+
+            }
+            while (page <= lastPage);
+
+            ct.ThrowIfCancellationRequested();
+            var nextCache = new Dictionary<string, WikiItem>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in items) nextCache[item.ClassName] = item;
+
+            lock (_cacheGate)
+            {
+                using var cn = db.Open();
+                using var tx = cn.BeginTransaction();
+                using (var delete = cn.CreateCommand())
+                {
+                    delete.Transaction = tx;
+                    delete.CommandText = "DELETE FROM wiki_item";
+                    delete.ExecuteNonQuery();
+                }
+
+                foreach (var item in items) Upsert(cn, tx, item);
+                Stamp(cn, tx, "wiki_refreshed_at", DateTimeOffset.UtcNow.ToString("O"));
+                tx.Commit();
+                Volatile.Write(ref _cache, nextCache);
+            }
+
+            // Ships are named from the same wiki, so every place that refreshes the item names
+            // refreshes theirs too. A ship the list does not name shows its class instead, and
+            // the next refresh tries again.
+            await new WikiVehicleCatalog(db, http, _refresh).RefreshAsync(progress, ct);
+
+            result = items.Count;
+        }
+        catch (OperationCanceledException ex)
+        {
+            failure = ex;
+            wasCanceled = true;
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+        finally
+        {
+            lock (_refreshGate)
+            {
+                if (ReferenceEquals(_inflightRefresh, refresh)) _inflightRefresh = null;
+                refresh.Cancellation.Dispose();
+                if (wasCanceled) refresh.Completion.TrySetCanceled(cancellationToken);
+                else if (failure is not null) refresh.Completion.TrySetException(failure);
+                else refresh.Completion.TrySetResult(result!.Value);
+                refresh.Cleanup.TrySetResult();
+            }
+        }
     }
 
     /// <summary>When the catalogue was last downloaded, or null if it never has been.</summary>
@@ -172,6 +263,14 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
 
     private static string Display(WikiItem item, string fallback) =>
         string.IsNullOrWhiteSpace(item.DisplayName) ? fallback : item.DisplayName;
+
+    private async Task<JsonDocument> FetchJsonAsync(string url, CancellationToken ct)
+    {
+        using var response = await _refresh.SendAsync(http, () => new HttpRequestMessage(HttpMethod.Get, url), ct);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<JsonDocument>(ct)
+            ?? throw new InvalidOperationException($"Empty response from {url}");
+    }
 
     private Dictionary<string, WikiItem> Cache()
     {
@@ -265,9 +364,10 @@ public sealed class WikiNameService(TrackerDb db, HttpClient http)
         cmd.ExecuteNonQuery();
     }
 
-    private static void Stamp(SqliteConnection cn, string key, string value)
+    private static void Stamp(SqliteConnection cn, SqliteTransaction tx, string key, string value)
     {
         using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText =
             "INSERT INTO meta(key, value) VALUES($k, $v) ON CONFLICT(key) DO UPDATE SET value = $v";
         cmd.Parameters.AddWithValue("$k", key);

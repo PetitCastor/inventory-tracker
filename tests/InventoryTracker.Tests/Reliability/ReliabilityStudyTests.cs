@@ -26,8 +26,7 @@ public sealed class ReliabilityStudyTests(ITestOutputHelper output) : IDisposabl
     public void Dispose()
     {
         SqliteConnection.ClearAllPools();
-        try { Directory.Delete(_work, recursive: true); }
-        catch (IOException) { /* a pooled handle outlived the clear; the temp dir is harmless */ }
+        if (Directory.Exists(_work)) Directory.Delete(_work, recursive: true);
     }
 
     /// <summary>
@@ -102,11 +101,18 @@ public sealed class ReliabilityStudyTests(ITestOutputHelper output) : IDisposabl
 
         if (!report.SameCorpusAs(entry))
         {
-            // Different files measure different things; holding one to the other's numbers
-            // would fail on the corpus, not the code.
-            Assert.False(requireBaseline, $"The '{corpus}' corpus changed since its baseline. Re-record it with {UpdateVariable}=1.");
-            output.WriteLine($"The '{corpus}' corpus changed since its baseline; not comparing.");
-            return;
+            if (string.IsNullOrWhiteSpace(entry.CorpusFingerprint) && report.SameSizeAs(entry))
+            {
+                output.WriteLine($"The '{corpus}' baseline predates corpus fingerprints; identity is unverifiable, continuing metric comparison.");
+            }
+            else
+            {
+                // Different files measure different things; holding one to the other's numbers
+                // would fail on the corpus, not the code.
+                Assert.False(requireBaseline, $"The '{corpus}' corpus changed since its baseline. Re-record it with {UpdateVariable}=1.");
+                output.WriteLine($"The '{corpus}' corpus differs from its baseline; not comparing.");
+                return;
+            }
         }
 
         Assert.Empty(report.Regressions(entry));

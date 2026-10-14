@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -10,6 +11,19 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
     public string Corpus { get; } = corpus;
     public int Files { get; } = files;
     public long Bytes { get; } = bytes;
+
+    /// <summary>Files that define this corpus, ordered by normalized relative path.</summary>
+    private readonly List<CorpusFileIdentity> _manifest = [];
+    public IReadOnlyList<CorpusFileIdentity> Manifest => _manifest;
+
+    /// <summary>SHA-256 of the canonical file manifest, or null when identity was not measured.</summary>
+    public string? CorpusFingerprint { get; private set; }
+
+    public DateTimeOffset? PlacementCalibrationThrough { get; set; }
+    public DateTimeOffset? PlacementEvaluationFrom { get; set; }
+    public Dictionary<int, int> PlacementCalibrationSupportByBuild { get; } = [];
+    public Dictionary<int, double> PlacementLearnedFactors { get; } = [];
+    public List<int> PlacementWeakBuilds { get; } = [];
 
     public Dictionary<string, double> Metrics { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, long> Counts { get; } = new(StringComparer.Ordinal);
@@ -27,6 +41,14 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
     /// </summary>
     private const double Tolerance = 0.002;
 
+    public void SetManifest(IEnumerable<CorpusFileIdentity> files)
+    {
+        _manifest.Clear();
+        _manifest.AddRange(files.OrderBy(f => f.Path, StringComparer.Ordinal));
+        var canonical = JsonSerializer.Serialize(_manifest);
+        CorpusFingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
+
     /// <summary>Hard invariants broken by this run, regardless of any baseline.</summary>
     public IReadOnlyList<string> LimitViolations() =>
         ReliabilityMetrics.All
@@ -43,7 +65,12 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
             .ToList();
 
     /// <summary>Whether <paramref name="baseline"/> was recorded over this same set of files.</summary>
-    public bool SameCorpusAs(BaselineEntry baseline) => baseline.Files == Files && baseline.Bytes == Bytes;
+    public bool SameCorpusAs(BaselineEntry baseline) =>
+        !string.IsNullOrWhiteSpace(CorpusFingerprint)
+        && !string.IsNullOrWhiteSpace(baseline.CorpusFingerprint)
+        && string.Equals(CorpusFingerprint, baseline.CorpusFingerprint, StringComparison.Ordinal);
+
+    public bool SameSizeAs(BaselineEntry baseline) => baseline.Files == Files && baseline.Bytes == Bytes;
 
     private static bool Breaks(MetricDef m, double value, double limit) =>
         m.HigherIsBetter ? value < limit : value > limit;
@@ -59,6 +86,8 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
     {
         Files = Files,
         Bytes = Bytes,
+        Manifest = Manifest.ToList(),
+        CorpusFingerprint = CorpusFingerprint,
         Metrics = ReliabilityMetrics.All
             .Where(m => Metrics.ContainsKey(m.Key))
             .ToDictionary(m => m.Key, m => Math.Round(Metrics[m.Key], 4)),
@@ -75,7 +104,9 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
             $"{Get("moves"):N0} moves, {Get("holdings.rows"):N0} holdings.");
         sb.AppendLine();
         if (baseline is null) sb.AppendLine("_No baseline recorded for this corpus yet._");
-        else if (!SameCorpusAs(baseline)) sb.AppendLine("_The corpus changed since the baseline was recorded; the comparison is indicative only._");
+        else if (!SameCorpusAs(baseline) && string.IsNullOrWhiteSpace(baseline.CorpusFingerprint) && SameSizeAs(baseline))
+            sb.AppendLine("_Legacy baseline: corpus identity cannot be verified; metric comparisons still apply._");
+        else if (!SameCorpusAs(baseline)) sb.AppendLine("_The corpus differs from its baseline; the comparison is indicative only._");
         sb.AppendLine();
 
         sb.AppendLine("| Metric | Value | Baseline | Target | Status |");
@@ -90,11 +121,54 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
         }
 
         sb.AppendLine();
+        sb.AppendLine("## Evidence limits");
+        sb.AppendLine();
+        sb.AppendLine("There is no independent inventory ground truth. Placement accuracy is agreement with later named move sources; unit accounting is a replay proxy bounded by class-level units observed in the logs. Confidence scores are resolver heuristics, not validated probabilities.");
+
+        sb.AppendLine();
+        sb.AppendLine("## Temporal placement evaluation");
+        sb.AppendLine();
+        if (PlacementCalibrationThrough is { } calibrationThrough && PlacementEvaluationFrom is { } evaluationFrom)
+        {
+            sb.AppendLine($"Calibration uses check-update incidences through {calibrationThrough:O}; evaluation starts at {evaluationFrom:O}. Same-timestamp incidences stay together.");
+            sb.AppendLine($"Learned factors: {PlacementLearnedFactors.Count}; weak or unsupported evaluation builds: {(PlacementWeakBuilds.Count == 0 ? "none" : string.Join(", ", PlacementWeakBuilds))}.");
+        }
+        else
+        {
+            sb.AppendLine("No temporal holdout is available; there are not enough distinct timestamps with update evidence.");
+        }
+
+        sb.AppendLine();
         sb.AppendLine("## Ledger");
         sb.AppendLine();
         foreach (var (key, value) in Counts.Where(kv => kv.Key.StartsWith("ledger.", StringComparison.Ordinal)))
         {
             sb.AppendLine($"- `{key}`: {value:N0}");
+        }
+
+        if (Counts.TryGetValue("placement.examples", out var placementExamples))
+        {
+            sb.AppendLine();
+            sb.AppendLine("## Placement summary");
+            sb.AppendLine();
+            var same = Counts.GetValueOrDefault("placement.same_place");
+            sb.AppendLine($"- Same place: {same:N0}/{placementExamples:N0} examples");
+            if (Metrics.TryGetValue("placement.accuracy", out var accuracy))
+                sb.AppendLine($"- Placement agreement: {(accuracy * 100).ToString("0.0", CultureInfo.InvariantCulture)} %");
+            sb.AppendLine($"- Calibration incidences: {Counts.GetValueOrDefault("placement.calibration.incidences"):N0}");
+            sb.AppendLine($"- Evaluation incidences: {Counts.GetValueOrDefault("placement.evaluation.incidences"):N0}");
+            if (Metrics.TryGetValue("placement.in_sample_brier", out var inSampleBrier))
+                sb.AppendLine($"- In-sample Brier score: {inSampleBrier.ToString("0.###", CultureInfo.InvariantCulture)}");
+            if (Metrics.TryGetValue("placement.evaluation_brier", out var evaluationBrier))
+                sb.AppendLine($"- Holdout Brier score: {evaluationBrier.ToString("0.###", CultureInfo.InvariantCulture)}");
+            else
+                sb.AppendLine("- Holdout Brier score: unavailable (no evaluation support)");
+            if (PlacementCalibrationSupportByBuild.Count > 0)
+            {
+                sb.AppendLine("- Calibration support by update build:");
+                foreach (var (build, support) in PlacementCalibrationSupportByBuild.OrderBy(kv => kv.Key))
+                    sb.AppendLine($"  - build {build}: {support} incidence(s)");
+            }
         }
 
         if (PlacementTable.Count > 0)
@@ -150,15 +224,27 @@ public sealed class ReliabilityReport(string corpus, int files, long bytes)
         m.IsRate ? $"{v * 100:F1} %" : v.ToString("0.###", CultureInfo.InvariantCulture);
 
     public string ToJson() => JsonSerializer.Serialize(
-        new { Corpus, Files, Bytes, Metrics, Counts, MissedByType, Caveats, MissCauses },
+        new
+        {
+            Corpus, Files, Bytes, CorpusFingerprint, Manifest,
+            PlacementCalibrationThrough, PlacementEvaluationFrom, PlacementCalibrationSupportByBuild,
+            PlacementLearnedFactors, PlacementWeakBuilds,
+            EvidenceLimits = "No independent inventory ground truth; placement is agreement with later named sources, unit accounting is a replay proxy, and confidence scores are heuristics.",
+            Metrics, Counts, MissedByType, Caveats, MissCauses,
+        },
         new JsonSerializerOptions { WriteIndented = true });
 }
+
+/// <summary>One discovered corpus file and its content identity.</summary>
+public sealed record CorpusFileIdentity(string Path, long Bytes, string Sha256);
 
 /// <summary>One corpus's recorded metrics — the ratchet the study is held to.</summary>
 public sealed class BaselineEntry
 {
     public int Files { get; set; }
     public long Bytes { get; set; }
+    public List<CorpusFileIdentity>? Manifest { get; set; }
+    public string? CorpusFingerprint { get; set; }
     public Dictionary<string, double> Metrics { get; set; } = new(StringComparer.Ordinal);
 }
 

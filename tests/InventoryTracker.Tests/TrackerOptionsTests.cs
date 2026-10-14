@@ -152,6 +152,121 @@ public sealed class TrackerOptionsTests : IDisposable
     }
 
     [Fact]
+    public async Task ApplyLogSourceAsync_CancellationWhileWaitingForAnotherApplyLeavesSourceUntouched()
+    {
+        var configPath = Path.Combine(_dir, "config.json");
+        SaveInitialConfig(configPath);
+        var firstDir = Path.Combine(_dir, "first-cancel-logs");
+        var secondDir = Path.Combine(_dir, "second-cancel-logs");
+        Directory.CreateDirectory(firstDir);
+        Directory.CreateDirectory(secondDir);
+        using var releaseFirst = new ManualResetEventSlim();
+        var firstSaved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstHooks = new TrackerOptionsApplyHooks
+        {
+            AfterConfigurationSaved = () =>
+            {
+                firstSaved.SetResult();
+                releaseFirst.Wait();
+            },
+        };
+
+        var first = Task.Run(() => _options.ApplyLogSourceAsync(
+            firstDir, null, _watcher, markSetupComplete: false, configPath, firstHooks));
+        await firstSaved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var cancellation = new CancellationTokenSource();
+        var second = _options.ApplyLogSourceAsync(
+            secondDir, new DateOnly(2026, 9, 1), _watcher, markSetupComplete: false,
+            configPath, hooks: null, cancellationToken: cancellation.Token);
+        cancellation.Cancel();
+
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => second.WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        finally
+        {
+            releaseFirst.Set();
+            await first.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+
+        Assert.Equal(firstDir, _options.LogDir);
+        Assert.Equal(firstDir, AppConfig.Load(configPath).LogDir);
+    }
+
+    [Fact]
+    public async Task ApplyLogSourceAsync_CancellationAfterSaveWaitsForResetAndRebuildWhenIngestLockIsHeld()
+    {
+        var configPath = Path.Combine(_dir, "config.json");
+        var initialLogs = _options.LogDir;
+        File.WriteAllText(Path.Combine(initialLogs, "Game.log"), Store + "\n");
+        await _watcher.ResetAndRebuildAsync();
+        Assert.NotEmpty(_state.Current.Holdings);
+        SaveInitialConfig(configPath);
+
+        var replacementLogs = Path.Combine(_dir, "replacement-cancel-logs");
+        Directory.CreateDirectory(replacementLogs);
+        var replacementDate = new DateOnly(2026, 9, 1);
+        var replacementDateValue = new DateTimeOffset(
+            replacementDate.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        var releaseIngestLock = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var ingestLockHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var completedPasses = 0;
+        _watcher.PassCompleted += () => Interlocked.Increment(ref completedPasses);
+        var lockHolder = _watcher.ResetAndRebuildAsync(
+            CancellationToken.None,
+            async () =>
+            {
+                ingestLockHeld.SetResult();
+                await releaseIngestLock.Task;
+            });
+        await ingestLockHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var cancellation = new CancellationTokenSource();
+        var configurationSaved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hooks = new TrackerOptionsApplyHooks
+        {
+            AfterConfigurationSaved = () =>
+            {
+                configurationSaved.SetResult();
+                cancellation.Cancel();
+            },
+        };
+        var apply = Task.Run(() => _options.ApplyLogSourceAsync(
+            replacementLogs, replacementDate, _watcher, markSetupComplete: false,
+            configPath: configPath, hooks: hooks, cancellationToken: cancellation.Token));
+
+        try
+        {
+            await configurationSaved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(replacementLogs, AppConfig.Load(configPath).LogDir);
+            Assert.False(apply.IsCompleted);
+        }
+        finally
+        {
+            releaseIngestLock.TrySetResult();
+        }
+
+        await lockHolder.WaitAsync(TimeSpan.FromSeconds(5));
+        var error = await Record.ExceptionAsync(() => apply.WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.IsAssignableFrom<OperationCanceledException>(error);
+        Assert.Equal(2, Volatile.Read(ref completedPasses));
+        var source = _options.CaptureLogSource();
+        var config = AppConfig.Load(configPath);
+        Assert.Equal((replacementLogs, replacementDateValue), source);
+        Assert.Equal(source.LogDir, config.LogDir);
+        Assert.Equal(source.InceptionDate, config.InceptionDate);
+        Assert.Empty(_state.Current.Holdings);
+        Assert.Equal(source.LogDir, _state.Current.Health.LogDir);
+        Assert.Equal(source.InceptionDate, _state.Current.Health.InceptionDate);
+        var lastPass = Assert.IsType<IngestPass>(_watcher.LastPass);
+        Assert.Equal(IngestTrigger.Reset, lastPass.Trigger);
+        Assert.Null(lastPass.Error);
+    }
+
+    [Fact]
     public async Task Invalid_log_directory_is_rejected_before_the_store_is_cleared()
     {
         var configPath = Path.Combine(_dir, "config.json");
