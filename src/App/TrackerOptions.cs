@@ -7,6 +7,7 @@ namespace InventoryTracker.App;
 public sealed class TrackerOptions
 {
     private readonly object _logSourceGate = new();
+    private readonly SemaphoreSlim _applyLogSourceGate = new(1, 1);
     private string _logDir = LogFileLocator.DefaultLogDir;
     private DateTimeOffset? _inceptionDate;
 
@@ -94,43 +95,77 @@ public sealed class TrackerOptions
     /// the two forms cannot answer "what happens when you change it" differently.
     /// </summary>
     public async Task ApplyLogSourceAsync(
-        string logDir, DateOnly? inceptionDate, LogWatchService watcher, bool markSetupComplete = false)
+        string logDir, DateOnly? inceptionDate, LogWatchService watcher, bool markSetupComplete = false,
+        string? configPath = null)
+        => await ApplyLogSourceAsync(logDir, inceptionDate, watcher, markSetupComplete, configPath, hooks: null);
+
+    internal async Task ApplyLogSourceAsync(
+        string logDir, DateOnly? inceptionDate, LogWatchService watcher, bool markSetupComplete,
+        string? configPath, TrackerOptionsApplyHooks? hooks)
     {
-        var config = AppConfig.Load();
-        var newDate = inceptionDate is { } d
-            ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
-            : (DateTimeOffset?)null;
-
-        // Against what the running watcher has been using, read before it is overwritten — not
-        // against config.json, whose LogDir can still be unset on a fresh install and would
-        // restart the watcher for a folder that never changed.
-        var currentSource = CaptureLogSource();
-        var logDirChanged = !string.Equals(currentSource.LogDir, logDir, StringComparison.OrdinalIgnoreCase);
-        var sourceUnchanged = !logDirChanged && currentSource.InceptionDate == newDate;
-
-        config.LogDir = logDir;
-        config.InceptionDate = newDate;
-        if (markSetupComplete) config.SetupComplete = true;
-        config.Save();
-
-        SetLogSource(config.LogDir ?? logDir, config.InceptionDate);
-        if (markSetupComplete) SetupComplete = true;
-
-        if (logDirChanged) watcher.RestartWatching();
-
-        // First run with the folder and date the app started with: the startup pass is
-        // already reading exactly that, and with no wipe date by default it is the whole
-        // history. Wiping it to read it all again would double the wait behind the spinner;
-        // a pass queued behind the startup one returns once that is done. Settings always
-        // rebuilds — that button is an explicit request to.
-        if (markSetupComplete && sourceUnchanged)
+        hooks?.BeforeGate?.Invoke();
+        if (!_applyLogSourceGate.Wait(0))
         {
-            await watcher.RebuildNowAsync();
-            return;
+            hooks?.OnApplyContended?.Invoke();
+            await _applyLogSourceGate.WaitAsync();
         }
+        try
+        {
+            if (string.IsNullOrWhiteSpace(logDir) || !Directory.Exists(logDir))
+                throw new DirectoryNotFoundException($"Log directory does not exist: {logDir}");
 
-        // The wipe and the re-ingest go together under the watcher's ingest lock; doing the
-        // reset here would race a background pass already in flight.
-        await watcher.ResetAndRebuildAsync();
+            var config = AppConfig.Load(configPath);
+            var newDate = inceptionDate is { } d
+                ? new DateTimeOffset(d.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero)
+                : (DateTimeOffset?)null;
+
+            // Against what the running watcher has been using, read before it is overwritten — not
+            // against config.json, whose LogDir can still be unset on a fresh install and would
+            // restart the watcher for a folder that never changed.
+            var currentSource = CaptureLogSource();
+            var logDirChanged = !string.Equals(currentSource.LogDir, logDir, StringComparison.OrdinalIgnoreCase);
+            var sourceUnchanged = !logDirChanged && currentSource.InceptionDate == newDate;
+
+            config.LogDir = logDir;
+            config.InceptionDate = newDate;
+            if (markSetupComplete) config.SetupComplete = true;
+            config.Save(configPath);
+            hooks?.AfterConfigurationSaved?.Invoke();
+
+            SetLogSource(config.LogDir ?? logDir, config.InceptionDate);
+            hooks?.AfterSourceApplied?.Invoke();
+            if (markSetupComplete) SetupComplete = true;
+
+            if (logDirChanged) watcher.RestartWatching();
+
+            // First run with the folder and date the app started with: the startup pass is
+            // already reading exactly that, and with no wipe date by default it is the whole
+            // history. Wiping it to read it all again would double the wait behind the spinner;
+            // a pass queued behind the startup one returns once that is done. Settings always
+            // rebuilds — that button is an explicit request to.
+            if (markSetupComplete && sourceUnchanged)
+            {
+                await watcher.RebuildNowAsync();
+                return;
+            }
+
+            // The wipe and the re-ingest go together under the watcher's ingest lock; doing the
+            // reset here would race a background pass already in flight.
+            if (hooks?.BeforeResetAsync is { } beforeReset) await beforeReset();
+            await watcher.ResetAndRebuildAsync();
+        }
+        finally
+        {
+            _applyLogSourceGate.Release();
+        }
     }
+}
+
+internal sealed class TrackerOptionsApplyHooks
+{
+    public Action? BeforeGate { get; init; }
+    public Action? OnApplyContended { get; init; }
+    public Action? AfterConfigurationSaved { get; init; }
+    public Action? AfterSourceApplied { get; init; }
+    public Func<Task>? BeforeResetAsync { get; init; }
 }

@@ -11,6 +11,8 @@ namespace InventoryTracker.App;
 /// </summary>
 public sealed class AppConfig
 {
+    private static readonly object PublishLock = new();
+
     public string? LogDir { get; set; }
     public string? DatabasePath { get; set; }
     public int? Port { get; set; }
@@ -110,15 +112,27 @@ public sealed class AppConfig
     /// next launch — the exact input <see cref="ReadOrDefault"/> has to recover from.
     /// </summary>
     public void Save(string? path = null)
+        => Save(path, afterTempWritten: null);
+
+    internal void Save(string? path, Action<string>? afterTempWritten)
     {
         path ??= DefaultPath;
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
         var json = JsonSerializer.Serialize(this, JsonOptions);
-        var temp = path + ".tmp";
+        var temp = path + $".{Guid.NewGuid():N}.tmp";
 
-        File.WriteAllText(temp, json);
-        File.Move(temp, path, overwrite: true);
+        try
+        {
+            File.WriteAllText(temp, json);
+            afterTempWritten?.Invoke(temp);
+            lock (PublishLock)
+                File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temp)) File.Delete(temp);
+        }
     }
 }
