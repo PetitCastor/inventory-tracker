@@ -1,6 +1,8 @@
+using System.Globalization;
 using InventoryTracker.Data;
 using InventoryTracker.Naming;
 using InventoryTracker.Resolve;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace InventoryTracker.App;
@@ -53,22 +55,36 @@ public sealed class TrackerState(
     public WikiNameService Names => names;
 
     /// <summary>Re-reads the store and re-resolves every item, then notifies subscribers.</summary>
-    public void Rebuild()
+    public void Rebuild() => Rebuild(afterOptionsCaptured: null, afterResolverLoaded: null, beforePublish: null);
+
+    internal void Rebuild(
+        Action? afterOptionsCaptured, Action? afterResolverLoaded, Action? beforePublish,
+        Action? afterLogDirCaptured = null)
     {
         lock (_rebuildGate)
         {
-            var resolver = HoldingResolver.Load(db);
+            // Keep the diagnostic values tied to this rebuild even if settings are changed
+            // while the database snapshot and in-memory replay are being built.
+            var (logDir, inceptionDate) = options.CaptureLogSource(afterLogDirCaptured);
+            afterOptionsCaptured?.Invoke();
+
+            IngestHealth? health = null;
+            var resolver = HoldingResolver.Load(
+                db,
+                asOf: null,
+                afterMovesRead: null,
+                readAdditionalSnapshot: cn => health = LoadHealthSnapshot(cn, logDir, inceptionDate));
+            afterResolverLoaded?.Invoke();
             var holdings = resolver.ResolveAll()
                 .Select(h => new NamedHolding(h, names.Resolve(h.ItemClass)))
                 .ToList();
 
-            // Read fresh each time rather than captured at construction: Settings can change
-            // the log directory or wipe date while the app is running.
-            var health = IngestHealth.Load(db, options.LogDir, options.InceptionDate);
+            var snapshot = new Snapshot(holdings, resolver, DateTimeOffset.UtcNow, health!);
+            beforePublish?.Invoke();
 
             lock (_gate)
             {
-                _current = new Snapshot(holdings, resolver, DateTimeOffset.UtcNow, health);
+                _current = snapshot;
             }
         }
 
@@ -87,5 +103,36 @@ public sealed class TrackerState(
                 log?.LogWarning(ex, "A snapshot subscriber failed");
             }
         }
+    }
+
+    private static IngestHealth LoadHealthSnapshot(
+        SqliteConnection cn, string logDir, DateTimeOffset? inceptionDate)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = """
+            SELECT
+                COUNT(*),
+                SUM(CASE WHEN last_ts IS NOT NULL THEN 1 ELSE 0 END),
+                COALESCE(SUM(unrecognised), 0),
+                MAX(last_line_ts)
+            FROM session
+            """;
+
+        using var r = cmd.ExecuteReader();
+        r.Read();
+
+        var logFiles = r.GetInt32(0);
+        var filesWithLines = r.IsDBNull(1) ? 0 : Convert.ToInt32(r.GetValue(1), CultureInfo.InvariantCulture);
+        var unrecognised = r.GetInt64(2);
+        var newestLogLine = r.IsDBNull(3)
+            ? (DateTimeOffset?)null
+            : DateTimeOffset.Parse(r.GetString(3), CultureInfo.InvariantCulture);
+
+        using var movesCmd = cn.CreateCommand();
+        movesCmd.CommandText = "SELECT COUNT(*) FROM move";
+        var moves = Convert.ToInt64(movesCmd.ExecuteScalar(), CultureInfo.InvariantCulture);
+
+        return new IngestHealth(
+            logDir, inceptionDate, logFiles, filesWithLines, moves, unrecognised, newestLogLine);
     }
 }

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using InventoryTracker.App;
 using InventoryTracker.Data;
 using InventoryTracker.Ingest;
 using InventoryTracker.Naming;
@@ -46,6 +48,65 @@ public sealed class LogIngestorTests : IDisposable
         using var cmd = cn.CreateCommand();
         cmd.CommandText = sql;
         return Convert.ToString(cmd.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private void ExecuteSql(string sql)
+    {
+        using var cn = _db.Open();
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.ExecuteNonQuery();
+    }
+
+    [Fact]
+    public void An_unreadable_backup_does_not_starve_live_and_is_retried_without_duplicates()
+    {
+        var backups = Path.Combine(_dir, "logbackups");
+        Directory.CreateDirectory(backups);
+        var backup = Path.Combine(backups, "Game Build(12881860) 12 Oct 26 (10 00 00).log");
+        var live = LivePath;
+        File.WriteAllText(backup, StoreLine("2026-10-12T10:00:00.000Z", 1) + "\n");
+        File.WriteAllText(live, StoreLine("2026-10-13T11:40:00.000Z", 2) + "\n");
+        File.SetLastWriteTimeUtc(backup, DateTime.UtcNow.AddHours(-1));
+        File.SetLastWriteTimeUtc(live, DateTime.UtcNow);
+
+        using (var blocker = new FileStream(backup, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            var ingestor = new LogIngestor(_db, _dir);
+            IngestStats? first = null;
+            IngestStats? second = null;
+            var firstError = Record.Exception(() => first = ingestor.IngestAll());
+            var secondError = Record.Exception(() => second = ingestor.IngestAll());
+
+            Assert.Null(firstError);
+            Assert.Null(secondError);
+            Assert.Contains(Path.GetFileName(backup)!, Assert.Single(first!.FileErrors));
+            Assert.Contains(Path.GetFileName(backup)!, Assert.Single(second!.FileErrors));
+            Assert.Equal(1, Convert.ToInt32(Scalar("SELECT COUNT(*) FROM session WHERE path = '" + live.Replace("'", "''") + "'")));
+            Assert.Equal(1, Convert.ToInt32(Scalar("SELECT COUNT(*) FROM move")));
+            Assert.Equal("0", Scalar("SELECT byte_offset FROM session WHERE path = '" + backup.Replace("'", "''") + "'"));
+            Assert.Equal(1, IngestHealth.Load(_db, _dir, null).IncompleteFiles);
+        }
+
+        var resumed = new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal(1, resumed.MovesInserted);
+        Assert.Equal(2, Convert.ToInt32(Scalar("SELECT COUNT(*) FROM move")));
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM session WHERE complete = 1"));
+        Assert.Equal(0, IngestHealth.Load(_db, _dir, null).IncompleteFiles);
+    }
+
+    [Fact]
+    public void A_database_integrity_error_still_propagates_from_ingestion()
+    {
+        Append(StoreLine("2026-10-13T11:40:00.000Z", 2));
+        ExecuteSql("CREATE TRIGGER l09_reject_move BEFORE INSERT ON move BEGIN SELECT RAISE(ABORT, 'l09 global integrity'); END;");
+
+        var error = Assert.Throws<SqliteException>(() => new LogIngestor(_db, _dir).IngestAll());
+
+        Assert.Contains("l09 global integrity", error.Message);
+        Assert.Equal("0", Scalar("SELECT COUNT(*) FROM move"));
+        Assert.Equal("0", Scalar("SELECT byte_offset FROM session WHERE path = '" + LivePath.Replace("'", "''") + "'"));
     }
 
     private const string Arrive =
@@ -133,6 +194,589 @@ public sealed class LogIngestorTests : IDisposable
         Assert.Equal("783810961476", Scalar("SELECT item_geid FROM move"));
         Assert.Equal("Equipped", Scalar("SELECT tgt_kind FROM move"));
     }
+
+    [Fact]
+    public void Reusing_a_request_number_consumes_each_spawn_for_its_own_occurrence()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(
+            AddMove("10:00:00.000", 11, cls), QueuedMove("10:00:00.001", 11, cls),
+            CompletedMove("10:00:01.000", 11), SpawnMove("10:00:02.000", 11, cls, "783810961476"),
+            AddMove("10:00:03.000", 11, cls), QueuedMove("10:00:03.001", 11, cls),
+            CompletedMove("10:00:04.000", 11), SpawnMove("10:00:05.000", 11, cls, "783810961477"));
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("783810961476,783810961477", Scalar("SELECT group_concat(item_geid, ',') FROM (SELECT item_geid FROM move ORDER BY id)"));
+    }
+
+    [Fact]
+    public void Replaying_a_consumed_spawn_does_not_assign_it_to_a_reused_occurrence()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var first = new[] { AddMove("10:00:00.000", 11, cls), QueuedMove("10:00:00.001", 11, cls),
+            CompletedMove("10:00:01.000", 11), SpawnMove("10:00:02.000", 11, cls, "783810961476") };
+        Append(first);
+        new LogIngestor(_db, _dir).IngestAll();
+        Assert.Equal("783810961476", Scalar("SELECT item_geid FROM move"));
+
+        ExecuteSql("UPDATE session SET byte_offset = " + System.Text.Encoding.UTF8.GetByteCount(first[0] + "\n"));
+        Append(AddMove("10:00:03.000", 11, cls), QueuedMove("10:00:03.001", 11, cls),
+            CompletedMove("10:00:04.000", 11), SpawnMove("10:00:05.000", 11, cls, "783810961477"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("2", Scalar("SELECT COUNT(*) FROM move"));
+        Assert.Equal("783810961476,783810961477", Scalar("SELECT group_concat(item_geid, ',') FROM (SELECT item_geid FROM move ORDER BY id)"));
+    }
+
+    [Theory]
+    [InlineData("783810961476")]
+    [InlineData("783810961478")]
+    public void Replaying_a_move_does_not_consume_a_new_spawn_waiting_for_the_next_occurrence(string nextGeid)
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var first = new[] { AddMove("10:00:00.000", 11, cls), QueuedMove("10:00:00.001", 11, cls),
+            CompletedMove("10:00:01.000", 11), SpawnMove("10:00:02.000", 11, cls, "783810961476") };
+        Append(first);
+        new LogIngestor(_db, _dir).IngestAll();
+        Assert.Equal("783810961476", Scalar("SELECT item_geid FROM move"));
+
+        Append(SpawnMove("10:00:03.000", 11, cls, nextGeid));
+        new LogIngestor(_db, _dir).IngestAll();
+        ExecuteSql("UPDATE session SET byte_offset = " + System.Text.Encoding.UTF8.GetByteCount(first[0] + "\n"));
+        Append(AddMove("10:00:04.000", 11, cls), QueuedMove("10:00:04.001", 11, cls),
+            CompletedMove("10:00:05.000", 11));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal(nextGeid,
+            Scalar("SELECT item_geid FROM move WHERE id = (SELECT MAX(id) FROM move)"));
+        Assert.Equal("2", Scalar("SELECT COUNT(*) FROM move"));
+    }
+
+    [Theory]
+    [InlineData("offset", "disconnect")]
+    [InlineData("version", "disconnect")]
+    [InlineData("offset", "counter")]
+    [InlineData("version", "counter")]
+    public void An_incompatible_snapshot_does_not_reopen_a_closed_generation(string invalidation, string boundary)
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:40:00.000", 23, cls), QueuedMove("10:40:00.001", 23, cls));
+        if (boundary == "disconnect")
+            Append("<2026-10-13T10:40:01.000Z> [Notice] <Channel Disconnected> cause=30016 reason=\"Remote Disconnect\" frame=1");
+        else Append(AddMove("10:40:01.000", 1, cls), QueuedMove("10:40:01.001", 1, cls));
+        new LogIngestor(_db, _dir).IngestAll();
+        ExecuteSql(invalidation == "offset"
+            ? "UPDATE ingest_correlation SET byte_offset = byte_offset - 1"
+            : "UPDATE ingest_correlation SET state_version = state_version + 1");
+        Append(SpawnMove("10:40:02.000", 23, cls, "783810961490"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("<NULL>", Scalar("SELECT COALESCE(item_geid, '<NULL>') FROM move WHERE request_no = 23"));
+    }
+
+    [Theory]
+    [InlineData("unknown-payload-version")]
+    [InlineData("inconsistent-generation")]
+    [InlineData("missing-snapshot")]
+    public void Conservative_snapshot_fallback_keeps_old_spawn_fenced_and_allows_late_lost_completion(string invalidation)
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:40:00.000", 23, cls), QueuedMove("10:40:00.001", 23, cls),
+            "<2026-10-13T10:40:01.000Z> [Notice] <Channel Disconnected> cause=30016 reason=\"Remote Disconnect\" frame=1");
+        new LogIngestor(_db, _dir).IngestAll();
+        ExecuteSql(invalidation switch
+        {
+            "unknown-payload-version" => "UPDATE ingest_correlation SET state_json = json_set(state_json, '$.Version', 999)",
+            "inconsistent-generation" => "UPDATE ingest_correlation SET state_json = json_set(state_json, '$.Generation', 999)",
+            _ => "DELETE FROM ingest_correlation",
+        });
+
+        Append(SpawnMove("10:40:02.000", 23, cls, "783810961490"));
+        var spawnPass = new LogIngestor(_db, _dir).IngestAll();
+        Assert.Equal("<NULL>", Scalar("SELECT COALESCE(item_geid, '<NULL>') FROM move WHERE request_no = 23"));
+        Assert.False(spawnPass.ChangedHoldings);
+
+        Append(CompletedMove("10:40:03.000", 23));
+        var completionPass = new LogIngestor(_db, _dir).IngestAll();
+        Assert.Equal("succeed", Scalar("SELECT result FROM move WHERE request_no = 23"));
+        Assert.True(completionPass.ChangedHoldings);
+        Assert.Equal(1, completionPass.CompletionsApplied);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Replaying_an_old_completion_does_not_confirm_a_new_occurrence(bool retryAfterSnapshotWriteFailure)
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var completedOccurrence = new[]
+        {
+            AddMove("10:00:00.000", 11, cls), QueuedMove("10:00:00.001", 11, cls),
+            CompletedMove("10:00:01.000", 11),
+        };
+        Append(completedOccurrence);
+        Append(AddMove("10:00:03.000", 11, cls), QueuedMove("10:00:03.001", 11, cls));
+        new LogIngestor(_db, _dir).IngestAll();
+        Assert.Equal("succeed|<NULL>", Scalar(
+            "SELECT group_concat(result, '|') FROM (SELECT COALESCE(result, '<NULL>') AS result FROM move ORDER BY id)"));
+
+        ExecuteSql("UPDATE session SET byte_offset = " + System.Text.Encoding.UTF8.GetByteCount(
+            completedOccurrence[0] + "\n" + completedOccurrence[1] + "\n"));
+        var ingestor = new LogIngestor(_db, _dir);
+        if (retryAfterSnapshotWriteFailure)
+        {
+            var snapshot = Scalar("SELECT state_json FROM ingest_correlation");
+            ExecuteSql("CREATE TRIGGER l04_r3_abort BEFORE UPDATE ON ingest_correlation BEGIN SELECT RAISE(ABORT, 'l04 r3 retry'); END");
+            Assert.Contains("l04 r3 retry", Assert.Throws<SqliteException>(() => ingestor.IngestAll()).Message);
+            Assert.Equal(snapshot, Scalar("SELECT state_json FROM ingest_correlation"));
+            Assert.Equal("<NULL>", Scalar("SELECT COALESCE(result, '<NULL>') FROM move ORDER BY id DESC LIMIT 1"));
+            ExecuteSql("DROP TRIGGER l04_r3_abort");
+        }
+
+        ingestor.IngestAll();
+        Assert.Equal("2", Scalar("SELECT COUNT(*) FROM move"));
+        Assert.Equal("succeed|<NULL>", Scalar(
+            "SELECT group_concat(result, '|') FROM (SELECT COALESCE(result, '<NULL>') AS result FROM move ORDER BY id)"));
+    }
+
+    [Fact]
+    public void Rewinding_after_add_preserves_the_pending_attach_caller()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var add = AddMove("10:00:00.000", 11, cls);
+        Append(add, "<2026-10-13T10:00:00.000Z> [Notice] <X> harmless checkpoint line");
+        new LogIngestor(_db, _dir).IngestAll();
+        Assert.Contains("AttachItem", Scalar("SELECT state_json FROM ingest_correlation"));
+        Assert.Equal("0", Scalar("SELECT COUNT(*) FROM move"));
+
+        ExecuteSql("UPDATE session SET byte_offset = " + System.Text.Encoding.UTF8.GetByteCount(add + "\n"));
+        Append(QueuedMove("10:00:00.001", 11, cls), CompletedMove("10:00:01.000", 11));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move WHERE tgt_kind = 'Equipped' AND caller LIKE '%AttachItem%'"));
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move WHERE result = 'succeed'"));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void Rotating_game_log_does_not_reuse_the_old_correlation_checkpoint(bool restart, bool clearSnapshotControl)
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var ingestor = new LogIngestor(_db, _dir);
+        Append(AddMove("10:00:00.000", 11, cls), QueuedMove("10:00:00.001", 11, cls),
+            CompletedMove("10:00:01.000", 11), SpawnMove("10:00:02.000", 11, cls, "783810961476"),
+            "<2026-10-13T10:00:03.000Z> [Notice] <X> " + new string('x', 2000));
+        ingestor.IngestAll();
+        Assert.Equal("783810961476", Scalar("SELECT item_geid FROM move"));
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM ingest_correlation"));
+        var oldCheckpoint = long.Parse(Scalar("SELECT byte_offset FROM ingest_correlation")!);
+
+        var next = new[] { AddMove("11:00:00.000", 11, cls), QueuedMove("11:00:00.001", 11, cls),
+            CompletedMove("11:00:01.000", 11), SpawnMove("11:00:02.000", 11, cls, "783810961477") };
+        var spawnOffset = System.Text.Encoding.UTF8.GetByteCount(string.Join("\n", next.Take(3)) + "\n");
+        Assert.True(spawnOffset < oldCheckpoint);
+        File.WriteAllText(Path.Combine(_dir, "Game.log"), string.Join("\n", next) + "\n");
+        if (clearSnapshotControl) ExecuteSql("DELETE FROM ingest_correlation");
+        if (restart) ingestor = new LogIngestor(_db, _dir);
+
+        ingestor.IngestAll();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move"));
+        Assert.Contains("11:00:00", Scalar("SELECT first_ts FROM session"));
+        Assert.Equal("succeed", Scalar("SELECT result FROM move"));
+        Assert.Equal("783810961477", Scalar("SELECT COALESCE(item_geid, '<NULL>') FROM move"));
+    }
+
+    [Fact]
+    public void Rotation_snapshot_invalidation_rolls_back_with_session_reset_and_retries()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var ingestor = new LogIngestor(_db, _dir);
+        Append(AddMove("10:00:00.000", 11, cls), QueuedMove("10:00:00.001", 11, cls),
+            CompletedMove("10:00:01.000", 11), SpawnMove("10:00:02.000", 11, cls, "783810961476"),
+            "<2026-10-13T10:00:03.000Z> [Notice] <X> " + new string('x', 2000));
+        ingestor.IngestAll();
+        var oldOffset = Scalar("SELECT byte_offset FROM session");
+        var oldSnapshot = Scalar("SELECT state_json FROM ingest_correlation");
+
+        var next = new[] { AddMove("11:00:00.000", 11, cls), QueuedMove("11:00:00.001", 11, cls),
+            CompletedMove("11:00:01.000", 11), SpawnMove("11:00:02.000", 11, cls, "783810961477") };
+        File.WriteAllText(Path.Combine(_dir, "Game.log"), string.Join("\n", next) + "\n");
+        ExecuteSql("CREATE TRIGGER l04_rotation_abort BEFORE UPDATE ON session WHEN NEW.byte_offset = 0 BEGIN SELECT RAISE(ABORT, 'l04 rotation retry'); END");
+
+        Assert.Contains("l04 rotation retry", Assert.Throws<SqliteException>(() => ingestor.IngestAll()).Message);
+        Assert.Equal(oldOffset, Scalar("SELECT byte_offset FROM session"));
+        Assert.Equal(oldSnapshot, Scalar("SELECT state_json FROM ingest_correlation"));
+        Assert.Equal("783810961476", Scalar("SELECT item_geid FROM move"));
+
+        ExecuteSql("DROP TRIGGER l04_rotation_abort");
+        ingestor.IngestAll();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move"));
+        Assert.Equal("783810961477", Scalar("SELECT COALESCE(item_geid, '<NULL>') FROM move"));
+        Assert.Equal("succeed", Scalar("SELECT result FROM move"));
+    }
+
+    [Fact]
+    public void Caller_survives_a_restart_between_add_move_and_queued()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:10:00.000", 13, cls));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Append(QueuedMove("10:10:00.001", 13, cls), CompletedMove("10:10:01.000", 13));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move WHERE tgt_kind = 'Equipped' AND caller LIKE '%AttachItem%'"));
+    }
+
+    [Fact]
+    public void Completed_move_survives_a_restart_until_its_spawn_arrives()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:20:00.000", 17, cls), QueuedMove("10:20:00.001", 17, cls), CompletedMove("10:20:01.000", 17));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Append(SpawnMove("10:20:02.000", 17, cls, "783810961488"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("783810961488", Scalar("SELECT item_geid FROM move"));
+        Assert.Equal("succeed", Scalar("SELECT result FROM move"));
+    }
+
+    [Fact]
+    public void Spawn_before_move_survives_a_restart_and_is_consumed_once()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(SpawnMove("10:25:00.000", 18, cls, "783810961488"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Append(AddMove("10:25:01.000", 18, cls), QueuedMove("10:25:01.001", 18, cls),
+            CompletedMove("10:25:02.000", 18));
+        new LogIngestor(_db, _dir).IngestAll();
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("783810961488", Scalar("SELECT item_geid FROM move"));
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move"));
+    }
+
+    [Fact]
+    public void Spawn_between_move_and_completion_survives_two_restarts()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:26:00.000", 20, cls), QueuedMove("10:26:00.001", 20, cls));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Append(SpawnMove("10:26:01.000", 20, cls, "783810961489"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Append(CompletedMove("10:26:02.000", 20));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("783810961489|succeed", Scalar("SELECT item_geid || '|' || result FROM move"));
+    }
+
+    [Fact]
+    public void Every_append_boundary_matches_a_single_pass_and_repeated_passes_do_not_duplicate()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var lines = new[]
+        {
+            AddMove("10:27:00.000", 22, cls),
+            QueuedMove("10:27:00.001", 22, cls),
+            CompletedMove("10:27:01.000", 22),
+            SpawnMove("10:27:02.000", 22, cls, "783810961490"),
+            StoreLine("2026-10-13T10:27:03.000Z", 40),
+        };
+
+        var expected = RunIngest(lines, cuts: []);
+        Assert.Contains("783810961490", expected);
+        Assert.Contains("holdings=481104483777|", expected);
+        Assert.Contains("rows=2", expected);
+        foreach (var cut in Enumerable.Range(1, lines.Length - 1))
+            Assert.Equal(expected, RunIngest(lines, [cut]));
+        for (var first = 1; first < lines.Length - 1; first++)
+            for (var second = first + 1; second < lines.Length; second++)
+                Assert.Equal(expected, RunIngest(lines, [first, second]));
+        Assert.Equal(expected, RunIngest(lines, [1, 2, 3]));
+    }
+
+    [Fact]
+    public void Spawn_before_move_matches_single_pass_at_every_append_boundary()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var lines = new[]
+        {
+            SpawnMove("10:27:20.000", 34, cls, "783810961494"),
+            AddMove("10:27:21.000", 34, cls),
+            QueuedMove("10:27:21.001", 34, cls),
+            CompletedMove("10:27:22.000", 34),
+            StoreLine("2026-10-13T10:27:23.000Z", 41),
+        };
+
+        var expected = RunIngest(lines, cuts: []);
+        Assert.Contains("783810961494", expected);
+        Assert.Contains("holdings=481104483777|", expected);
+        foreach (var cut in Enumerable.Range(1, lines.Length - 1))
+            Assert.Equal(expected, RunIngest(lines, [cut]));
+        Assert.Equal(expected, RunIngest(lines, [1, 2, 3, 4]));
+    }
+
+    [Fact]
+    public void Rewinding_to_queued_after_completion_restores_correlation_and_enriches_once()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var add = AddMove("10:27:10.000", 32, cls);
+        var queued = QueuedMove("10:27:10.001", 32, cls);
+        var completed = CompletedMove("10:27:11.000", 32);
+        Append(add, queued, completed);
+        new LogIngestor(_db, _dir).IngestAll();
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move WHERE result = 'succeed' AND item_geid IS NULL"));
+
+        var queuedOffset = System.Text.Encoding.UTF8.GetByteCount(add + "\n");
+        using (var cn = _db.Open())
+        using (var cmd = cn.CreateCommand())
+        {
+            cmd.CommandText = "UPDATE session SET byte_offset = $offset";
+            cmd.Parameters.AddWithValue("$offset", queuedOffset);
+            cmd.ExecuteNonQuery();
+        }
+
+        Append(SpawnMove("10:27:12.000", 32, cls, "783810961493"));
+        var stats = new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal(new FileInfo(LivePath).Length, long.Parse(Scalar("SELECT byte_offset FROM session")!, System.Globalization.CultureInfo.InvariantCulture));
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move"));
+        var finalMove = Scalar("SELECT COALESCE(item_geid, '<NULL>') || '|' || COALESCE(result, '<NULL>') FROM move");
+        Assert.True(finalMove == "783810961493|succeed", $"Recovered={stats.GeidsRecovered}; lines={stats.LinesRead}; move={finalMove}; rows={Scalar("SELECT line_offset || '|' || item_class || '|' || request_no FROM move")}");
+        Assert.True(stats.ChangedHoldings);
+        var holdings = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 10, 13, 12, 0, 0, TimeSpan.Zero)).ResolveAll();
+        Assert.Contains(holdings, holding => holding.Geid == "783810961493");
+    }
+
+    [Fact]
+    public void Batch_occurrence_keeps_each_class_and_consumes_only_its_matching_spawn()
+    {
+        const string firstClass = "cds_combat_superheavy_suit_01_04_01";
+        const string secondClass = "grin_multitool_01_red01";
+        Append(
+            $"<2026-10-13T10:28:00.000Z> [Notice] <Add Inventory Management Move> New Request[24] Player[Pilot] Type[Interaction] " +
+            "SourceInventory[204821708183:Location:2273540638] TargetInventory[INVALID] " +
+            $"ItemClass[[{firstClass}] [{secondClass}]] StoredEntity[NULL] LocallyDetached[No] LocalAttached[NULL, ] PendingMoves[2, ] " +
+            "Caller[CSCLocalPlayerPersonalThoughtComponent::AttachItem]",
+            CompletedMove("10:28:01.000", 24),
+            SpawnMove("10:27:59.000", 24, firstClass, "783810961491"),
+            SpawnMove("10:27:58.000", 24, secondClass, "783810961492"));
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("2", Scalar("SELECT COUNT(*) FROM move"));
+        Assert.Equal("783810961491|783810961492", Scalar("SELECT group_concat(item_geid, '|') FROM (SELECT item_geid FROM move ORDER BY item_class)"));
+    }
+
+    [Fact]
+    public void Interleaved_queued_lines_do_not_look_like_a_request_counter_reset()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:29:00.000", 25, cls), AddMove("10:29:00.001", 26, cls),
+            QueuedMove("10:29:00.002", 25, cls), QueuedMove("10:29:00.003", 26, cls),
+            CompletedMove("10:29:01.000", 25), CompletedMove("10:29:01.001", 26));
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("2", Scalar("SELECT COUNT(*) FROM move WHERE tgt_kind = 'Equipped' AND caller LIKE '%AttachItem%' AND result = 'succeed'"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Replaying_interleaved_adds_after_the_cursor_preserves_an_earlier_pending_caller(bool rewind)
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        const string geid = "783810961499";
+        var add11 = AddMove("10:00:00.000", 11, cls);
+        var neutral = "<2026-10-13T10:00:00.001Z> [Notice] <Unrelated> no inventory event";
+        Append(add11, neutral,
+            AddMove("10:00:01.000", 12, cls), QueuedMove("10:00:01.001", 12, cls), CompletedMove("10:00:02.000", 12),
+            AddMove("10:00:03.000", 13, cls), QueuedMove("10:00:03.001", 13, cls), CompletedMove("10:00:04.000", 13));
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("2", Scalar("SELECT COUNT(*) FROM move"));
+        using (var state = JsonDocument.Parse(Scalar("SELECT state_json FROM ingest_correlation")!))
+        {
+            var root = state.RootElement;
+            Assert.Equal(0, root.GetProperty("Generation").GetInt64());
+            Assert.Equal(13, root.GetProperty("LastRequestNo").GetInt32());
+            Assert.Equal("CSCLocalPlayerPersonalThoughtComponent::AttachItem",
+                root.GetProperty("PendingCallers").GetProperty("11").GetProperty("Caller").GetString());
+        }
+
+        if (rewind)
+            ExecuteSql("UPDATE session SET byte_offset = " + System.Text.Encoding.UTF8.GetByteCount(add11 + "\n"));
+
+        Append(QueuedMove("10:00:05.000", 11, cls), CompletedMove("10:00:06.000", 11), SpawnMove("10:00:07.000", 11, cls, geid));
+        var stats = new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("3", Scalar("SELECT COUNT(*) FROM move"));
+        Assert.Equal(geid + "|succeed|Equipped|CSCLocalPlayerPersonalThoughtComponent::AttachItem",
+            Scalar("SELECT COALESCE(item_geid, '<NULL>') || '|' || COALESCE(result, '<NULL>') || '|' || tgt_kind || '|' || caller FROM move WHERE request_no = 11"));
+        Assert.True(stats.ChangedHoldings);
+        var holdings = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 10, 13, 12, 0, 0, TimeSpan.Zero)).ResolveAll();
+        Assert.Contains(holdings, holding => holding.Geid == geid);
+    }
+
+    [Fact]
+    public void One_occurrence_accepts_disordered_timestamps_inside_the_pairing_windows()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:31:00.000", 27, cls), QueuedMove("10:30:59.000", 27, cls),
+            CompletedMove("10:30:58.000", 27), SpawnMove("10:30:57.000", 27, cls, "783810961495"));
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move WHERE request_no = 27 AND item_geid = '783810961495' AND result = 'succeed' AND caller LIKE '%AttachItem%'"));
+    }
+
+    [Fact]
+    public void Persisted_correlation_maps_are_bounded_per_kind()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        var firstRequests = Enumerable.Range(1, 500).ToArray();
+        var moves = firstRequests.Select(request => QueuedMove("11:00:00.000", request, cls));
+        var firstAdds = firstRequests.Select(request => AddMove("11:00:00.000", request, cls));
+        var callers = Enumerable.Range(501, 500).Select(request => AddMove("11:00:00.000", request, cls));
+        var spawns = Enumerable.Range(0, 501).Select(i =>
+            SpawnMove("11:00:00.000", 999, cls, (700_000_000_000L + i).ToString(System.Globalization.CultureInfo.InvariantCulture)));
+        Append(firstAdds.Concat(moves).Concat(callers).Concat(spawns).ToArray());
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        using var state = JsonDocument.Parse(Scalar("SELECT state_json FROM ingest_correlation")!);
+        var root = state.RootElement;
+        var callerCount = root.GetProperty("PendingCallers").EnumerateObject().Count();
+        var spawnCount = root.GetProperty("PendingGeids").EnumerateObject().Sum(x => x.Value.GetArrayLength());
+        var issuedCount = root.GetProperty("IssuedRequests").GetArrayLength();
+        var pendingMoveCount = root.GetProperty("MoveByRequest").EnumerateObject().Sum(x => x.Value.GetArrayLength());
+        var requestHistoryCount = root.GetProperty("RequestHistory").GetArrayLength();
+        Assert.Equal(500, callerCount);
+        Assert.Equal(500, spawnCount);
+        Assert.Equal(500, issuedCount);
+        Assert.Equal(500, pendingMoveCount);
+        Assert.Equal(500, requestHistoryCount);
+    }
+
+    private string RunIngest(string[] lines, int[] cuts)
+    {
+        var run = Guid.NewGuid().ToString("N");
+        var dir = Path.Combine(_dir, run);
+        Directory.CreateDirectory(dir);
+        var log = Path.Combine(dir, "Game.log");
+        var db = new TrackerDb(Path.Combine(dir, "tracker.db"));
+        db.Initialize();
+
+        var boundary = cuts.Length == 0 ? lines.Length : cuts[0];
+        File.WriteAllText(log, string.Join("\n", lines.Take(boundary)) + "\n");
+        new LogIngestor(db, dir).IngestAll();
+
+        foreach (var cut in cuts.Skip(1).Append(lines.Length))
+        {
+            File.AppendAllText(log, string.Join("\n", lines.Skip(boundary).Take(cut - boundary)) + "\n");
+            boundary = cut;
+            new LogIngestor(db, dir).IngestAll();
+        }
+
+        using var cn = db.Open();
+        using var count = cn.CreateCommand();
+        count.CommandText = "SELECT COUNT(*) FROM move";
+        var rowCount = Convert.ToInt32(count.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
+
+        using var cmd = cn.CreateCommand();
+        cmd.CommandText = "SELECT item_class,item_geid,src_kind,src_key,tgt_kind,tgt_key,amount,action,caller,result FROM move ORDER BY id";
+        using var reader = cmd.ExecuteReader();
+        var rows = new List<string>();
+        while (reader.Read())
+            rows.Add(string.Join("|", Enumerable.Range(0, reader.FieldCount).Select(i => reader.IsDBNull(i) ? "<NULL>" : Convert.ToString(reader.GetValue(i), System.Globalization.CultureInfo.InvariantCulture))));
+        reader.Close();
+
+        var holdings = HoldingResolver.Load(db, asOf: new DateTimeOffset(2026, 10, 13, 12, 0, 0, TimeSpan.Zero))
+            .ResolveAll().OrderBy(holding => holding.Geid, StringComparer.Ordinal)
+            .Select(holding => $"{holding.Geid}|{holding.ItemClass}|{holding.Quantity}|{string.Join(">", holding.Chain.Select(link => $"{link.Kind}:{link.Key}"))}");
+        return $"rows={rowCount}\n" + string.Join("\n", rows) + "\nholdings=" + string.Join(";", holdings);
+    }
+
+    [Fact]
+    public void An_old_spawn_more_than_the_pairing_window_before_a_move_is_rejected()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:30:00.000", 19, cls), QueuedMove("10:30:00.001", 19, cls),
+            SpawnMove("10:28:59.000", 19, cls, "783810961489"));
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move WHERE item_geid IS NULL"));
+    }
+
+    [Fact]
+    public void A_completion_more_than_its_window_before_a_move_is_rejected()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:35:00.000", 21, cls), QueuedMove("10:35:00.001", 21, cls),
+            CompletedMove("10:32:59.000", 21));
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move WHERE result IS NULL"));
+    }
+
+    [Fact]
+    public void A_disconnect_is_a_generation_boundary_for_later_spawns()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:40:00.000", 23, cls), QueuedMove("10:40:00.001", 23, cls),
+            "<2026-10-13T10:40:01.000Z> [Notice] <Channel Disconnected> cause=30016 reason=\"Remote Disconnect\" frame=1",
+            SpawnMove("10:40:02.000", 23, cls, "783810961490"));
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move WHERE item_geid IS NULL"));
+        Assert.Equal("lost", Scalar("SELECT result FROM move"));
+    }
+
+    [Fact]
+    public void A_lower_request_number_starts_a_new_generation()
+    {
+        const string cls = "cds_combat_superheavy_suit_01_04_01";
+        Append(AddMove("10:50:00.000", 25, cls), QueuedMove("10:50:00.001", 25, cls),
+            AddMove("10:50:02.000", 1, cls), QueuedMove("10:50:02.001", 1, cls),
+            SpawnMove("10:50:03.000", 25, cls, "783810961491"));
+
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM move WHERE request_no = 25 AND item_geid IS NULL"));
+    }
+
+    private static string AddMove(string time, int request, string itemClass) =>
+        $"<2026-10-13T{time}Z> [Notice] <Add Inventory Management Move> New Request[{request}] Player[Pilot] " +
+        $"Type[Interaction] SourceInventory[204821708183:Location:2273540638] TargetInventory[INVALID] ItemClass[{itemClass}] " +
+        "StoredEntity[NULL] LocallyDetached[No] LocalAttached[NULL, Body_ItemPort:Armor_Undersuit] PendingMoves[1, ] " +
+        "Caller[CSCLocalPlayerPersonalThoughtComponent::AttachItem]";
+
+    private static string QueuedMove(string time, int request, string itemClass) =>
+        $"<2026-10-13T{time}Z> [Notice] <Inventory Mgmt Request Queued> Queued Request[{request}] Type[Interaction] " +
+        $"for 'Pilot' [204821708183] Source Inventory[204821708183:Location:2273540638] Target Inventory[INVALID]. " +
+        $"Source[{itemClass}] amount[1] rank[a]. Target[NULL] amount[0] rank[]. Item[NONE] action[None]. RequestInProgress[0] CurrentProcess[]";
+
+    private static string CompletedMove(string time, int request) =>
+        $"<2026-10-13T{time}Z> [Notice] <Inventory Request Completed> Request[{request}] Player[Pilot] Result[succeed] Elapsed[0.001] PendingMoves[1]";
+
+    private static string SpawnMove(string time, int request, string itemClass, string geid) =>
+        $"<2026-10-13T{time}Z> [Notice] <UnstowPendingEntities> Unstow Request[{request}] for 'Pilot' [204821708183] " +
+        $"finalized spawn of '{itemClass}_{geid}' [{geid}], 0 remaining";
 
     [Fact]
     public void Records_a_carry_into_the_hand_with_the_entity_its_spawn_names()

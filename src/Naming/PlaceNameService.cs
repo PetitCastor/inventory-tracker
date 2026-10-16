@@ -17,18 +17,19 @@ namespace InventoryTracker.Naming;
 /// put. The player can confirm or correct any name, and that is final too.
 /// </para>
 /// </summary>
-public sealed class PlaceNameService(TrackerDb db, TrackerOptions options, HttpClient http)
+public sealed class PlaceNameService(
+    TrackerDb db, TrackerOptions options, HttpClient http, WikiRefreshCoordinator? refresh = null)
 {
     private const string LocationsUrl = "https://api.star-citizen.wiki/api/locations";
 
     /// <summary>The API caps page size at 200 regardless of what is asked for.</summary>
     private const int PageSize = 200;
 
-    /// <summary>Same courtesy delay as <see cref="WikiNameService"/>.</summary>
-    private static readonly TimeSpan BetweenRequests = TimeSpan.FromMilliseconds(400);
-
+    private readonly WikiRefreshCoordinator _refresh = refresh ?? WikiRefreshCoordinator.Shared;
     private readonly Lock _textGate = new();
     private (string Path, DateTime Written, GameLocalization Text)? _text;
+
+    internal WikiRefreshCoordinator RefreshCoordinator => _refresh;
 
     /// <summary>
     /// Downloads the wiki's location list and replaces the local copy (~1,970 places, ten
@@ -47,7 +48,9 @@ public sealed class PlaceNameService(TrackerDb db, TrackerOptions options, HttpC
             ct.ThrowIfCancellationRequested();
 
             var url = $"{LocationsUrl}?page[size]={PageSize}&page[number]={page}";
-            using var doc = await http.GetFromJsonAsync<JsonDocument>(url, ct)
+            using var response = await _refresh.SendAsync(http, () => new HttpRequestMessage(HttpMethod.Get, url), ct);
+            response.EnsureSuccessStatusCode();
+            using var doc = await response.Content.ReadFromJsonAsync<JsonDocument>(ct)
                 ?? throw new InvalidOperationException($"Empty response from {url}");
 
             if (doc.RootElement.TryGetProperty("meta", out var meta) &&
@@ -64,7 +67,6 @@ public sealed class PlaceNameService(TrackerDb db, TrackerOptions options, HttpC
             progress?.Report($"places page {page}/{lastPage} ({rows.Count} places)");
             page++;
 
-            if (page <= lastPage) await Task.Delay(BetweenRequests, ct);
         }
         while (page <= lastPage);
 

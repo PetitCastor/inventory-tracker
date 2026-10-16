@@ -7,6 +7,11 @@ trustworthy, and what was tried and found not to work.
 These are also the natural fixture source for `tests/InventoryTracker.Tests`: the log lines
 quoted here are real records.
 
+The log corpus documents observed signals, not a complete record of every inventory change.
+The tracker can estimate locations only from available events and plausible recent positions;
+confidence scores describe evidence strength and do not guarantee that an estimate is current
+or complete. See the [replay reliability study](../reliability/README.md) for measured limits.
+
 - [Parse cutoff: 4.9 only](sc-parse-cutoff-49.md) — **hard stop**: parse only build >= 12232306 (2026-07-16+). Read before writing any scan.
 - [SC log corpus](sc-log-corpus.md) — where the logs live, 603 files / 917MB / Mar-Jul 2026, session + crash stats.
 - [SC log grammar](sc-log-grammar.md) — line format and verified regex anchors for every extractable gameplay signal.

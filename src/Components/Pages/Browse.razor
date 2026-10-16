@@ -2,14 +2,24 @@
 @rendermode InteractiveServer
 @implements IDisposable
 @using InventoryTracker.Model
+@using InventoryTracker.Ingest
 @using InventoryTracker.Naming
 @inject TrackerState State
 @inject PlaceNameService Places
+@inject LogWatchService Watcher
 
 <PageTitle>Locations — Star Citizen inventory</PageTitle>
 
 @{
     var health = State.Current.Health;
+}
+
+@if (Watcher.LastPass?.Incomplete is { } incompleteFiles)
+{
+    <p class="banner banner-warn">
+        Some rotated log files could not be read and will be retried: @incompleteFiles.
+        The inventory shown below may be incomplete.
+    </p>
 }
 
 @* Unrecognised lines are a standing warning, not an emptiness explanation: the parser can

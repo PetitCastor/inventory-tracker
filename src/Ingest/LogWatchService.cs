@@ -139,7 +139,12 @@ public sealed class LogWatchService(
 
     /// <summary>Runs one ingest pass and returns only when it has finished, so the caller
     /// can show a rebuild-complete state.</summary>
-    public Task RebuildNowAsync() => Task.Run(() => Ingest(IngestTrigger.Manual));
+    public Task RebuildNowAsync(CancellationToken cancellationToken = default) =>
+        Task.Run(() =>
+        {
+            Ingest(IngestTrigger.Manual, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+        }, cancellationToken);
 
     /// <summary>One pass as the loop would run it for <paramref name="trigger"/>, for tests:
     /// the unforced triggers are the ones whose rebuild decisions need checking.</summary>
@@ -172,13 +177,19 @@ public sealed class LogWatchService(
     /// exists, so those lines would never be re-read.
     /// </para>
     /// </summary>
-    public Task ResetAndRebuildAsync() => Task.Run(() =>
+    public Task ResetAndRebuildAsync(CancellationToken cancellationToken = default) =>
+        ResetAndRebuildAsync(cancellationToken, afterLockAcquired: null, afterResetStarted: null);
+
+    internal Task ResetAndRebuildAsync(
+        CancellationToken cancellationToken,
+        Func<Task>? afterLockAcquired,
+        Func<Task>? afterResetStarted = null) => Task.Run(async () =>
     {
-        // Same guard as Ingest: a "Save and rebuild" still queued at exit must not fault the
-        // page that started it once the host has disposed the lock.
+        // Cancellation can prevent a queued reset from starting. Once the lock is acquired,
+        // reset and re-ingest are one critical operation: finish it before reporting cancellation.
         try
         {
-            _ingestLock.Wait();
+            await _ingestLock.WaitAsync(cancellationToken);
         }
         catch (ObjectDisposedException)
         {
@@ -187,7 +198,10 @@ public sealed class LogWatchService(
 
         try
         {
+            if (afterLockAcquired is not null) await afterLockAcquired();
+            cancellationToken.ThrowIfCancellationRequested();
             db.ResetIngest();
+            if (afterResetStarted is not null) await afterResetStarted();
 
             // The wipe alone changed what the UI should show; if the re-read below fails,
             // the next pass still owes the snapshot.
@@ -204,8 +218,9 @@ public sealed class LogWatchService(
             catch (ObjectDisposedException) { }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         RaisePassCompleted();
-    });
+    }, cancellationToken);
 
     /// <summary>
     /// Re-points the watcher after Settings changes the log directory. No scan of its own:
@@ -230,49 +245,59 @@ public sealed class LogWatchService(
         // a search term. Refresh it every launch, not just the first, so items the wiki
         // added since the last run (and the catalogue's own edits) show up without the
         // user having to remember to hit the manual refresh.
-        _ = RefreshCatalogueAsync(ct);
-        _ = RefreshPlacesAsync(ct);
-
-        while (!ct.IsCancellationRequested)
+        var startupRefreshes = new[]
         {
-            IngestTrigger trigger;
-            try
-            {
-                if (await _wake.WaitAsync(PollInterval, ct))
-                {
-                    await Task.Delay(Debounce, ct);
-                    trigger = Interlocked.Exchange(ref _manualPending, 0) == 1 ? IngestTrigger.Manual
-                        : _placesStale ? IngestTrigger.Places
-                        : IngestTrigger.Watcher;
-                }
-                else if (await ProbeLiveLengthAsync(ct) != Interlocked.Read(ref _seenLength))
-                {
-                    trigger = IngestTrigger.Poll;
-                }
-                else if (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastPassTicks) >= SweepInterval.Ticks)
-                {
-                    trigger = IngestTrigger.Sweep;
-                }
-                else
-                {
-                    continue;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            RefreshCatalogueAsync(ct),
+            RefreshPlacesAsync(ct),
+        };
 
-            try
+        try
+        {
+            while (!ct.IsCancellationRequested)
             {
-                Ingest(trigger, ct);
+                IngestTrigger trigger;
+                try
+                {
+                    if (await _wake.WaitAsync(PollInterval, ct))
+                    {
+                        await Task.Delay(Debounce, ct);
+                        trigger = Interlocked.Exchange(ref _manualPending, 0) == 1 ? IngestTrigger.Manual
+                            : _placesStale ? IngestTrigger.Places
+                            : IngestTrigger.Watcher;
+                    }
+                    else if (await ProbeLiveLengthAsync(ct) != Interlocked.Read(ref _seenLength))
+                    {
+                        trigger = IngestTrigger.Poll;
+                    }
+                    else if (DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastPassTicks) >= SweepInterval.Ticks)
+                    {
+                        trigger = IngestTrigger.Sweep;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                try
+                {
+                    Ingest(trigger, ct);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // The pass guards itself; this is for whatever slips past it. An exception out
+                    // of ExecuteAsync stops the host, which would take the whole tracker down.
+                    log.LogError(ex, "Watch loop iteration failed");
+                }
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // The pass guards itself; this is for whatever slips past it. An exception out
-                // of ExecuteAsync stops the host, which would take the whole tracker down.
-                log.LogError(ex, "Watch loop iteration failed");
-            }
+        }
+        finally
+        {
+            await Task.WhenAll(startupRefreshes);
         }
     }
 
@@ -309,6 +334,7 @@ public sealed class LogWatchService(
 
     private async Task RefreshCatalogueAsync(CancellationToken ct)
     {
+        var previousRefresh = names.LastRefresh();
         try
         {
             log.LogInformation("Downloading item catalogue from star-citizen.wiki");
@@ -319,11 +345,13 @@ public sealed class LogWatchService(
         catch (OperationCanceledException)
         {
             // Shutting down mid-download; the next launch retries.
+            if (names.LastRefresh() != previousRefresh) state.Rebuild();
         }
         catch (Exception ex)
         {
             // Names are a nicety — the tracker still works with raw class names, and the
             // tray menu offers a manual retry.
+            if (names.LastRefresh() != previousRefresh) state.Rebuild();
             log.LogWarning(ex, "Could not download item names");
         }
     }
@@ -434,6 +462,8 @@ public sealed class LogWatchService(
         IngestStats? stats = null;
         var rebuilt = false;
         string? error = null;
+        string? incomplete = null;
+        var incompleteWasPending = LastPass?.Incomplete is not null;
 
         // Decided before reading: a forced pass that fails part-way still owes its snapshot.
         if (trigger is IngestTrigger.Reset or IngestTrigger.Manual) _rebuildOwed = true;
@@ -449,14 +479,20 @@ public sealed class LogWatchService(
             }
 
             stats = _ingestor.IngestAll(ct);
+            if (stats.FileErrors.Count > 0)
+            {
+                incomplete = string.Join("; ", stats.FileErrors);
+                log.LogWarning("Could not read {Count} log file(s); they will be retried: {Files}",
+                    stats.FileErrors.Count, incomplete);
+            }
             var renamed = ResolvePlaces(stats);
 
             // Re-resolving is cheap, but pushing a no-op update to every open page is noise.
             // An UnrecognisedMove counts too: it means the game's log grammar just drifted,
             // and the health snapshot the UI reads needs to reflect that as soon as possible
             // rather than waiting for some unrelated change to trigger the next rebuild.
-            if (stats.ChangedHoldings || renamed > 0 || state.Current.BuiltAt == DateTimeOffset.MinValue ||
-                (stats.LinesRead > 0 && BannerStale()))
+            if (stats.ChangedHoldings || stats.FileErrors.Count > 0 || incompleteWasPending || renamed > 0 ||
+                state.Current.BuiltAt == DateTimeOffset.MinValue || (stats.LinesRead > 0 && BannerStale()))
             {
                 _rebuildOwed = true;
             }
@@ -542,7 +578,10 @@ public sealed class LogWatchService(
 
         var pass = new IngestPass(
             started, trigger, DateTimeOffset.UtcNow - started,
-            stats?.LinesRead ?? 0, stats?.MovesInserted ?? 0, rebuilt, error);
+            stats?.LinesRead ?? 0, stats?.MovesInserted ?? 0, rebuilt, error)
+        {
+            Incomplete = incomplete,
+        };
         lock (_statusGate) _lastPass = pass;
     }
 

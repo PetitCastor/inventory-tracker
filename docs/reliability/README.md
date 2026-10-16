@@ -49,6 +49,12 @@ dotnet test tests/InventoryTracker.Tests --filter "FullyQualifiedName~Sample_cor
 
 Commit the updated `baseline.json` with the change that earned it.
 
+Corpus identity is the SHA-256 of a canonical manifest containing each discovered file's
+normalized relative path, byte length, and content SHA-256. A matching file count and total
+size alone do not prove identity. Older baselines without a fingerprint remain unchanged:
+when their sizes match, the report marks identity as unverifiable and still applies their
+metric ratchet; when sizes differ, it reports the corpus change and skips the comparison.
+
 ## What is measured
 
 Each stage has its own metrics, so a regression points at the stage that caused it.
@@ -60,16 +66,20 @@ Each stage has its own metrics, so a regression points at the stage that caused 
 | Enrichment | `enrich.geid_coverage` | 85 % | Moves that name the exact entity rather than just a class. |
 | | `enrich.confirmed_rate` | 95 % | Moves carrying a `succeed` completion. An unconfirmed placement is scored ×0.5. |
 | Ledger | `ledger.accounted_rate` | 95 % | Class-level units the ledger can account for: found at the source, found on the player, or the class's first appearance. |
-| | `ledger.duplicate_risk_rate` | 2 % | Class-level units credited without a source while the same class was still recorded elsewhere. One of the two is wrong. |
+| | `ledger.duplicate_risk_rate` | 2 % | Class-level units credited without a source while the same class was recorded elsewhere; a possible double count, not verified inventory error. |
+| | `ledger.units_accounted_proxy` / `ledger.class_units` | — | Count and denominator for replay accounting. This is a proxy over observed class-level move units, not quantitative ground truth. |
 | Worn | `worn.evicted_then_resighted` | 0 | Entities a body listing took off the player that a later attachment line showed still on it, with no move in between: a listing that left out something worn. |
-| Holdings | `holdings.high_share` | 80 % | Rows rated High confidence, the ones the user can trust outright. |
+| Holdings | `holdings.high_share` | 80 % | Rows the resolver rates High; the band is a heuristic, not verified inventory accuracy. |
 | | `holdings.low_share` | 5 % | Rows rated Low. |
 | | `holdings.mean_score` | 0.85 | Mean resolver score. |
 | | `holdings.inferred_share` | 5 % | Rows that may be counted twice: an arrival with no source while the class was recorded elsewhere. |
 | | `holdings.first_seen_share` | 15 % | Rows whose history starts with the move that revealed them: loot, purchases, stock already there. Real, just without a past. |
 | Placement | `placement.within_build_same_place` | 95 % | Named moves whose source is where the ledger had the item, when no game update lies in between. Checks the ledger itself. |
-| | `placement.brier` | 0.05 | Calibration: mean squared gap between the trust the resolver puts in a placement (through its update weighting) and whether the game then confirmed it. 0 is perfect. |
-| | `placement.across_update_same_place` | 90 % | The same agreement across a game update, once the ledger has moved what the update moved to where the player spawned. It is what the resolver's update weighting is learned from. |
+| | `placement.accuracy` | — | Same-place named-source checks divided by all placement examples. This is agreement with later log evidence, not inventory ground truth. |
+| | `placement.brier` | 0.05 | Legacy baseline key for the resolver's production trust score against the same checks that informed its update factors; this remains an in-sample score. 0 is perfect. |
+| | `placement.in_sample_brier` | — | Explicit output alias for the same production/in-sample score; no separate target is set. |
+| | `placement.evaluation_brier` | — | Holdout Brier score per checked update incidence on later timestamps, using factors learned only from earlier calibration incidences. The report includes denominators and support by build; an unsupported update is marked weak. No target is set. |
+| | `placement.across_update_same_place` | 90 % | Agreement across updates, after applying the current relocation policy. The temporal holdout separately reports how earlier incidences score on later observations. |
 | Live | `live.parity` | **100 %** (invariant) | Replaying the busiest files as a growing `Game.log`, one watcher pass per 5 s of log time, gives exactly the single-pass result (every move row and every holding, score and caveats included). |
 | | `live.cold_parity` | 95 % | The same, but with a restart before every pass, so only what the store persists carries over. |
 
@@ -78,6 +88,13 @@ same next month.
 
 The report also lists the uncaptured requests by type with example lines, the ledger's
 counters, a histogram of the caveats on holdings, and any live tailing differences.
+
+Placement example counts, same-place accuracy, calibration/evaluation incidences, the
+holdout score, and resolver confidence scores are reported separately. Every placement
+check is paired with each update it crosses; all incidences from the same timestamp stay in
+the same temporal slice. There is no independent inventory ground truth in these logs. Unit
+accounting is bounded to class-level units observed in the replay; score and confidence are
+heuristics, not validated probabilities.
 
 ## Study of 2026-09-24
 
@@ -245,10 +262,13 @@ What the tracker does now:
 | `holdings.low_share` | 4.6 % | 74.6 % |
 | `holdings.mean_score` | 0.806 | 0.322 |
 
-The Brier score is the point of the change. Before it, every checked placement was trusted
-fully (all under 30 days old), and 13 of 47 were wrong. After it, the trust matches what
-happened. Be aware that it is in-sample: the update factors are learned from those same
-checks, so the real test is the next corpus.
+The historical Brier score is in-sample: the resolver's update factors were learned from
+those same checks. The report now also splits check-update incidences by time, keeping equal timestamps
+together, and computes a separate evaluation Brier score from the later slice. The factors
+used for that score are learned only from the earlier calibration slice. This is still
+limited log evidence, and updates without enough calibration observations are marked weak.
+Unknown build IDs (zero or negative) are also weak and use the 0.5 fallback in evaluation;
+they never contribute learned factors. The holdout score is not a claim of scientific validation.
 
 The holdings numbers fall because nearly all of this corpus's activity predates the update
 that moved everything. Those rows really are unreliable: 147 of them were placed before
@@ -354,6 +374,32 @@ is unknown. The three updates in this corpus all have one, so the numbers below 
 and an unverified update costs ×0.5. Nothing in this corpus says whether an update that
 leaves the player in place moves stored items. The next corpus can say so as soon as one
 item comes out of a station it was stored at before 12572603.
+
+## Decisions on reliability policy
+
+These decisions preserve the current policies. The observations below are limited to replay
+logs and do not establish scientific validation or independent inventory truth.
+
+1. **Relocation after a build update:** relocate belongings only when the player's last
+   recorded location differs from the first location after the update. The sample has direct
+   evidence for build 12519617 (13 checked items agreed after relocation to Area18); the two
+   later updates left the player at the same location and have no checks showing that they
+   moved belongings. Relocating on spawn alone would move items to a logout location without
+   evidence. One supported update is a small sample, so this remains a cautious policy.
+2. **Lost moves without completion:** keep the current handling for `lost` results. The
+   replay records them as skipped and only credits units when a later observation supports
+   that accounting (`ledger.lost_skipped`, `ledger.units_credited_by_lost`). A missing
+   completion does not establish whether the requested move happened; changing the ledger
+   policy from these logs would overstate what is known.
+3. **Definitive auto-confirmation:** keep the existing rule that an explicitly paired
+   successful completion confirms its move for confidence scoring. The study measures the
+   share of move rows carrying `succeed`, but it does not independently verify server state.
+   A completion is evidence emitted by the game's log and the ingestor's pairing rules, not
+   ground truth for the final inventory.
+4. **Scores and confidence:** keep the resolver's explainable score and High/Medium/Low bands
+   as heuristics. The old placement Brier score was in-sample; the temporal holdout now
+   reduces that leakage for the study but has limited support and shares the same log source.
+   Neither score nor confidence is a validated probability of the item being present.
 
 ## Improvement plan
 

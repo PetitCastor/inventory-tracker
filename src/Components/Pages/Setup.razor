@@ -1,11 +1,15 @@
 @page "/setup"
 @rendermode InteractiveServer
+@implements IAsyncDisposable
 @using InventoryTracker.App
 @using InventoryTracker.Ingest
+@using InventoryTracker.Naming
 @inject TrackerOptions Options
 @inject DesktopShell Shell
 @inject LogWatchService Watcher
 @inject NavigationManager Nav
+@inject Microsoft.Extensions.Hosting.IHostApplicationLifetime Lifetime
+@inject WikiRefreshTaskOwner ApplyOwner
 
 <PageTitle>Set up — Star Citizen inventory</PageTitle>
 
@@ -49,7 +53,7 @@
     }
     @if (_error is not null)
     {
-        <span class="subtle">@_error</span>
+        <span class="subtle" role="alert">@_error</span>
     }
 </div>
 
@@ -58,6 +62,8 @@
     private DateOnly? _inceptionDate;
     private string? _error;
     private bool _starting;
+    private bool _disposed;
+    private readonly CancellationTokenSource _pageStopping = new();
 
     protected override void OnInitialized()
     {
@@ -83,6 +89,7 @@
     /// service, then hands the user off to Browse.</summary>
     private async Task StartTracking()
     {
+        _error = null;
         if (string.IsNullOrWhiteSpace(_logDir) || !Directory.Exists(_logDir))
         {
             _error = "That folder does not exist — pick the one containing Game.log.";
@@ -98,13 +105,39 @@
         _starting = true;
         try
         {
-            await Options.ApplyLogSourceAsync(_logDir, _inceptionDate, Watcher, markSetupComplete: true);
+            await ApplyOwner.RunAsync(async ownerToken =>
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(ownerToken, _pageStopping.Token);
+                await Options.ApplyLogSourceAsync(
+                    _logDir, _inceptionDate, Watcher, markSetupComplete: true, cancellationToken: linked.Token);
+            });
+            Nav.NavigateTo("");
+        }
+        catch (OperationCanceledException ex) when (ApplyOwner.IsStopping || Lifetime.ApplicationStopping.IsCancellationRequested || _pageStopping.IsCancellationRequested)
+        {
+            System.Diagnostics.Trace.WriteLine($"Setup apply canceled during shutdown: {ex.Message}");
+        }
+        catch (OperationCanceledException ex)
+        {
+            _error = $"Setup was canceled: {ex.Message}";
+        }
+        catch (Exception ex) when (FormOperationErrors.TryGetMessage(ex, out _))
+        {
+            FormOperationErrors.TryGetMessage(ex, out var message);
+            _error = $"Could not apply the log source: {message}";
         }
         finally
         {
             _starting = false;
+            if (!_disposed) StateHasChanged();
         }
+    }
 
-        Nav.NavigateTo("");
+    public ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        _pageStopping.Cancel();
+        _pageStopping.Dispose();
+        return ValueTask.CompletedTask;
     }
 }

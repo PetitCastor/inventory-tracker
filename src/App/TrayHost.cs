@@ -7,6 +7,7 @@ using InventoryTracker.Data;
 using InventoryTracker.Ingest;
 using InventoryTracker.Naming;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -19,6 +20,13 @@ namespace InventoryTracker.App;
 /// </summary>
 public static class TrayHost
 {
+    internal sealed record StartupArguments(
+        string[] ApplicationArguments,
+        bool IsUpdateConfirmation,
+        string? ConfirmationPipeName,
+        string? ConfirmationNonce,
+        bool SkipUpdateOnce);
+
     private const string WikiClient = "star-citizen-wiki";
     private const string UpdateClient = "github-releases";
 
@@ -30,6 +38,8 @@ public static class TrayHost
 
     public static int Run(string[] args)
     {
+        if (!TryParseStartupArguments(args, out var startupArguments)) return 2;
+
         var options = TrackerOptions.Load();
 
         // The port is fixed so the bookmark keeps working, which means a second instance
@@ -50,12 +60,22 @@ public static class TrayHost
 
         // Checked before anything else starts: if a newer build exists, this replaces the
         // running exe and relaunches it instead of continuing to boot the old one.
-        if (CheckAndApplyUpdateOnStartup())
+        var isUpdateConfirmation = startupArguments.IsUpdateConfirmation;
+        var skipUpdateOnce = startupArguments.SkipUpdateOnce;
+        if (!isUpdateConfirmation && !skipUpdateOnce && CheckAndApplyUpdateOnStartup())
         {
             return 0;
         }
 
-        var builder = WebApplication.CreateBuilder(args);
+        var builder = WebApplication.CreateBuilder(startupArguments.ApplicationArguments);
+        var dataDirectory = Environment.GetEnvironmentVariable("INVENTORYTRACKER_DATA_DIR");
+        if (!string.IsNullOrEmpty(dataDirectory))
+        {
+            builder.Services.AddDataProtection()
+                .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(dataDirectory, "DataProtection-Keys")))
+                .ProtectKeysWithDpapi();
+        }
+
         builder.WebHost.UseUrls(options.Url);
         builder.Logging.SetMinimumLevel(LogLevel.Information);
 
@@ -65,12 +85,18 @@ public static class TrayHost
         builder.Logging.AddFilter<FileLoggerProvider>("Microsoft", LogLevel.Warning);
         builder.Logging.AddFilter<FileLoggerProvider>("System", LogLevel.Warning);
 
-        // Exit has nothing to flush (every write is already committed), but the default 30 s
-        // wait for open browser circuits to drain makes it look hung.
-        builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(3));
+        // Stop the owned work explicitly before asking the host to drain open circuits.
+        // The host timeout bounds only framework teardown after those operations are joined.
+        builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(5));
 
         var db = new TrackerDb(options.DatabasePath);
         db.Initialize();
+
+        if (isUpdateConfirmation)
+        {
+            VerifyEmbeddedResource("blazor.web.js");
+            VerifyEmbeddedResource("app.ico");
+        }
 
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(db);
@@ -97,11 +123,9 @@ public static class TrayHost
         // button in Settings — the startup check in Run() uses its own short-lived
         // HttpClient instead, since it runs before this container exists.
         //
-        // HttpClient.Timeout bounds the whole request including streaming the response body,
-        // not just the initial round trip, so it has to be generous enough for the exe
-        // download itself (this client backs both the release check and DownloadAsync). The
-        // check step gets its own short-lived cancellation instead, so a hung/offline check
-        // still fails fast without capping how long the download is allowed to take.
+        // With ResponseHeadersRead, HttpClient.Timeout only bounds the request through its
+        // headers. UpdateService applies its own five-minute token to the download body; the
+        // check step below uses the client's timeout while reading the release JSON.
         builder.Services.AddHttpClient(UpdateClient, c =>
         {
             c.Timeout = TimeSpan.FromMinutes(5);
@@ -113,6 +137,7 @@ public static class TrayHost
 
         builder.Services.AddSingleton<LogWatchService>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<LogWatchService>());
+        builder.Services.AddSingleton<WikiRefreshTaskOwner>();
 
         builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 
@@ -158,13 +183,23 @@ public static class TrayHost
             return 1;
         }
 
+        if (isUpdateConfirmation)
+        {
+            UpdateService.SendStartupConfirmation(
+                startupArguments.ConfirmationPipeName!, startupArguments.ConfirmationNonce!);
+        }
+
         // Under the app's own category: ILogger<WebApplication> logs as Microsoft.AspNetCore.*,
         // which the file filter above holds to Warning, so this line never reached tracker.log.
         app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(TrayHost).FullName!).LogInformation(
             "InventoryTracker {Version} started on {Url}, reading {LogDir}",
             UpdateService.CurrentVersion, options.Url, options.LogDir);
 
-        var tray = BuildTrayIcon(app, options);
+        var wikiRefreshOwner = app.Services.GetRequiredService<WikiRefreshTaskOwner>();
+        var tray = BuildTrayIcon(app, options, wikiRefreshOwner);
+        var messageLoopContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        var shutdownRegistration = RegisterMessageLoopStop(
+            app.Lifetime, messageLoopContext, Application.ExitThread);
         try
         {
             // Land first-time users on the setup wizard; the UI gate enforces it regardless.
@@ -175,24 +210,61 @@ public static class TrayHost
         {
             // Gone before the host stops: an open browser tab holds a Blazor circuit that
             // Kestrel waits on, and the icon should not linger in the tray while it does.
-            tray.Visible = false;
-            tray.Dispose();
+            try
+            {
+                tray.Visible = false;
+                tray.Dispose();
+            }
+            finally
+            {
+                shutdownRegistration.Dispose();
+            }
         }
 
-        try
-        {
-            app.StopAsync().GetAwaiter().GetResult();
-        }
-        catch (OperationCanceledException)
-        {
-            // The shutdown timeout ran out on a circuit or a pass still winding down. The
-            // process is exiting anyway; a crash dialog after "Exit" would only be noise.
-        }
+        app.Lifetime.StopApplication();
+        wikiRefreshOwner.StopAsync().GetAwaiter().GetResult();
+        app.Services.GetRequiredService<LogWatchService>()
+            .StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+        app.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
 
         return 0;
     }
 
-    private static NotifyIcon BuildTrayIcon(WebApplication app, TrackerOptions options)
+    internal static bool TryParseStartupArguments(string[] args, out StartupArguments startupArguments)
+    {
+        if (args.Length > 0 && args[0] == "--update-confirm")
+        {
+            const string pipePrefix = "InventoryTracker.Update.";
+            if (args.Length != 3 || !args[1].StartsWith(pipePrefix, StringComparison.Ordinal) ||
+                !Guid.TryParseExact(args[1][pipePrefix.Length..], "N", out _) || args[2].Length != 64 ||
+                args[2].Any(character => character is not (>= '0' and <= '9') and not (>= 'A' and <= 'F')))
+            {
+                startupArguments = new StartupArguments([], false, null, null, false);
+                return false;
+            }
+
+            startupArguments = new StartupArguments([], true, args[1], args[2], false);
+            return true;
+        }
+
+        if (args.Length > 0 && args[0] == "--skip-update-once")
+        {
+            if (args.Length != 1)
+            {
+                startupArguments = new StartupArguments([], false, null, null, false);
+                return false;
+            }
+
+            startupArguments = new StartupArguments([], false, null, null, true);
+            return true;
+        }
+
+        startupArguments = new StartupArguments(args, false, null, null, false);
+        return true;
+    }
+
+    private static NotifyIcon BuildTrayIcon(
+        WebApplication app, TrackerOptions options, WikiRefreshTaskOwner wikiRefreshOwner)
     {
         var menu = new ContextMenuStrip();
 
@@ -210,23 +282,49 @@ public static class TrayHost
         {
             try
             {
-                // Each download is kept on its own: a failed place list must not cost the
-                // item names that did arrive, nor skip the rebuild that shows them.
-                Exception? failed = null;
-                try { await app.Services.GetRequiredService<WikiNameService>().RefreshAsync(); }
-                catch (Exception ex) { failed = ex; }
-
-                try
+                IReadOnlyList<WikiRefreshCallerPipeline.Failure> failures = [];
+                await RunTrayRefreshAsync(wikiRefreshOwner, async ct =>
                 {
-                    await app.Services.GetRequiredService<PlaceNameService>().RefreshAsync();
-                    app.Services.GetRequiredService<LogWatchService>().RequestPlaceResolution();
-                }
-                catch (Exception ex) { failed ??= ex; }
+                    var services = app.Services;
+                    failures = await WikiRefreshCallerPipeline.RunAsync(
+                        () => services.GetRequiredService<WikiNameService>().RefreshAsync(ct: ct),
+                        () => services.GetRequiredService<PlaceNameService>().RefreshAsync(ct: ct),
+                        () => services.GetRequiredService<LogWatchService>().RequestPlaceResolution(),
+                        () => services.GetRequiredService<TrackerState>().Rebuild(),
+                        ct);
+                });
 
-                app.Services.GetRequiredService<TrackerState>().Rebuild();
-                if (failed is not null) throw failed;
+                if (failures.Count > 0)
+                {
+                    var unexpectedFailure = failures.FirstOrDefault(failure =>
+                        !FormOperationErrors.TryGetMessage(failure.Exception, out _));
+                    if (unexpectedFailure is not null)
+                    {
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(unexpectedFailure.Exception).Throw();
+                    }
+
+                    var details = string.Join(Environment.NewLine,
+                        failures.Select(failure => $"{failure.Source}: {failure.Exception.Message}"));
+                    var aggregate = new AggregateException(
+                        "One or more wiki refreshes failed.", failures.Select(failure => failure.Exception));
+                    app.Services.GetRequiredService<ILogger<WebApplication>>()
+                        .LogWarning(aggregate, "Could not refresh names from the wiki: {Failures}", details);
+
+                    MessageBox.Show(
+                        $"Could not download names from the wiki.\n\n{details}\n\n" +
+                        "The tracker keeps working; items show their raw class names, and " +
+                        "place names stay unconfirmed until you confirm them.",
+                        "Inventory Tracker",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                }
             }
-            catch (Exception ex)
+            catch (OperationCanceledException ex) when (wikiRefreshOwner.IsStopping)
+            {
+                // Tray shutdown cancels an owned refresh; it is not an offline warning.
+                Trace.WriteLine($"Tray wiki refresh canceled during shutdown: {ex.Message}");
+            }
+            catch (Exception ex) when (FormOperationErrors.TryGetMessage(ex, out _))
             {
                 app.Services.GetRequiredService<ILogger<WebApplication>>()
                     .LogWarning(ex, "Could not refresh names from the wiki");
@@ -256,12 +354,33 @@ public static class TrayHost
         return icon;
     }
 
+    internal static Task RunTrayRefreshAsync(
+        WikiRefreshTaskOwner owner, Func<CancellationToken, Task> refresh) =>
+        owner.RunAsync(ct => Task.Run(() => refresh(ct)));
+
+    internal static CancellationTokenRegistration RegisterMessageLoopStop(
+        IHostApplicationLifetime lifetime,
+        SynchronizationContext messageLoopContext,
+        Action exitMessageLoop) =>
+        lifetime.ApplicationStopping.Register(() =>
+            messageLoopContext.Post(static state => ((Action)state!).Invoke(), exitMessageLoop));
+
     // Embedded alongside blazor.web.js so the tray icon survives single-file publish
     // rather than depending on a loose .ico sitting next to the exe.
     private static Icon LoadAppIcon()
     {
         using var stream = typeof(TrayHost).Assembly.GetManifestResourceStream("app.ico");
         return stream is null ? SystemIcons.Application : new Icon(stream);
+    }
+
+    private static void VerifyEmbeddedResource(string resourceName)
+    {
+        using var stream = typeof(TrayHost).Assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Required embedded resource '{resourceName}' is missing.");
+        if (stream.ReadByte() < 0)
+        {
+            throw new InvalidDataException($"Required embedded resource '{resourceName}' is empty.");
+        }
     }
 
     private static void OpenBrowser(string url)
@@ -296,10 +415,9 @@ public static class TrayHost
     {
         try
         {
-            // Timeout has to cover the exe download below too (HttpClient.Timeout bounds the
-            // whole request, body included, not just the round trip to get headers) — the
-            // check itself is bounded separately by checkTimeout so a hung/offline check
-            // still fails fast without capping how long the download gets.
+            // The client timeout covers the check through its JSON body. DownloadAsync has
+            // a separate five-minute bound because ResponseHeadersRead leaves body reads to
+            // its cancellation token.
             using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
             http.DefaultRequestHeaders.UserAgent.ParseAdd(UpdateService.UserAgent);
             http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
@@ -314,23 +432,45 @@ public static class TrayHost
 
             // No message loop is running yet (Application.Run is further down in Run()), so
             // the download is pumped by hand to keep the window responsive and repainting.
-            var download = updates.DownloadAsync(info, new Progress<double>(progress.SetProgress));
-            while (!download.IsCompleted)
+            var applyUpdate = TryDownloadAndApplyStartupUpdateAsync(
+                updates,
+                info,
+                path =>
+                {
+                    progress.SetStatus("Restarting…");
+                    Application.DoEvents();
+                    UpdateService.InstallAndRestart(path);
+                },
+                new Progress<double>(progress.SetProgress));
+            while (!applyUpdate.IsCompleted)
             {
                 Application.DoEvents();
                 Thread.Sleep(15);
             }
-            var path = download.GetAwaiter().GetResult();
-
-            progress.SetStatus("Restarting…");
-            Application.DoEvents();
-
-            UpdateService.InstallAndRestart(path);
-            return true;
+            return applyUpdate.GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {
             Trace.WriteLine($"Update check skipped: {ex.Message}");
+            return false;
+        }
+    }
+
+    internal static async Task<bool> TryDownloadAndApplyStartupUpdateAsync(
+        UpdateService updates,
+        UpdateInfo info,
+        Action<string> install,
+        IProgress<double>? progress = null)
+    {
+        try
+        {
+            var path = await updates.DownloadAsync(info, progress);
+            install(path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"Startup update skipped: {ex.Message}");
             return false;
         }
     }

@@ -31,10 +31,17 @@ public sealed class TrackerDb
     }
 
     /// <summary>The default store location, alongside the user's other app data.</summary>
-    public static string DefaultPath => System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "InventoryTracker",
-        "tracker.db");
+    public static string DefaultPath => ResolveDefaultPath(
+        Environment.GetEnvironmentVariable("INVENTORYTRACKER_DATA_DIR"),
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+
+    internal static string ResolveDefaultPath(string? dataDirectory, string localApplicationDataPath)
+    {
+        var root = string.IsNullOrEmpty(dataDirectory)
+            ? System.IO.Path.Combine(localApplicationDataPath, "InventoryTracker")
+            : dataDirectory;
+        return System.IO.Path.Combine(root, "tracker.db");
+    }
 
     public SqliteConnection Open()
     {
@@ -69,36 +76,41 @@ public sealed class TrackerDb
     /// 11 -> 12 adds <c>session.build</c>; 12 -> 13 adds <c>session.first_loc_id</c> /
     /// <c>first_loc_since</c>; 13 -> 14 adds <c>attachment_sighting</c>; 14 -> 15 adds
     /// <c>wiki_location</c> and <c>place_name</c>; 15 -> 16 adds <c>vehicle</c> and <c>wiki_vehicle</c>.</para>
+    /// <para>16 -> 17 adds bounded, watermark-bound ingest correlation snapshots.</para>
     /// </summary>
-    private const int SchemaVersion = 16;
+    private const int SchemaVersion = 17;
 
     public void Initialize()
     {
         using var cn = Open();
+        using var transaction = cn.BeginTransaction();
 
         // A store built before versioning existed reports null, which is still a mismatch.
-        if (HasTable(cn, "move") && ReadMeta(cn, "schema_version") != SchemaVersion)
+        if (HasTable(cn, "move", transaction) && ReadMeta(cn, "schema_version", transaction) != SchemaVersion)
         {
-            Execute(cn, DropAll);
+            Execute(cn, DropAll, transaction);
         }
 
-        Execute(cn, Schema);
-        WriteMeta(cn, "schema_version", SchemaVersion);
+        Execute(cn, Schema, transaction);
+        WriteMeta(cn, "schema_version", SchemaVersion, transaction);
 
         // Same tables, different extraction: what an older parser left behind is missing
         // whatever the newer one learned to read, and completed files are never reopened
         // on their own. Schema 9 had to be bumped just to force that; this does it for any
         // parser change without touching the schema.
-        if (ReadMeta(cn, "parser_version") != InventoryEventParser.Version)
+        if (ReadMeta(cn, "parser_version", transaction) != InventoryEventParser.Version)
         {
-            Execute(cn, ClearIngest);
-            WriteMeta(cn, "parser_version", InventoryEventParser.Version);
+            Execute(cn, ClearIngest, transaction);
+            WriteMeta(cn, "parser_version", InventoryEventParser.Version, transaction);
         }
+
+        transaction.Commit();
     }
 
-    private static void WriteMeta(SqliteConnection cn, string key, int value)
+    private static void WriteMeta(SqliteConnection cn, string key, int value, SqliteTransaction? transaction = null)
     {
         using var stamp = cn.CreateCommand();
+        stamp.Transaction = transaction;
         stamp.CommandText =
             "INSERT INTO meta(key, value) VALUES($k, $v) " +
             "ON CONFLICT(key) DO UPDATE SET value = $v";
@@ -107,19 +119,21 @@ public sealed class TrackerDb
         stamp.ExecuteNonQuery();
     }
 
-    private static bool HasTable(SqliteConnection cn, string name)
+    private static bool HasTable(SqliteConnection cn, string name, SqliteTransaction? transaction = null)
     {
         using var probe = cn.CreateCommand();
+        probe.Transaction = transaction;
         probe.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $n";
         probe.Parameters.AddWithValue("$n", name);
         return probe.ExecuteScalar() is not null;
     }
 
-    private static int? ReadMeta(SqliteConnection cn, string key)
+    private static int? ReadMeta(SqliteConnection cn, string key, SqliteTransaction? transaction = null)
     {
-        if (!HasTable(cn, "meta")) return null;
+        if (!HasTable(cn, "meta", transaction)) return null;
 
         using var probe = cn.CreateCommand();
+        probe.Transaction = transaction;
         probe.CommandText = "SELECT value FROM meta WHERE key = $k";
         probe.Parameters.AddWithValue("$k", key);
         return probe.ExecuteScalar() is string s && int.TryParse(s, out var v) ? v : null;
@@ -129,11 +143,14 @@ public sealed class TrackerDb
     public void ResetIngest()
     {
         using var cn = Open();
-        Execute(cn, ClearIngest);
+        using var transaction = cn.BeginTransaction();
+        Execute(cn, ClearIngest, transaction);
+        transaction.Commit();
     }
 
     private const string ClearIngest = """
         DELETE FROM attachment_sighting;
+        DELETE FROM ingest_correlation;
         DELETE FROM move;
         DELETE FROM session;
         DELETE FROM location_name;
@@ -143,9 +160,10 @@ public sealed class TrackerDb
         DELETE FROM place_evidence;
         """;
 
-    private static void Execute(SqliteConnection cn, string sql)
+    private static void Execute(SqliteConnection cn, string sql, SqliteTransaction? transaction = null)
     {
         using var cmd = cn.CreateCommand();
+        cmd.Transaction = transaction;
         cmd.CommandText = sql;
         cmd.ExecuteNonQuery();
     }
@@ -183,6 +201,16 @@ public sealed class TrackerDb
             -- new build spawned where the update moved the player's stored items to.
             first_loc_id    TEXT,
             first_loc_since TEXT
+        );
+
+        -- Bounded parser correlation state is committed with the matching byte watermark.
+        -- It is versioned independently so an incompatible snapshot is never resumed.
+        CREATE TABLE IF NOT EXISTS ingest_correlation (
+            session_id    INTEGER PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
+            state_version INTEGER NOT NULL,
+            byte_offset   INTEGER NOT NULL,
+            generation    INTEGER NOT NULL,
+            state_json    TEXT NOT NULL
         );
 
         -- One row per item relocation.
@@ -387,6 +415,7 @@ public sealed class TrackerDb
     /// </summary>
     private const string DropAll = """
         DROP TABLE IF EXISTS attachment_sighting;
+        DROP TABLE IF EXISTS ingest_correlation;
         DROP TABLE IF EXISTS move;
         DROP TABLE IF EXISTS session;
         DROP TABLE IF EXISTS location_name;

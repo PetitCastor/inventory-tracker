@@ -38,6 +38,16 @@ public sealed class LedgerReplay
         int? MovedByUpdate = null);
 
     /// <summary>An unnamed quantity of one class, with the newest arrival that contributed to it.</summary>
+    /// <remarks>
+    /// <see cref="LooseIn"/> gives one of these per provenance group: every unit in it shares
+    /// <see cref="Confirmed"/>, <see cref="Inferred"/>, <see cref="DuplicateRisk"/> and
+    /// <see cref="MovedByUpdate"/>, so each flag holds for the whole quantity. The Loose of
+    /// <see cref="Contents"/> sums a holding's groups into one stack, and its flags then read
+    /// as below: what some of the units are.
+    /// </remarks>
+    /// <param name="Confirmed">
+    /// The game confirmed every move that brought these units here.
+    /// </param>
     /// <param name="Inferred">
     /// Some of these units were credited without being found at their source.
     /// </param>
@@ -64,7 +74,32 @@ public sealed class LedgerReplay
     private sealed class Slot
     {
         public List<Instance> Named { get; } = [];
-        public Anonymous? Loose { get; set; }
+
+        /// <summary>
+        /// The unnamed units, one group per provenance. One merged stack would only remember
+        /// that some unit was inferred, and then let every named arrival absorb a unit as if
+        /// it were that guess — counted units included.
+        /// </summary>
+        public List<Anonymous> Groups { get; } = [];
+
+        /// <summary>
+        /// The newest arrival into the stack as a whole, and the update it was last assumed
+        /// moved by: what decides whether a listing contradicts the stack, and whether an update
+        /// takes it along.
+        /// </summary>
+        public (DateTimeOffset Since, string ArrivedBy, int? MovedByUpdate) Stack { get; set; }
+
+        public int LooseQuantity => Groups.Sum(g => g.Quantity);
+
+        /// <summary>The groups summed into one stack, or null when there are none.</summary>
+        public Anonymous? Loose => Groups.Count == 0
+            ? null
+            : new Anonymous(
+                Groups[0].ItemClass, LooseQuantity, Stack.Since, Stack.ArrivedBy,
+                Confirmed: Groups.TrueForAll(g => g.Confirmed),
+                Inferred: Groups.Exists(g => g.Inferred),
+                DuplicateRisk: Groups.Exists(g => g.DuplicateRisk),
+                MovedByUpdate: Stack.MovedByUpdate);
     }
 
     /// <summary>
@@ -267,10 +302,18 @@ public sealed class LedgerReplay
 
         foreach (var (itemClass, slot) in byClass)
         {
-            if (slot.Named.Count == 0 && slot.Loose is null) continue;
+            if (slot.Named.Count == 0 && slot.Groups.Count == 0) continue;
             yield return (itemClass, slot.Named, slot.Loose);
         }
     }
+
+    /// <summary>
+    /// The unnamed units of a class in a holding, one entry per provenance group; their
+    /// quantities add up to the Loose of <see cref="Contents"/>. A read-only view: a caller that
+    /// casts it back to a list cannot change what the ledger holds.
+    /// </summary>
+    public IReadOnlyList<Anonymous> LooseIn(Holding where, string itemClass) =>
+        SlotFor(where, itemClass, create: false)?.Groups.AsReadOnly() ?? (IReadOnlyList<Anonymous>)[];
 
     /// <summary>
     /// Folds the whole move history. Moves must arrive oldest first; the caller's ordering
@@ -374,35 +417,41 @@ public sealed class LedgerReplay
                     Stats.RelocatedByUpdate++;
                 }
 
-                if (slot.Loose is { } loose && loose.ArrivedBy != CarryArrival)
+                if (slot.Groups.Count > 0 && slot.Stack.ArrivedBy != CarryArrival)
                 {
-                    slot.Loose = null;
-                    MergeLoose(update.Destination, loose with { MovedByUpdate = update.Build });
-                    Stats.RelocatedByUpdate += loose.Quantity;
+                    var quantity = slot.LooseQuantity;
+                    MergeLoose(update.Destination, itemClass, slot, update.Build);
+                    Stats.RelocatedByUpdate += quantity;
                 }
             }
         }
     }
 
-    /// <summary>Adds a whole unnamed stack to a holding, merging with what is already there.</summary>
-    private void MergeLoose(Holding target, Anonymous moved)
+    /// <summary>
+    /// Moves a whole unnamed stack to a holding, merging with what is already there. Its groups
+    /// keep their provenance, so the merged stack still knows which of its units were guesses.
+    /// </summary>
+    /// <param name="movedByUpdate">The update assumed to have moved the stack, if one did.</param>
+    private void MergeLoose(Holding target, string itemClass, Slot from, int? movedByUpdate = null)
     {
-        var slot = SlotFor(target, moved.ItemClass, create: true)!;
-        if (slot.Loose is not { } existing)
+        var slot = SlotFor(target, itemClass, create: true)!;
+        var moved = from.Stack with { MovedByUpdate = movedByUpdate ?? from.Stack.MovedByUpdate };
+        if (slot.Groups.Count == 0)
         {
-            slot.Loose = moved;
-            return;
+            slot.Stack = moved;
+        }
+        else
+        {
+            var newer = slot.Stack.Since >= moved.Since ? slot.Stack : moved;
+            slot.Stack = newer with { MovedByUpdate = moved.MovedByUpdate ?? slot.Stack.MovedByUpdate };
         }
 
-        var newer = existing.Since >= moved.Since ? existing : moved;
-        slot.Loose = newer with
+        foreach (var group in from.Groups)
         {
-            Quantity = existing.Quantity + moved.Quantity,
-            Confirmed = existing.Confirmed && moved.Confirmed,
-            Inferred = existing.Inferred || moved.Inferred,
-            DuplicateRisk = existing.DuplicateRisk || moved.DuplicateRisk,
-            MovedByUpdate = moved.MovedByUpdate ?? existing.MovedByUpdate,
-        };
+            AddGroup(slot, movedByUpdate is { } build ? group with { MovedByUpdate = build } : group);
+        }
+
+        from.Groups.Clear();
     }
 
     /// <summary>An entity observed attached to the player's body at a point in time.</summary>
@@ -486,17 +535,18 @@ public sealed class LedgerReplay
             }
 
             // Unnamed units: their class is all there is to look for.
-            if (slot.Loose is not { } loose || loose.Since >= body.At || body.Classes.Contains(itemClass)) continue;
+            if (slot.Groups.Count == 0 || slot.Stack.Since >= body.At || body.Classes.Contains(itemClass)) continue;
 
-            slot.Loose = null;
-            if (loose.ArrivedBy == CarryArrival)
+            var quantity = slot.LooseQuantity;
+            if (slot.Stack.ArrivedBy == CarryArrival)
             {
-                Stats.CarriedUsedUp += loose.Quantity;
+                slot.Groups.Clear();
+                Stats.CarriedUsedUp += quantity;
             }
             else
             {
-                MergeLoose(LostTrack, loose);
-                Stats.WornEvicted += loose.Quantity;
+                MergeLoose(LostTrack, itemClass, slot);
+                Stats.WornEvicted += quantity;
             }
         }
     }
@@ -592,7 +642,7 @@ public sealed class LedgerReplay
         var key = (source, move.ItemClass);
         var seen = _predictedOut.GetValueOrDefault(key) + move.Units - _predictedIn.GetValueOrDefault(key);
         var held = SlotFor(source, move.ItemClass, create: false) is { } slot
-            ? slot.Named.Count + (slot.Loose?.Quantity ?? 0)
+            ? slot.Named.Count + slot.LooseQuantity
             : 0;
 
         if (seen > held)
@@ -747,9 +797,8 @@ public sealed class LedgerReplay
                 Stats.UnitsFromNamed++;
             }
 
-            while (taken < wanted && from.Loose is { Quantity: > 0 } loose)
+            while (taken < wanted && TakeOne(from, inferredOnly: false))
             {
-                from.Loose = loose.Quantity > 1 ? loose with { Quantity = loose.Quantity - 1 } : null;
                 taken++;
                 Stats.UnitsFromLoose++;
                 AddAnonymous(target, move.ItemClass, 1, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false);
@@ -819,9 +868,8 @@ public sealed class LedgerReplay
                 taken++;
             }
 
-            while (taken < wanted && slot.Loose is { Quantity: > 0 } loose)
+            while (taken < wanted && TakeOne(slot, inferredOnly: false))
             {
-                slot.Loose = loose.Quantity > 1 ? loose with { Quantity = loose.Quantity - 1 } : null;
                 AddAnonymous(target, move.ItemClass, 1, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false);
                 taken++;
             }
@@ -947,7 +995,7 @@ public sealed class LedgerReplay
         foreach (var (where, classes) in _contents)
         {
             if (where == source || where == target) continue;
-            if (classes.TryGetValue(move.ItemClass, out var slot) && (slot.Named.Count > 0 || slot.Loose is not null))
+            if (classes.TryGetValue(move.ItemClass, out var slot) && (slot.Named.Count > 0 || slot.Groups.Count > 0))
             {
                 elsewhere = where;
                 break;
@@ -961,18 +1009,27 @@ public sealed class LedgerReplay
         string geid, string itemClass, Holding target, DateTimeOffset at, string moveType,
         bool confirmed, bool inferred, bool ambiguous = false, Holding? source = null)
     {
-        if (_instanceAt.TryGetValue(geid, out var was) && SlotFor(was, itemClass, create: false) is { } old)
+        // Class-level and carried moves may remove the old slot before this method runs;
+        // InstanceAt still identifies the entity and prevents spending an unrelated loose unit.
+        var existed = _instanceAt.TryGetValue(geid, out var was);
+        if (existed
+            && _contents.TryGetValue(was, out var oldClasses))
         {
-            old.Named.RemoveAll(i => i.Geid == geid);
+            foreach (var old in oldClasses.Values)
+            {
+                if (old.Named.RemoveAll(i => i.Geid == geid) == 0) continue;
+                break;
+            }
         }
-        else if (source is { IsReal: true } from && SpendAnonymous(from, itemClass))
+
+        if (!existed && source is { IsReal: true } from && SpendAnonymous(from, itemClass))
         {
             // First sighting, on its way out of somewhere that held an unnamed unit of its
             // class: that unit is this entity, now named. Leaving it behind would count the
             // item twice — a drink carried out of a crate would still be in the crate too.
             _reconciled.Add(geid);
         }
-        else
+        else if (!existed)
         {
             // First sighting of this entity. If an unnamed unit of the same class is already
             // sitting where this one is arriving, the two are almost certainly the same
@@ -1004,15 +1061,57 @@ public sealed class LedgerReplay
     /// to be something already counted there without a name. Scoped to the one holding on
     /// purpose: spending a unit from somewhere else would quietly empty an unrelated place.
     /// </summary>
+    /// <param name="inferredOnly">
+    /// Only a unit that was itself inferred may be spent: never more than the stack's inferred
+    /// units, however many named entities turn up.
+    /// </param>
     private bool SpendAnonymous(Holding where, string itemClass, bool inferredOnly = false)
     {
         if (SlotFor(where, itemClass, create: false) is not { } slot) return false;
-        if (slot.Loose is not { Quantity: > 0 } loose) return false;
-        if (inferredOnly && !loose.Inferred) return false;
+        if (!TakeOne(slot, inferredOnly)) return false;
 
-        slot.Loose = loose.Quantity > 1 ? loose with { Quantity = loose.Quantity - 1 } : null;
         Stats.AnonymousReconciled++;
         return true;
+    }
+
+    /// <summary>
+    /// Takes one unnamed unit out of a slot. The logs never say which of several identical
+    /// units left, so it comes from the newest group, as a named pick takes the newest instance.
+    /// </summary>
+    private static bool TakeOne(Slot slot, bool inferredOnly)
+    {
+        var pick = -1;
+        for (var i = 0; i < slot.Groups.Count; i++)
+        {
+            if (inferredOnly && !slot.Groups[i].Inferred) continue;
+            if (pick < 0 || slot.Groups[i].Since >= slot.Groups[pick].Since) pick = i;
+        }
+
+        if (pick < 0) return false;
+
+        var group = slot.Groups[pick];
+        if (group.Quantity > 1) slot.Groups[pick] = group with { Quantity = group.Quantity - 1 };
+        else slot.Groups.RemoveAt(pick);
+        return true;
+    }
+
+    /// <summary>
+    /// Adds units to the group of the same provenance, dated by the newer of the two arrivals.
+    /// </summary>
+    private static void AddGroup(Slot slot, Anonymous units)
+    {
+        var same = slot.Groups.FindIndex(g =>
+            g.Confirmed == units.Confirmed && g.Inferred == units.Inferred
+            && g.DuplicateRisk == units.DuplicateRisk && g.MovedByUpdate == units.MovedByUpdate);
+        if (same < 0)
+        {
+            slot.Groups.Add(units);
+            return;
+        }
+
+        var existing = slot.Groups[same];
+        var newer = existing.Since > units.Since ? existing : units;
+        slot.Groups[same] = newer with { Quantity = existing.Quantity + units.Quantity };
     }
 
     private void AddAnonymous(
@@ -1022,17 +1121,10 @@ public sealed class LedgerReplay
         if (quantity <= 0) return;
 
         var slot = SlotFor(target, itemClass, create: true)!;
-        slot.Loose = slot.Loose is { } existing
-            ? existing with
-            {
-                Quantity = existing.Quantity + quantity,
-                Since = at,
-                ArrivedBy = moveType,
-                Confirmed = existing.Confirmed && confirmed,
-                Inferred = existing.Inferred || inferred,
-                DuplicateRisk = existing.DuplicateRisk || duplicateRisk,
-            }
-            : new Anonymous(itemClass, quantity, at, moveType, confirmed, inferred, duplicateRisk);
+        slot.Stack = slot.Groups.Count == 0
+            ? (at, moveType, null)
+            : slot.Stack with { Since = at, ArrivedBy = moveType };
+        AddGroup(slot, new Anonymous(itemClass, quantity, at, moveType, confirmed, inferred, duplicateRisk));
     }
 
     private Slot? SlotFor(Holding where, string itemClass, bool create)
