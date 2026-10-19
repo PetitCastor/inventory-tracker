@@ -22,4 +22,5 @@ artifacts/
 tasks/
 
 # Local docs and review notes.
-docs/
+docs/*
+!docs/development.md
