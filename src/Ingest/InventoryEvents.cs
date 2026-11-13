@@ -68,6 +68,9 @@ public sealed record MoveRequested(
 /// correctly, so a batch is only trusted for the non-Store types it is actually observed on.
 /// </para>
 /// </summary>
+/// <param name="Caller">Null when the game cut the line short before it.</param>
+/// <param name="ListCut">The game cut the line inside the class list: the items after the cut
+/// moved too, but the log never names them.</param>
 public sealed record MoveBatchRequested(
     DateTimeOffset Timestamp,
     int RequestNo,
@@ -75,7 +78,8 @@ public sealed record MoveBatchRequested(
     InventoryRef Source,
     InventoryRef Target,
     IReadOnlyList<string> ItemClasses,
-    string Caller) : InventoryEvent(Timestamp);
+    string? Caller,
+    bool ListCut = false) : InventoryEvent(Timestamp);
 
 /// <summary>Outcome for a request, from either of the two "complete" events.</summary>
 public sealed record MoveCompleted(

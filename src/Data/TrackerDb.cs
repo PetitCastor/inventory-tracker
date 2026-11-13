@@ -176,9 +176,11 @@ public sealed class TrackerDb
             last_ts      TEXT,
             byte_offset  INTEGER NOT NULL DEFAULT 0,
             complete     INTEGER NOT NULL DEFAULT 0,
-            -- Running count of UnrecognisedMove lines seen across every ingest pass over
-            -- this file. Added to, never overwritten, so it keeps growing as a live file
-            -- does instead of resetting on each pass.
+            -- Running count of move lines the parser could not fully read across every
+            -- ingest pass over this file: UnrecognisedMove lines, plus drags the game cut
+            -- short inside their item list (IngestStats.MovesCutShort). Added to, never
+            -- overwritten, so it keeps growing as a live file does instead of resetting on
+            -- each pass.
             unrecognised INTEGER NOT NULL DEFAULT 0,
             -- Timestamp of the newest well-formed log line in the file, independent of the
             -- inception-date filter. Unlike last_line_ts, first_ts is also captured before

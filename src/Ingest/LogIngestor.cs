@@ -33,6 +33,14 @@ public sealed record IngestStats
     /// </summary>
     public int UnrecognisedMoves { get; set; }
 
+    /// <summary>
+    /// Multi-select drags whose line the game cut short inside the item list: the items
+    /// before the cut are recorded, the rest moved without the log naming them. Not a
+    /// grammar change, so kept apart from <see cref="UnrecognisedMoves"/>, but stored in the
+    /// same per-file counter: either way tracking is incomplete.
+    /// </summary>
+    public int MovesCutShort { get; set; }
+
     /// <summary>Instance-level store lines recorded. Kept apart from <see cref="MovesInserted"/>:
     /// one usually doubles a Queued line for the same action.</summary>
     public int StoresRecorded { get; set; }
@@ -54,7 +62,8 @@ public sealed record IngestStats
     public bool ChangedHoldings =>
         MovesInserted > 0 || StoresRecorded > 0 || CompletionsApplied > 0 || ContainersIdentified > 0 ||
         CapacitiesSeen > 0 || LocationsNamed > 0 || LocationConflicts > 0 || GeidsRecovered > 0 ||
-        AttachmentsSeen > 0 || RequestsLost > 0 || UnrecognisedMoves > 0 || VehiclesSeen > 0;
+        AttachmentsSeen > 0 || RequestsLost > 0 || UnrecognisedMoves > 0 || MovesCutShort > 0 ||
+        VehiclesSeen > 0;
 }
 
 /// <summary>
@@ -189,7 +198,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         // Isolates this pass's contribution so it can be added to the session's running
         // total below, rather than overwriting it — the counter must survive across every
         // ingest pass over a live, growing file.
-        var unrecognisedBefore = stats.UnrecognisedMoves;
+        var unrecognisedBefore = stats.UnrecognisedMoves + stats.MovesCutShort;
 
         foreach (var line in reader.ReadLines(file.Path))
         {
@@ -231,7 +240,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         // A rotated file is finished: nothing still waiting in it will ever be processed.
         if (!file.IsLive) stats.RequestsLost += VoidUnprocessed(cn, tx, session.Id, before: null);
 
-        var unrecognisedThisPass = stats.UnrecognisedMoves - unrecognisedBefore;
+        var unrecognisedThisPass = stats.UnrecognisedMoves + stats.MovesCutShort - unrecognisedBefore;
         SaveSession(
             cn, tx, session.Id, reader.Offset, firstTs, lastTs, newestLineTs, unrecognisedThisPass,
             state.CurrentLocation, state.FirstLocation, session.Build ?? LogFileLocator.BuildOf(file.Path),
@@ -331,6 +340,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 }
 
                 stats.BatchMovesExpanded++;
+                if (batch.ListCut) stats.MovesCutShort++;
                 break;
             }
 

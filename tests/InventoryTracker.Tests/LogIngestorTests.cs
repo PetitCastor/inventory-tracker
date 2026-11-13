@@ -579,6 +579,41 @@ public sealed class LogIngestorTests : IDisposable
     }
 
     [Fact]
+    public void A_drag_the_game_cut_short_after_its_list_is_recorded_in_full()
+    {
+        // Issue #49: the cut took Caller[...] and the rest of the line, but not the list.
+        var raw = GameLogCut.Apply(
+            GameLogCut.FullBatchLine(907, "920904304043:Container:0", GameLogCut.Classes(36)));
+        Assert.Contains("] ] StoredEntity[", raw);
+        Assert.DoesNotContain("Caller[", raw);
+        Append(raw);
+
+        var stats = new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("36", Scalar("SELECT COUNT(*) FROM move WHERE tgt_kind = 'Container'"));
+        Assert.Equal(0, stats.UnrecognisedMoves);
+        Assert.Equal(0, stats.MovesCutShort);
+        Assert.Equal("0", Scalar("SELECT unrecognised FROM session"));
+    }
+
+    [Fact]
+    public void A_drag_cut_inside_its_list_records_what_it_names_and_counts_as_incomplete()
+    {
+        var classes = GameLogCut.Classes(60);
+        var raw = GameLogCut.Apply(GameLogCut.FullBatchLine(908, "920904304043:Container:0", classes));
+        var named = classes.Count(c => raw.Contains($"[{c}]", StringComparison.Ordinal));
+        Append(raw);
+
+        var stats = new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.InRange(named, 1, classes.Count - 1);
+        Assert.Equal(named.ToString(), Scalar("SELECT COUNT(*) FROM move"));
+        Assert.Equal(0, stats.UnrecognisedMoves);
+        Assert.Equal(1, stats.MovesCutShort);
+        Assert.Equal("1", Scalar("SELECT unrecognised FROM session"));
+    }
+
+    [Fact]
     public void Interleaved_queued_lines_do_not_look_like_a_request_counter_reset()
     {
         const string cls = "cds_combat_superheavy_suit_01_04_01";

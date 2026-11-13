@@ -22,6 +22,7 @@ public sealed class IngestStatsTests
     [InlineData(nameof(IngestStats.AttachmentsSeen))]
     [InlineData(nameof(IngestStats.RequestsLost))]
     [InlineData(nameof(IngestStats.UnrecognisedMoves))]
+    [InlineData(nameof(IngestStats.MovesCutShort))]
     public void Any_write_the_holdings_are_built_from_needs_a_new_snapshot(string counter)
     {
         // A completion or geid read in a later pass than its move changes what the UI should

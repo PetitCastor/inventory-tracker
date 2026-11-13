@@ -30,8 +30,9 @@ public static partial class InventoryEventParser
     /// <para>4 -> 5: a closed connection voids the requests the server never processed.</para>
     /// <para>5 -> 6: a drop records the location it fell in.</para>
     /// <para>6 -> 7: ship lockers are named, and ships flown and retrieved are recorded.</para>
+    /// <para>7 -> 8: a multi-select drag whose line the game cut short is still read.</para>
     /// </summary>
-    public const int Version = 7;
+    public const int Version = 8;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -82,6 +83,22 @@ public static partial class InventoryEventParser
         @"ItemClass\[(?<class>[^\]]*)\].*?Caller\[(?<caller>[^\]]*)\]",
         RegexOptions.CultureInvariant)]
     private static partial Regex AddMoveLoose();
+
+    /// <summary>
+    /// An Add-move line the game cut short. Game.log keeps at most 1023 characters of a line
+    /// from its <c>[Notice]</c> onward: past that it writes the first 1020 and appends
+    /// <c>...</c>, with no setting to raise the limit. A multi-select drag of about 25 items is
+    /// enough to push <c>Caller[...]</c>, and often <c>StoredEntity[...]</c>, off the end, and
+    /// one of about 30 cuts into the class list itself. Only a bracketed list is accepted
+    /// here; the class text runs to the cut and <see cref="ParseCutAddMove"/> decides how much
+    /// of it survived.
+    /// </summary>
+    [GeneratedRegex(
+        @"^New [Rr]equest\[(?<req>\d+)\] Player\[[^\]]*\] Type\[(?<type>[^\]]*)\] " +
+        @"SourceInventory\[(?<srcinv>[^\]]*)\] TargetInventory\[(?<tgtinv>[^\]]*)\] " +
+        @"ItemClass\[(?<class>\[.*)\.\.\.\s*$",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex AddMoveCut();
 
     /// <summary>
     /// The canary for grammar drift: any line that carries every visible sign of being an
@@ -324,15 +341,7 @@ public static partial class InventoryEventParser
     {
         var m = AddMove().Match(line.Rest);
         if (!m.Success) m = AddMoveLoose().Match(line.Rest);
-        if (!m.Success)
-        {
-            // Both shapes failed. If the line still opens with "New request[" / "New
-            // Request[" it is a request line whose body changed underneath us, not some
-            // unrelated line dispatched here by mistake.
-            return LooksLikeRequest().IsMatch(line.Rest)
-                ? new UnrecognisedMove(line.Timestamp, line.EventName)
-                : null;
-        }
+        if (!m.Success) return ParseCutAddMove(line);
 
         var moveType = m.Groups["type"].Value;
         if (IsNonRelocating(moveType)) return null;
@@ -347,11 +356,7 @@ public static partial class InventoryEventParser
         // excluded because its inventories are inverted here relative to the Queued line.
         if (itemClass.StartsWith('[') && moveType != "Store")
         {
-            var classes = BatchClass().Matches(itemClass)
-                .Select(x => x.Groups["cls"].Value.Trim())
-                .Where(x => x.Length > 0 && x is not ("NULL" or "NONE"))
-                .ToList();
-
+            var classes = BatchClasses(itemClass);
             if (classes.Count > 0)
             {
                 return new MoveBatchRequested(
@@ -362,6 +367,80 @@ public static partial class InventoryEventParser
 
         return new MoveRequested(line.Timestamp, requestNo, moveType, source, itemClass, caller);
     }
+
+    /// <summary>
+    /// The second chance for an Add-move line neither full shape could read: one the game cut
+    /// short (see <see cref="AddMoveCut"/>). Only a multi-select batch into a real inventory is
+    /// recovered: Caller only matters when the target is INVALID, where AttachItem turns the
+    /// batch into an equip, so losing it there loses nothing. Every other cut line is still
+    /// flagged: a batch onto the body or a single-class line needs its Caller to tell an equip
+    /// from a drag, and a Store has its own Queued lines.
+    /// </summary>
+    private static InventoryEvent? ParseCutAddMove(LogLine line)
+    {
+        var m = AddMoveCut().Match(line.Rest);
+        if (!m.Success)
+        {
+            // Every shape failed. If the line still opens with "New request[" / "New
+            // Request[" it is a request line whose body changed underneath us, not some
+            // unrelated line dispatched here by mistake.
+            return LooksLikeRequest().IsMatch(line.Rest)
+                ? new UnrecognisedMove(line.Timestamp, line.EventName)
+                : null;
+        }
+
+        // A line that merely ends in "..." is not a cut one: only a line the game actually cut
+        // is as long as the limit. A shorter one failed the full shapes for some other reason,
+        // which is what the canary is for. (A whole Caller[...] needs no check here:
+        // AddMoveLoose already reads any line that still has one.)
+        if (!WasCutByGame(line)) return new UnrecognisedMove(line.Timestamp, line.EventName);
+
+        var moveType = m.Groups["type"].Value;
+        if (IsNonRelocating(moveType)) return null;
+
+        // INVALID is an equip only when Caller says AttachItem, and the cut took Caller: no way
+        // to tell. Any other non-holding target is dropped, as Normalize drops it on a full line.
+        var target = InventoryRef.Parse(m.Groups["tgtinv"].Value);
+        if (moveType == "Store" || target.Kind == InventoryKind.Invalid)
+            return new UnrecognisedMove(line.Timestamp, line.EventName);
+        if (!target.IsHolding) return null;
+
+        // The list closes with "] ]" (or "]]"): the last entry's bracket, then the list's own.
+        // Without it the cut fell inside the list, and only the entries before it are known.
+        // A half-written last entry has no closing bracket, so BatchClass never reads it.
+        var text = m.Groups["class"].Value;
+        var close = BatchListEnd().Match(text);
+        var classes = BatchClasses(close.Success ? text[..close.Index] : text);
+        if (classes.Count == 0) return new UnrecognisedMove(line.Timestamp, line.EventName);
+
+        return new MoveBatchRequested(
+            line.Timestamp, int.Parse(m.Groups["req"].Value), moveType,
+            InventoryRef.Parse(m.Groups["srcinv"].Value), target,
+            classes, Caller: null, ListCut: !close.Success);
+    }
+
+    /// <summary>
+    /// The game keeps 1023 characters of a line from its severity tag on. Measured with a
+    /// little slack, in case the limit is in bytes and a player name is not plain ASCII.
+    /// </summary>
+    private const int MinCutLength = 1000;
+
+    private static bool WasCutByGame(LogLine line)
+    {
+        var raw = line.Raw.TrimEnd();
+        var severity = raw.IndexOf('[');
+        return severity >= 0 && raw.Length - severity >= MinCutLength;
+    }
+
+    /// <summary>Where a bracketed ItemClass list ends: an entry's ']' and then the list's own.</summary>
+    [GeneratedRegex(@"(?<=\])\s*\]", RegexOptions.CultureInvariant)]
+    private static partial Regex BatchListEnd();
+
+    private static List<string> BatchClasses(string list) =>
+        BatchClass().Matches(list)
+            .Select(x => x.Groups["cls"].Value.Trim())
+            .Where(x => x.Length > 0 && x is not ("NULL" or "NONE"))
+            .ToList();
 
     private static InventoryEvent? ParseSpawn(LogLine line)
     {
