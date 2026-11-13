@@ -28,8 +28,9 @@
 @if (health.UnrecognisedMoveLines > 0)
 {
     <p class="banner banner-warn">
-        @health.UnrecognisedMoveLines.ToString("N0") inventory move line(s) in your logs weren't recognised —
-        Star Citizen's log format has probably changed, so tracking is incomplete.
+        @health.UnrecognisedMoveLines.ToString("N0") inventory move line(s) in your logs couldn't be fully read —
+        either Star Citizen's log format has changed, or the game cut a very large multi-item move short.
+        Tracking is incomplete.
     </p>
 }
 

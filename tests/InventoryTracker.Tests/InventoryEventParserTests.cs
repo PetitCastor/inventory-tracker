@@ -402,6 +402,141 @@ public class InventoryEventParserTests
         Assert.Null(ev);
     }
 
+    // Issue #49. Game.log keeps 1023 characters of a line from "[Notice]" onward, then "...".
+    private const string CutAfterListLine =
+        "<2026-11-08T16:13:09.012Z> [Notice] <Add Inventory Management Move> New Request[907] Player[xxxxxx] " +
+        "Type[Move] SourceInventory[204094442207:Location:888812681] TargetInventory[920904304043:Container:0] " +
+        "ItemClass[[bltr_consumable_hackingchip_01] [Mining_Gadget_GRIN_OptiMax] [Mining_Gadget_GRIN_OptiMax] " +
+        "[Harvestable_Mineral_1H_Aphorite] [Harvestable_Mineral_1H_Dolivine] [Harvestable_Mineral_1H_Feynmaline] " +
+        "[Harvestable_Mineral_1H_Feynmaline] [Harvestable_Mineral_1H_Glacosite] [Harvestable_Mineral_1H_Janalite] " +
+        "[arma_barrel_stab_s3] [apar_hmg_ballistic_01_mag] [behr_lmg_ballistic_01_mag] [gmni_lmg_ballistic_01_mag] " +
+        "[grin_multitool_resource_salvage_repair_01_filled] [grin_tool_resource_salvage_repair_01_filled] " +
+        "[klwe_sniper_energy_01_mag] [ksar_smg_energy_01_mag] [none_lmg_ballistic_01_mag] " +
+        "[utfl_crossbow_ballistic_01_mag] [volt_lmg_energy_01_mag] [grin_multitool_01_mining] " +
+        "[grin_multitool_01_red01] [grin_multitool_01_white01] [grin_tractor_01] [gmni_lmg_ballistic_01_mag] ] " +
+        "StoredEntity[NULL] LocallyDetached[No] LocalAttached[NULL, ] Pen...";
+
+    private const string CutAfterStoredEntityLine =
+        "<2026-11-08T16:20:53.573Z> [Notice] <Add Inventory Management Move> New Request[920] Player[xxxxxx] " +
+        "Type[Move] SourceInventory[920904304043:Container:0] TargetInventory[204094442207:Location:3723364946] " +
+        "ItemClass[[gmni_lmg_ballistic_01_mag] [grin_tractor_01] [grin_multitool_01_white01] " +
+        "[grin_multitool_01_red01] [grin_multitool_01_mining] [volt_lmg_energy_01_mag] " +
+        "[utfl_crossbow_ballistic_01_mag] [none_lmg_ballistic_01_mag] [ksar_smg_energy_01_mag] " +
+        "[klwe_sniper_energy_01_mag] [grin_tool_resource_salvage_repair_01_filled] " +
+        "[grin_multitool_resource_salvage_repair_01_filled] [gmni_lmg_ballistic_01_mag] " +
+        "[behr_lmg_ballistic_01_mag] [apar_hmg_ballistic_01_mag] [arma_barrel_stab_s3] " +
+        "[Harvestable_Mineral_1H_Janalite] [Harvestable_Mineral_1H_Glacosite] [Harvestable_Mineral_1H_Feynmaline] " +
+        "[Harvestable_Mineral_1H_Feynmaline] [Harvestable_Mineral_1H_Dolivine] [Harvestable_Mineral_1H_Aphorite] " +
+        "[Mining_Gadget_GRIN_OptiMax] [Mining_Gadget_GRIN_OptiMax] [bltr_consumable_hackingchip_01] " +
+        "[utfl_crossbow_ballistic_01] ] StoredEntity[NULL] LocallyDetached...";
+
+    [Fact]
+    public void The_issue_lines_are_cut_at_the_game_limit()
+    {
+        // Guards the fixtures themselves: both must be exactly as long as the game allows.
+        foreach (var raw in new[] { CutAfterListLine, CutAfterStoredEntityLine })
+        {
+            Assert.Equal(1023, raw[raw.IndexOf("[Notice]", StringComparison.Ordinal)..].Length);
+        }
+    }
+
+    [Fact]
+    public void Reads_a_multi_select_drag_the_game_cut_short_after_its_list()
+    {
+        var batch = Assert.IsType<MoveBatchRequested>(Event(CutAfterListLine));
+
+        Assert.Equal(907, batch.RequestNo);
+        Assert.Equal("Move", batch.MoveType);
+        Assert.Equal("888812681", batch.Source.HoldingKey);
+        Assert.Equal("920904304043", batch.Target.HoldingKey);
+        Assert.Equal(25, batch.ItemClasses.Count);
+        Assert.Equal("bltr_consumable_hackingchip_01", batch.ItemClasses[0]);
+        Assert.Equal("gmni_lmg_ballistic_01_mag", batch.ItemClasses[^1]);
+        Assert.Null(batch.Caller);
+        Assert.False(batch.ListCut);
+    }
+
+    [Fact]
+    public void Reads_a_multi_select_drag_cut_short_before_its_stored_entity_ends()
+    {
+        var batch = Assert.IsType<MoveBatchRequested>(Event(CutAfterStoredEntityLine));
+
+        Assert.Equal(26, batch.ItemClasses.Count);
+        Assert.Equal("utfl_crossbow_ballistic_01", batch.ItemClasses[^1]);
+        Assert.False(batch.ListCut);
+    }
+
+    [Fact]
+    public void Reads_a_list_closed_without_a_space_when_the_game_cut_the_line()
+    {
+        var raw = CutAfterListLine.Replace("[gmni_lmg_ballistic_01_mag] ] ", "[gmni_lmg_ballistic_01_mag]] ");
+
+        var batch = Assert.IsType<MoveBatchRequested>(Event(raw));
+
+        Assert.Equal(25, batch.ItemClasses.Count);
+        Assert.False(batch.ListCut);
+    }
+
+    [Fact]
+    public void Reads_a_drag_cut_inside_its_caller()
+    {
+        // 24 items puts the cut a few characters into "Caller[CSCLocalPlayerPe...".
+        var full = GameLogCut.FullBatchLine(8, "920904304043:Container:0", GameLogCut.Classes(24));
+        var raw = GameLogCut.Apply(full);
+        Assert.Contains("Caller[", raw);
+
+        var batch = Assert.IsType<MoveBatchRequested>(Event(raw));
+
+        Assert.Equal(24, batch.ItemClasses.Count);
+        Assert.False(batch.ListCut);
+    }
+
+    [Fact]
+    public void Keeps_the_named_items_of_a_drag_cut_inside_its_list()
+    {
+        // The half-written last name is not a class, and the items after it moved without
+        // the log ever naming them.
+        var classes = GameLogCut.Classes(60);
+        var raw = GameLogCut.Apply(GameLogCut.FullBatchLine(9, "920904304043:Container:0", classes));
+        var named = classes.Where(c => raw.Contains($"[{c}]", StringComparison.Ordinal)).ToList();
+
+        var batch = Assert.IsType<MoveBatchRequested>(Event(raw));
+
+        Assert.InRange(named.Count, 1, classes.Count - 1);
+        Assert.Equal(named, batch.ItemClasses);
+        Assert.True(batch.ListCut);
+    }
+
+    [Fact]
+    public void Flags_a_cut_batch_onto_the_body_because_its_caller_is_gone()
+    {
+        // TargetInventory[INVALID] is an equip only when Caller says AttachItem, and the cut
+        // took Caller with it.
+        var raw = CutAfterListLine.Replace("TargetInventory[920904304043:Container:0]", "TargetInventory[INVALID]");
+
+        Assert.IsType<UnrecognisedMove>(Event(raw));
+    }
+
+    [Fact]
+    public void Drops_a_cut_batch_into_a_client_only_grid_as_a_full_line_would()
+    {
+        var raw = CutAfterListLine.Replace("TargetInventory[920904304043:Container:0]", "TargetInventory[0:ClientOnly:1]");
+
+        Assert.Null(Event(raw));
+    }
+
+    [Fact]
+    public void Flags_a_short_line_that_only_happens_to_end_in_dots()
+    {
+        // Not as long as the game's limit, so not a cut: something else broke the shape.
+        var ev = Event(
+            "<2026-11-08T16:13:09.012Z> [Notice] <Add Inventory Management Move> New Request[6] Player[Pilot] " +
+            "Type[Move] SourceInventory[204094442207:Location:888812681] TargetInventory[920904304043:Container:0] " +
+            "ItemClass[[medpen_01] [ammo_box_01] ] StoredEntity[NULL] Loc...");
+
+        Assert.IsType<UnrecognisedMove>(ev);
+    }
+
     [Fact]
     public void Reads_a_store_of_an_entity_the_game_never_gave_an_id()
     {

@@ -531,6 +531,14 @@ public sealed class LogWatchService(
                     stats.UnrecognisedMoves);
             }
 
+            if (stats.MovesCutShort > 0)
+            {
+                log.LogWarning(
+                    "{Count} multi-item move(s) were cut short by the game's log line limit, so some of " +
+                    "the items moved were never named; tracking is incomplete.",
+                    stats.MovesCutShort);
+            }
+
             if (_consecutiveFailures >= FailuresBeforeWarning)
             {
                 log.LogInformation("Log reading recovered after {Count} failed passes", _consecutiveFailures);
