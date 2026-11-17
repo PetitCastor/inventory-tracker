@@ -156,6 +156,29 @@ public sealed record AttachmentSeen(
 
     public bool IsPart => IsPartPort(Port);
 
+    /// <summary>
+    /// Ports that hold the character itself rather than an item the player owns: the body and
+    /// what the character creator sets on it (head, hair, beard, brows, lashes, eyes, eye
+    /// detail, teeth, scalp, ear piercings), and the gear built into every character — the
+    /// mobiGlas and its screen, the HUD lens, the radar. All of them come in every enumeration
+    /// of the body and never in a move line: none can be stored, dropped or traded.
+    /// <para>
+    /// <c>Hat_ItemPort</c> and <c>Eye_Accessories_ItemPort</c> are left out on purpose: a mask or
+    /// a pair of glasses there is a real item, bought and moved like any other.
+    /// </para>
+    /// </summary>
+    private static readonly HashSet<string> CharacterPorts = new(StringComparer.Ordinal)
+    {
+        "Body_ItemPort", "Head_ItemPort", "Hair_ItemPort", "Beard_ItemPort", "Eyebrow_ItemPort",
+        "Eyelashes_ItemPort", "Eyes_ItemPort", "Eyedetail_ItemPort", "Teeth_ItemPort",
+        "Universal_Scalp_ItemPort", "Piercings_L_Ear_ItemPort", "Piercings_R_Ear_ItemPort",
+        "mobiglas_attach", "mobiglas_screen_attach", "legacy_mobiglas_screen_attach",
+        "Lens_ItemPort", "radar",
+    };
+
+    /// <summary>Whether a port holds part of the character rather than an item the player owns.</summary>
+    public static bool IsCharacterPort(string port) => CharacterPorts.Contains(port);
+
     public bool IsPersistent => Status == Persistent;
 
     /// <summary>

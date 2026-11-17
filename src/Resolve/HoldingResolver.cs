@@ -788,7 +788,8 @@ public sealed class HoldingResolver
     /// Each sighting puts its item on the player at that moment. Each listing — everything
     /// sighted from a body line on, within <see cref="EnumerationSpread"/> — is authoritative
     /// for the whole body: what the ledger had on the player before it and it leaves out is
-    /// no longer there. The login placeholder set is never read: it is not the player's.
+    /// no longer there. The login placeholder set is never read: it is not the player's. Nor
+    /// is the character itself (<see cref="AttachmentSeen.IsCharacterPort"/>).
     /// </para>
     /// </summary>
     private static (List<LedgerReplay.WornSighting> Worn, List<LedgerReplay.BodyEnumeration> Enumerations)
@@ -836,7 +837,9 @@ public sealed class HoldingResolver
                 listed.Select(w => w.ItemClass).ToHashSet(StringComparer.Ordinal)));
         }
 
-        return (rows.Select(x => x.Sighting).ToList(), enumerations);
+        // The character's own parts still count above (the body line is what dates a listing)
+        // but are never handed on as something worn: they are not items the player owns.
+        return (rows.Where(x => !AttachmentSeen.IsCharacterPort(x.Port)).Select(x => x.Sighting).ToList(), enumerations);
     }
 
     /// <summary>
