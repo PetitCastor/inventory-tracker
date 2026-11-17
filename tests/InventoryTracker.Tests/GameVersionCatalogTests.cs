@@ -22,7 +22,7 @@ public sealed class GameVersionCatalogTests : IDisposable
         Write("log.log", Installing("2026-11-12 13:35:43.609", "4.10.3-live.13165946"));
 
         Assert.Equal("4.10.3", GameVersionCatalog.VersionOf(13165946, _dir));
-        Assert.Equal("Star Citizen 4.10.3 (build 13165946)", GameVersionCatalog.Describe(13165946, _dir));
+        Assert.Equal("Star Citizen 4.10.3", GameVersionCatalog.Describe(13165946, _dir));
     }
 
     [Fact]

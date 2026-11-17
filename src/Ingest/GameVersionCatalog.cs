@@ -40,12 +40,13 @@ public static partial class GameVersionCatalog
         Load(launcherLogDir).GetValueOrDefault(build);
 
     /// <summary>
-    /// "Star Citizen 4.10.3 (build 13165946)", or "Star Citizen build 13165946" when the launcher
-    /// never named the build.
+    /// "Star Citizen 4.10.3", or "Star Citizen build 13165946" when the launcher never named the
+    /// build: the version is what players know a patch by, so the build only shows when there
+    /// is nothing else to show.
     /// </summary>
     public static string Describe(int build, string? launcherLogDir = null) =>
         VersionOf(build, launcherLogDir) is { } version
-            ? $"Star Citizen {version} (build {build.ToString(CultureInfo.InvariantCulture)})"
+            ? $"Star Citizen {version}"
             : $"Star Citizen build {build.ToString(CultureInfo.InvariantCulture)}";
 
     /// <summary>
