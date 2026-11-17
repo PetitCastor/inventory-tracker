@@ -133,14 +133,68 @@ else if (health.Moves == 0)
     </p>
 }
 
-<div class="picker-field search-field">
-    <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-        <circle cx="10.5" cy="10.5" r="6.5" />
-        <path d="m20 20-4.35-4.35" stroke-linecap="round" />
-    </svg>
-    <input type="text" placeholder="Search what's stored at stations and in ships…" class="search-input"
-           @bind="_query" @bind:event="oninput" />
+@* Search and the station picker share one row. Search covers every station and ship, so the
+   dropdowns do not narrow it; picking a station while searching leaves the search to show it. *@
+<div class="toolbar">
+    <div class="picker-field search-field">
+        <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="6.5" />
+            <path d="m20 20-4.35-4.35" stroke-linecap="round" />
+        </svg>
+        <input type="text" placeholder="Search your items…" class="search-input"
+               @bind="_query" @bind:event="oninput" />
+    </div>
+
+    @if (_systems.Count > 0)
+    {
+        <div class="picker-field">
+            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <circle cx="12" cy="12" r="3.5" />
+                <ellipse cx="12" cy="12" rx="10" ry="3.4" transform="rotate(-25 12 12)" />
+            </svg>
+            <select aria-label="System" @bind="_system" @bind:after="PickSystem">
+                @foreach (var system in _systems)
+                {
+                    <option value="@system">@system</option>
+                }
+            </select>
+        </div>
+
+        <div class="picker-field">
+            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <path d="M12 21s7-6.79 7-12a7 7 0 1 0-14 0c0 5.21 7 12 7 12z" />
+                <circle cx="12" cy="9" r="2.5" />
+            </svg>
+            <select aria-label="Station" @bind="_placeId" @bind:after="PickPlace">
+                @foreach (var place in _placesInSystem)
+                {
+                    <option value="@place.Id">@place.LabelInSystem@(place.NameConfirmed ? "" : " (unconfirmed)")</option>
+                }
+            </select>
+        </div>
+    }
 </div>
+
+@* Quick filters for whatever the page is showing: search results, or the level of the station
+   being browsed. A category with nothing in it is not offered, except the one already chosen,
+   so it can still be turned off. *@
+@{ var categoryCounts = CategoryCounts(); }
+@if (categoryCounts.Count > 0 || _category is not null)
+{
+    <div class="chips" role="group" aria-label="Filter by category">
+        <button type="button" class="chip @(_category is null ? "active" : "")" aria-pressed="@(_category is null)"
+                @onclick="() => _category = null">All</button>
+        @foreach (var category in ItemCategories.All)
+        {
+            var count = categoryCounts.GetValueOrDefault(category);
+            if (count == 0 && _category != category) continue;
+            <button type="button" class="chip @(_category == category ? "active" : "")" aria-pressed="@(_category == category)"
+                    @onclick="() => _category = _category == category ? null : category">
+                @ItemCategories.Label(category) <span class="chip-count">@count</span>
+            </button>
+        }
+    </div>
+}
 
 @if (!string.IsNullOrWhiteSpace(_query))
 {
@@ -149,7 +203,7 @@ else if (health.Moves == 0)
         <h2>Search results <span class="badge-count">@results.Count</span></h2>
         @if (results.Count == 0)
         {
-            <p class="empty">Nothing stored at a station or in a ship matches "@_query".</p>
+            <p class="empty">None of your items matches "@_query"@(_category is { } c ? $" in {ItemCategories.Label(c)}" : "").</p>
         }
         else
         {
@@ -197,34 +251,6 @@ else
 {
     @if (_systems.Count > 0)
     {
-        <div class="picker">
-            <div class="picker-field">
-                <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-                    <circle cx="12" cy="12" r="3.5" />
-                    <ellipse cx="12" cy="12" rx="10" ry="3.4" transform="rotate(-25 12 12)" />
-                </svg>
-                <select @bind="_system" @bind:after="OnSystemChanged">
-                    @foreach (var system in _systems)
-                    {
-                        <option value="@system">@system</option>
-                    }
-                </select>
-            </div>
-
-            <div class="picker-field">
-                <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-                    <path d="M12 21s7-6.79 7-12a7 7 0 1 0-14 0c0 5.21 7 12 7 12z" />
-                    <circle cx="12" cy="9" r="2.5" />
-                </svg>
-                <select @bind="_placeId" @bind:after="Recompute">
-                    @foreach (var place in _placesInSystem)
-                    {
-                        <option value="@place.Id">@place.LabelInSystem@(place.NameConfirmed ? "" : " (unconfirmed)")</option>
-                    }
-                </select>
-            </div>
-        </div>
-
         @if (_place is not null)
         {
             @* A name is only shown as fact once confirmed: by two sources agreeing, or by the
@@ -302,23 +328,28 @@ else
                 </div>
             }
 
+            var shown = _direct.Where(r => _category is not { } c || r.Categories.Contains(c)).ToList();
             <section class="place">
-                <h2>Local Inventory <span class="badge-count">@_direct.Sum(r => r.Quantity)</span></h2>
+                <h2>Local Inventory <span class="badge-count">@shown.Sum(r => r.Quantity)</span></h2>
                 @if (_direct.Count == 0)
                 {
                     <p class="empty">Nothing tracked here.</p>
                 }
+                else if (shown.Count == 0)
+                {
+                    <p class="empty">Nothing in @ItemCategories.Label(_category!.Value) here.</p>
+                }
                 else
                 {
-                    @ItemTable(_direct)
+                    @ItemTable(shown)
                 }
             </section>
         }
     }
 
-    @* The page is about what the player stored at stations: equipped/carried/dropped/unplaced
-       holdings (anything not ItemHolding.IsAtStation) are deliberately not listed here, nor
-       found by search. *@
+    @* The station view is about what the player stored at stations: equipped/carried/dropped/
+       unplaced holdings (anything not ItemHolding.IsAtStation) are deliberately not listed here.
+       Search also finds what is in ships and dropped, never what is on the character. *@
     @if (_systems.Count == 0 && !EmptinessExplained(State.Current))
     {
         @* With no station listed, anything tracked at all is somewhere this page does not show;
@@ -348,6 +379,7 @@ else
         Confidence Confidence,
         bool Unnamed,
         IReadOnlyList<string> Caveats,
+        IReadOnlySet<ItemCategory> Categories,
         ContainerRow? Opens = null);
 
     /// <summary>
@@ -366,6 +398,12 @@ else
     private Place? _place;
 
     private List<Row> _direct = [];
+
+    /// <summary>Units of each category at the level being browsed, at any depth below it.</summary>
+    private Dictionary<ItemCategory, int> _levelCounts = [];
+
+    /// <summary>The quick filter chosen, or null for everything. Kept when the station changes.</summary>
+    private ItemCategory? _category;
 
     /// <summary>The containers entered at the selected station, outermost first.</summary>
     private List<ContainerRow> _path = [];
@@ -465,6 +503,20 @@ else
         Recompute();
     }
 
+    /// <summary>The player chose a system or a station: they want to browse it, so a search
+    /// still on screen gives way to it.</summary>
+    private void PickSystem()
+    {
+        _query = "";
+        OnSystemChanged();
+    }
+
+    private void PickPlace()
+    {
+        _query = "";
+        Recompute();
+    }
+
     private void Recompute()
     {
         _place = _placesInSystem.FirstOrDefault(p => p.Id == _placeId);
@@ -479,6 +531,7 @@ else
         if (_place is null)
         {
             _direct = [];
+            _levelCounts = [];
             return;
         }
 
@@ -514,6 +567,18 @@ else
         var level = here.Where(h => IsWithin(h.Inside, _path)).ToList();
         var depth = _path.Count;
 
+        // A part on an item at this level — a helmet's visor, a rifle's scope — is part of that
+        // item, not something of its own kind stored here: a helmet is Armor, never Other
+        // because of its visor. Opened, the item lists its parts, and they count again there.
+        var resolver = State.Current.Resolver;
+        bool IsPartBelow((NamedHolding Holding, List<HoldingLink> Inside) h) =>
+            h.Inside.Count > depth && resolver?.HasParts(h.Inside[^1].Key) == true;
+
+        _levelCounts = level
+            .Where(h => !IsPartBelow(h))
+            .GroupBy(h => h.Holding.Category)
+            .ToDictionary(g => g.Key, g => g.Sum(h => h.Holding.Holding.Quantity));
+
         var atLevel = level.Where(h => h.Inside.Count == depth).Select(h => h.Holding).ToList();
         var byGeid = atLevel
             .Where(h => h.Holding.Geid is not null)
@@ -534,11 +599,19 @@ else
                     byGeid.GetValueOrDefault(g.Key)?.Display ?? g.First().Inside[depth].Label,
                     inside.Sum(h => h.Holding.Quantity));
 
+                // A filter keeps it when it, or anything stored in it, is of the chosen category:
+                // the matching items are found by opening it. Parts do not count (see above).
+                var categories = g.Where(h => !IsPartBelow(h)).Select(h => h.Holding.Category).ToHashSet();
+
                 // Its own record names it better than its class. Without one — a box set down
                 // rather than stored has no move of its own — it is only known through what it
                 // holds, so it is dated and trusted by that.
-                return byGeid.TryGetValue(g.Key, out var own)
-                    ? Pool([own])[0] with { Opens = opens }
+                if (byGeid.TryGetValue(g.Key, out var own)) categories.Add(own.Category);
+
+                // An item known only through its parts has nothing else to go by.
+                if (categories.Count == 0) categories = inside.Select(h => h.Category).ToHashSet();
+                return own is not null
+                    ? Pool([own])[0] with { Opens = opens, Categories = categories }
                     : new Row(
                         opens.Label,
                         opens.Label,
@@ -547,6 +620,7 @@ else
                         inside.Min(h => h.Holding.Confidence),
                         false,
                         inside.SelectMany(h => h.Holding.Caveats).Distinct().ToList(),
+                        categories,
                         opens);
             })
             .ToList();
@@ -628,7 +702,8 @@ else
                 g.Max(h => h.Holding.LastMove),
                 g.Min(h => h.Holding.Confidence),
                 g.First().Name.Match == NameMatch.None,
-                g.SelectMany(h => h.Holding.Caveats).Distinct().ToList()))
+                g.SelectMany(h => h.Holding.Caveats).Distinct().ToList(),
+                new HashSet<ItemCategory> { g.First().Category }))
             .OrderBy(r => r.Display, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -676,21 +751,37 @@ else
     </table>;
 
     /// <summary>
-    /// Every holding stored at a station or in a ship's locker, at any depth, whose display
-    /// name or item class contains the query. It covers what the station view and the Ships
-    /// page cover and nothing more: what is on the character is never listed. Unpooled — search exists precisely to
+    /// Every holding stored at a station, in a ship's locker or dropped in the world, at any
+    /// depth, whose display name or item class contains the query and whose category passes the
+    /// filter. It covers what the station view, the Ships page and the Dropped page cover and
+    /// nothing more: what is on the character is never listed. Unpooled — search exists precisely to
     /// find one named instance out of a pool, so collapsing rows here would defeat the point
     /// (unlike the station tables, which pool because the game itself never distinguishes the
     /// pooled units).
     /// </summary>
     private List<NamedHolding> SearchResults() =>
-        State.Current.Holdings
-            .Where(h => h.Holding.IsAtStation || h.Holding.IsInShip)
-            .Where(h => h.Display.Contains(_query, StringComparison.OrdinalIgnoreCase)
-                     || h.ClassName.Contains(_query, StringComparison.OrdinalIgnoreCase))
+        SearchMatches()
+            .Where(h => _category is not { } c || h.Category == c)
             .OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase)
             .ThenByDescending(h => h.Holding.LastMove)
             .ToList();
+
+    /// <summary>What the query matches, before the category filter.</summary>
+    private IEnumerable<NamedHolding> SearchMatches() =>
+        State.Current.Holdings
+            .Where(h => h.Holding.IsAtStation || h.Holding.IsInShip || h.Holding.IsDropped)
+            .Where(h => h.Display.Contains(_query, StringComparison.OrdinalIgnoreCase)
+                     || h.ClassName.Contains(_query, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// How much of each category the page could show: search results (as rows, like the
+    /// results count) while searching, otherwise units at the level being browsed (like the
+    /// Local Inventory count).
+    /// </summary>
+    private Dictionary<ItemCategory, int> CategoryCounts() =>
+        string.IsNullOrWhiteSpace(_query)
+            ? _levelCounts
+            : SearchMatches().GroupBy(h => h.Category).ToDictionary(g => g.Key, g => g.Count());
 
     /// <summary>True when the not-yet-built banner or one of the three IngestHealth banners
     /// above already accounts for an empty page — used to suppress the generic "no locations
