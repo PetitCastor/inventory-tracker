@@ -31,8 +31,9 @@ public static partial class InventoryEventParser
     /// <para>5 -> 6: a drop records the location it fell in.</para>
     /// <para>6 -> 7: ship lockers are named, and ships flown and retrieved are recorded.</para>
     /// <para>7 -> 8: a multi-select drag whose line the game cut short is still read.</para>
+    /// <para>8 -> 9: the character creator opening before the first spawn marks a character reset.</para>
     /// </summary>
-    public const int Version = 8;
+    public const int Version = 9;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -214,6 +215,7 @@ public static partial class InventoryEventParser
             "Channel Disconnected" => ParseDisconnect(line),
             "Vehicle Control Flow" => ParseVehicleFlown(line),
             "CEntityComponentShipListProvider::SetVehicleSpawningInformations" => ParseVehicleRetrieved(line),
+            "CreateChannel" or "ReuseChannel" => ParseChannel(line),
 
             // An event tag we have never seen dispatch to a move parser at all — most likely
             // the queued-tag rename happening again under a name this build doesn't know
@@ -574,6 +576,17 @@ public static partial class InventoryEventParser
             ? new ChannelDisconnected(line.Timestamp, int.Parse(m.Groups["cause"].Value), m.Groups["reason"].Value)
             : null;
     }
+
+    /// <summary>
+    /// The character customizer's service name, as a gRPC channel line writes it:
+    /// <c>&lt;ReuseChannel&gt; Reusing channel for 'sc.external.services.character_customizer.v1.CharacterCustomizerService' to endpoint ...</c>
+    /// </summary>
+    private const string CharacterCustomizerService = "'sc.external.services.character_customizer.v1.CharacterCustomizerService'";
+
+    private static InventoryEvent? ParseChannel(LogLine line) =>
+        line.Rest.Contains(CharacterCustomizerService, StringComparison.Ordinal)
+            ? new CharacterCreatorOpened(line.Timestamp)
+            : null;
 
     private static InventoryEvent? ParseLocationName(LogLine line)
     {

@@ -297,6 +297,42 @@ public class InventoryEventParserTests
         Assert.IsType<QuantumArrived>(ev);
     }
 
+    [Theory]
+    [InlineData("ReuseChannel", "Reusing")]
+    [InlineData("CreateChannel", "Opening")]
+    public void Reads_the_character_creator_opening_from_its_channel_line(string tag, string verb)
+    {
+        var ev = Event(
+            $"<2026-11-13T14:25:59.796Z> [Notice] <{tag}> {verb} channel for " +
+            "'sc.external.services.character_customizer.v1.CharacterCustomizerService' to endpoint " +
+            "pub-sc-alpha-4100-13165946.test1.cloudimperiumgames.com:443 (transport security: 1) [Team_OnlineTech][gRPC]");
+
+        Assert.Equal(DateTimeOffset.Parse("2026-11-13T14:25:59.796Z"), Assert.IsType<CharacterCreatorOpened>(ev).Timestamp);
+    }
+
+    [Fact]
+    public void Ignores_every_other_service_channel()
+    {
+        var ev = Event(
+            "<2026-11-13T14:25:13.803Z> [Notice] <ReuseChannel> Reusing channel for " +
+            "'sc.external.services.ledger.v1.LedgerService' to endpoint " +
+            "pub-sc-alpha-4100-13165946.test1.cloudimperiumgames.com:443 (transport security: 1) [Team_OnlineTech][gRPC]");
+
+        Assert.Null(ev);
+    }
+
+    [Fact]
+    public void Ignores_a_customizer_eye_attachment_that_only_names_the_creator()
+    {
+        // Every session's body enumeration carries this; it is an attachment, not the creator.
+        var ev = Event(
+            "<2026-11-13T14:26:59.648Z> [Notice] <AttachmentReceived> Player[Pilot] " +
+            "Attachment[PU_Head_Eyes_White_CharacterCustomizer_926324278264, PU_Head_Eyes_White_CharacterCustomizer, 926324278264] " +
+            "Status[persistent] Port[Eyes_ItemPort] Elapsed[132.496140] [Team_CoreGameplayFeatures][Inventory]");
+
+        Assert.IsNotType<CharacterCreatorOpened>(ev);
+    }
+
     [Fact]
     public void Reads_the_system_from_a_streamed_object_container_path()
     {

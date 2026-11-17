@@ -1,5 +1,6 @@
 @inherits LayoutComponentBase
 @inject InventoryTracker.App.TrackerOptions Options
+@inject InventoryTracker.App.TrackerState State
 @inject NavigationManager Nav
 
 <header>
@@ -9,6 +10,13 @@
         <NavLink href="ships">Ships</NavLink>
         <NavLink href="dropped">Dropped</NavLink>
         <NavLink href="settings">Settings</NavLink>
+        @* The build of the newest log read, so it is the game the inventory below was last seen in. *@
+        @if (State.Current.Resolver?.LatestBuild is { } build)
+        {
+            <span class="game-version" title="Game build of the newest log read">
+                @InventoryTracker.Ingest.GameVersionCatalog.Describe(build)
+            </span>
+        }
     </nav>
 </header>
 

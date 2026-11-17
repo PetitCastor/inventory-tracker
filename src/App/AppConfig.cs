@@ -32,6 +32,13 @@ public sealed class AppConfig
     /// </summary>
     public bool SetupComplete { get; set; }
 
+    /// <summary>
+    /// When the newest character reset the user has closed the popup for happened. Kept here
+    /// rather than in the database because a schema bump rebuilds the database from the logs,
+    /// which would bring a reset the user already read back up.
+    /// </summary>
+    public DateTimeOffset? ResetNoticeDismissed { get; set; }
+
     /// <summary>The port the local UI listens on. Fixed so a bookmark keeps working.</summary>
     public const int DefaultPort = 5730;
 

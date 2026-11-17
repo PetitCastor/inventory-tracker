@@ -244,7 +244,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         SaveSession(
             cn, tx, session.Id, reader.Offset, firstTs, lastTs, newestLineTs, unrecognisedThisPass,
             state.CurrentLocation, state.FirstLocation, session.Build ?? LogFileLocator.BuildOf(file.Path),
-            complete: !file.IsLive);
+            state.CharacterResetAt, complete: !file.IsLive);
         SaveCorrelationState(cn, tx, session.Id, reader.Offset, state);
         tx.Commit();
 
@@ -532,6 +532,12 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 state.QuantumArrivedAt = arrived.Timestamp;
                 break;
 
+            // Only before the first spawn: that is where a reset puts the creator. SaveSession
+            // applies the same rule against the store, for a pass that resumed after the spawn.
+            case CharacterCreatorOpened opened:
+                if (state.FirstLocation is null) state.CharacterResetAt ??= opened.Timestamp;
+                break;
+
             // ...and the name in the next request, usually within a couple of seconds.
             case LocationNamed named:
             {
@@ -761,6 +767,9 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         /// </summary>
         public PlayerLocation? FirstLocation { get; set; }
 
+        /// <summary>When this pass saw the character creator open before any spawn: a reset.</summary>
+        public DateTimeOffset? CharacterResetAt { get; set; }
+
         /// <summary>The quantum destination last selected, and when the drive arrived at it.</summary>
         public string? QuantumTarget { get; set; }
         public DateTimeOffset? QuantumArrivedAt { get; set; }
@@ -925,7 +934,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 UPDATE session
                 SET byte_offset = 0, first_ts = NULL, last_ts = NULL, complete = 0,
                     unrecognised = 0, last_line_ts = NULL, cur_loc_id = NULL, cur_loc_since = NULL,
-                    build = NULL, first_loc_id = NULL, first_loc_since = NULL
+                    build = NULL, first_loc_id = NULL, first_loc_since = NULL, char_reset_at = NULL
                 WHERE id = $s
                 """;
             reset.Parameters.AddWithValue("$s", session.Id);
@@ -1230,12 +1239,19 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         PlayerLocation? currentLocation,
         PlayerLocation? firstLocation,
         int? build,
+        DateTimeOffset? characterResetAt,
         bool complete)
     {
         using var cmd = cn.CreateCommand();
         cmd.Transaction = tx;
+
+        // Every right-hand side reads the row as it was before this UPDATE, so the reset is
+        // kept only when the store had no spawn yet: a pass that resumed after the spawn, with
+        // no FirstLocation of its own, cannot record a later visit to the creator as a reset.
         cmd.CommandText = """
             UPDATE session SET
+                char_reset_at = CASE WHEN char_reset_at IS NULL AND first_loc_id IS NULL
+                                     THEN $r ELSE char_reset_at END,
                 byte_offset   = $o,
                 complete      = $c,
                 first_ts      = COALESCE(first_ts, $f),
@@ -1260,6 +1276,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.Parameters.AddWithValue("$b", (object?)build ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$fl", (object?)firstLocation?.LocationId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$fls", Iso(firstLocation?.Since));
+        cmd.Parameters.AddWithValue("$r", Iso(characterResetAt));
         cmd.Parameters.AddWithValue("$i", id);
         cmd.ExecuteNonQuery();
     }
