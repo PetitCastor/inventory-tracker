@@ -133,18 +133,10 @@ else if (health.Moves == 0)
     </p>
 }
 
-@* Search and the station picker share one row. Search covers every station and ship, so the
-   dropdowns do not narrow it; picking a station while searching leaves the search to show it. *@
+@* The station picker and search share one row, the picker first. Search covers every station,
+   ship and drop, so the dropdowns do not narrow it; picking a station while searching leaves
+   the search to show it. *@
 <div class="toolbar">
-    <div class="picker-field search-field">
-        <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-            <circle cx="10.5" cy="10.5" r="6.5" />
-            <path d="m20 20-4.35-4.35" stroke-linecap="round" />
-        </svg>
-        <input type="text" placeholder="Search your items…" class="search-input"
-               @bind="_query" @bind:event="oninput" />
-    </div>
-
     @if (_systems.Count > 0)
     {
         <div class="picker-field">
@@ -173,6 +165,15 @@ else if (health.Moves == 0)
             </select>
         </div>
     }
+
+    <div class="picker-field search-field">
+        <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="6.5" />
+            <path d="m20 20-4.35-4.35" stroke-linecap="round" />
+        </svg>
+        <input type="text" placeholder="Search your items…" class="search-input"
+               @bind="_query" @bind:event="oninput" />
+    </div>
 </div>
 
 @* Quick filters for whatever the page is showing: search results, or the level of the station
