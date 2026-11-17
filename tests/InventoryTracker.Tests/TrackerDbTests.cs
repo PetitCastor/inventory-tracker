@@ -219,7 +219,7 @@ public sealed class TrackerDbTests : IDisposable
         Assert.Equal("0", Scalar("SELECT COUNT(*) FROM ingest_correlation"));
         Assert.Equal("confirmed place", Scalar("SELECT name FROM place_name WHERE place_key = 'place:1'"));
         Assert.Equal("item", Scalar("SELECT display_name FROM wiki_item WHERE class_name = 'item_class'"));
-        Assert.Equal("17", Scalar("SELECT value FROM meta WHERE key = 'schema_version'"));
+        Assert.Equal("18", Scalar("SELECT value FROM meta WHERE key = 'schema_version'"));
     }
 
     private void SeedDerivedData()

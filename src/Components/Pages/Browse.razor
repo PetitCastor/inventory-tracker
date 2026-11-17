@@ -34,6 +34,25 @@
     </p>
 }
 
+@* A character reset moved everything without a log line; the tracker has followed, and says
+   so, because the station view would otherwise just look rearranged. *@
+@if (RecentReset() is { } reset)
+{
+    <p class="banner banner-info">
+        Character reset on @FormatDate(reset.ResetAt) with @GameVersionCatalog.Describe(reset.Build):
+        the game moved your stored items to your new home location, <strong>@reset.Home</strong>.
+        @if (reset.Moved > 0)
+        {
+            @($"The tracker moved {reset.Moved:N0} item(s) there with them: ")
+            @string.Join(", ", reset.From.Select(f => $"{f.Units:N0} from {f.Place}"))@(".")
+        }
+        else
+        {
+            @("None of the items the tracker knew about were stored anywhere else.")
+        }
+    </p>
+}
+
 @* Before the first background ingest pass finishes, State.Current is still Snapshot.Empty:
    BuiltAt is unset and Health is IngestHealth.Empty, so health.LogDir reads "" and
    health.LogFiles reads 0 — indistinguishable from a real "no logs found in <LogDir>" unless
@@ -665,6 +684,16 @@ else
         || snapshot.Health.LogFiles == 0
         || snapshot.Health.FilesWithLinesSinceInception == 0
         || snapshot.Health.Moves == 0;
+
+    /// <summary>How long after a character reset its banner stays up.</summary>
+    private static readonly TimeSpan ResetNoticeFor = TimeSpan.FromDays(30);
+
+    /// <summary>The newest character reset, while it is recent enough to still be news.</summary>
+    private CharacterResetReport? RecentReset() =>
+        State.Current.Resolver?.CharacterResets.FirstOrDefault() is { } reset
+        && DateTimeOffset.UtcNow - reset.ResetAt < ResetNoticeFor
+            ? reset
+            : null;
 
     /// <summary>Calendar-day formatting for the health banners; "-" stands in for a date that
     /// was never set (no wipe date) or never seen (no log line read yet).</summary>

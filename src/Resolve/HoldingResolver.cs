@@ -33,18 +33,32 @@ public sealed class HoldingResolver
     private static readonly TimeSpan StaleAfter = TimeSpan.FromDays(30);
 
     /// <summary>
-    /// When a new game build was first played, and which. Updates move stored items
-    /// server-side without logging it: all 13 placements checked across build 12519617 had
-    /// been moved to the station the player first spawned at afterwards.
+    /// When a new game build was first played, and which.
+    /// <para>
+    /// An update that comes with a character reset moves every stored item server-side, without
+    /// a log line, to the home location the player picks while recreating their character: all
+    /// 13 placements checked across build 12519617 had been moved to where the player first
+    /// spawned afterwards — Lorville and Levski storage included. An update without one is not
+    /// known to move anything.
+    /// </para>
     /// </summary>
     /// <param name="Spawn">
-    /// The location the player first arrived at in the new build, if the logs say.
+    /// The location the player first arrived at in the new build, if the logs say. After a
+    /// reset, the new home location.
     /// </param>
     /// <param name="LeftFrom">
     /// Where the player last was before the update, if the logs say.
     /// </param>
+    /// <param name="ResetAt">
+    /// When the character creator opened, if the player had to recreate their character before
+    /// first spawning in this build; see <see cref="Ingest.CharacterCreatorOpened"/>.
+    /// </param>
     public readonly record struct GameUpdate(
-        DateTimeOffset At, int Build, string? Spawn = null, string? LeftFrom = null);
+        DateTimeOffset At, int Build, string? Spawn = null, string? LeftFrom = null, DateTimeOffset? ResetAt = null)
+    {
+        /// <summary>The update came with a character reset.</summary>
+        public bool CharacterReset => ResetAt is not null;
+    }
 
     private readonly List<GameUpdate> _updates;
 
@@ -157,17 +171,37 @@ public sealed class HoldingResolver
             .Concat(wornContainers)
             .ToHashSet(StringComparer.Ordinal);
 
-        // An update that sent the player somewhere new moves their belongings there with them.
-        // One the player resumed from where they had logged out, or one with no logout place on
-        // record, is only weighed: nothing says it moved anything. Of the three updates in the local corpus, only 12519617 changed
-        // the spawn, and it is the one every checked item was moved by.
+        // A character reset moves the player's belongings to the home location they chose, even
+        // one at the station they had logged out at: storage elsewhere is emptied into it all the
+        // same. An update without a reset is only weighed: nothing says it moved anything. In the
+        // local corpus a spawn somewhere new without a reset (12572603, Orison after logging out
+        // at ARC-L1) is just where the player was sent, not where their storage went.
         var relocations = updates
-            .Where(MovedThePlayer)
+            .Where(u => u is { CharacterReset: true, Spawn: not null })
             .Select(u => new LedgerReplay.Relocation(u.At, u.Build, new Holding(InventoryKind.Location, u.Spawn!)));
 
         _ledger = LedgerReplay.Run(moves, worn, enumerations, carried, relocations);
         _survival = MeasureSurvival(_ledger.Stats.PlacementChecks, updates);
     }
+
+    /// <summary>
+    /// What each character reset moved, newest first, with places named as the player knows them.
+    /// </summary>
+    public IReadOnlyList<CharacterResetReport> CharacterResets => _characterResets ??= ReportResets();
+
+    private IReadOnlyList<CharacterResetReport>? _characterResets;
+
+    private List<CharacterResetReport> ReportResets() =>
+        _ledger.Stats.Relocations
+            .Select(r => new CharacterResetReport(
+                _updates.First(u => u.Build == r.Build).ResetAt ?? r.At, r.Build, PlaceLabel(r.Destination.Key),
+                r.From
+                    .OrderByDescending(f => f.Value)
+                    .Select(f => new CharacterResetOrigin(
+                        f.Key.Kind == InventoryKind.Equipped ? "what you were wearing" : PlaceLabel(f.Key.Key), f.Value))
+                    .ToList()))
+            .OrderByDescending(r => r.ResetAt)
+            .ToList();
 
     /// <summary>Whether two location ids are the same place, allowing for the ids the game re-issues.</summary>
     private static bool SamePlace(PlaceCatalog places, string a, string b) =>
@@ -205,6 +239,7 @@ public sealed class HoldingResolver
         HashSet<string> wornContainers;
         PlaceCatalog places;
         List<GameUpdate> updates;
+        int? latestBuild;
         Dictionary<string, string> shipNames;
         Dictionary<string, (DateTimeOffset At, string? LocationId)> retrievals;
 
@@ -220,7 +255,7 @@ public sealed class HoldingResolver
             containers = LoadContainers(cn);
             wornContainers = LoadWornContainers(cn);
             places = PlaceCatalog.Load(cn);
-            updates = LoadUpdates(cn);
+            (updates, latestBuild) = LoadUpdates(cn);
             shipNames = WikiVehicleCatalog.Load(cn);
             retrievals = LoadRetrievals(cn);
             readAdditionalSnapshot?.Invoke(cn);
@@ -230,8 +265,11 @@ public sealed class HoldingResolver
         beforeReplay?.Invoke(cn);
         return new HoldingResolver(
             moves, worn, enumerations, locationNames, containers, wornContainers, places,
-            replayAsOf, updates, shipNames, retrievals);
+            replayAsOf, updates, shipNames, retrievals) { LatestBuild = latestBuild };
     }
+
+    /// <summary>The build of the newest session in the logs: the game as it is installed now.</summary>
+    public int? LatestBuild { get; private init; }
 
     /// <summary>What to call a ship class: its in-game name when the wiki knows it, else the class.</summary>
     public string ShipLabel(string shipClass) => _shipNames.GetValueOrDefault(shipClass) ?? shipClass;
@@ -364,25 +402,38 @@ public sealed class HoldingResolver
         }
 
         // A game update played since this placement is the one thing observed to invalidate
-        // one: the server moves stored items and logs nothing. The ledger has already moved
-        // the item to where the player spawned after it, when the logs say where that was.
-        // Each update is weighed by how often the ledger's belief across it held; across
-        // several, the least trustworthy one decides.
+        // one. A character reset moves stored items to the new home location and logs nothing;
+        // the ledger has already moved the item there, so that move is known rather than
+        // weighed. Any other update is weighed by how often the ledger's belief across it held;
+        // across several, the least trustworthy one decides.
         var crossed = _updates.Where(u => u.At > since && u.At <= _asOf).ToList();
         if (crossed.Count > 0)
         {
             movedByUpdate ??= ContainerMovedByUpdate(where);
 
-            // On a tie, the update that moved the item speaks for the rest: every update after
-            // it moved it again, so they say the same thing.
-            var worst = crossed
-                .OrderBy(u => _survival[u.Build].Factor)
-                .ThenBy(u => u.Build == movedByUpdate ? 0 : 1)
-                .First();
-            score *= _survival[worst.Build].Factor;
+            // A reset either took the item to the home location or found it there already; both
+            // are known. What happened before that no longer matters: wherever earlier updates
+            // left it, the reset gathered it from there.
+            // Not for what lies on the floor or in hand: the reset leaves those behind, and a floor
+            // at the home station is cleared like any other.
+            var root = RootOf(where);
+            var followsTheReset = arrivedBy is not ("Drop" or "Carry");
+            var settledBy = crossed.LastOrDefault(u =>
+                u.CharacterReset && (u.Build == movedByUpdate
+                                     || (followsTheReset && u.Spawn is { } home && root.Kind == InventoryKind.Location
+                                         && SamePlace(Places, root.Key, home))));
+            if (settledBy.CharacterReset)
+            {
+                if (settledBy.Build == movedByUpdate) caveats.Add(MovedCaveat(settledBy));
+                crossed.RemoveAll(u => u.At <= settledBy.At);
+            }
 
-            if (movedByUpdate is { } moved) caveats.Add(MovedCaveat(moved, _survival[moved]));
-            if (worst.Build != movedByUpdate) caveats.Add(UpdateCaveat(worst, _survival[worst.Build], MovedThePlayer(worst)));
+            if (crossed.Count > 0)
+            {
+                var worst = crossed.OrderBy(u => _survival[u.Build].Factor).First();
+                score *= _survival[worst.Build].Factor;
+                caveats.Add(UpdateCaveat(worst, _survival[worst.Build], MovedThePlayer(worst)));
+            }
         }
 
         var age = _asOf - since;
@@ -399,6 +450,18 @@ public sealed class HoldingResolver
 
         return new ItemHolding(
             geid, itemClass, quantity, chain, since, arrivedBy, score, ambiguous, caveats);
+    }
+
+    /// <summary>The holding the containers around <paramref name="where"/> sit in, as far as the ledger knows.</summary>
+    private Holding RootOf(Holding where)
+    {
+        for (var hop = 0; hop < MaxChainDepth && where.Kind == InventoryKind.Container; hop++)
+        {
+            if (!_ledger.InstanceAt.TryGetValue(where.Key, out var outer)) break;
+            where = outer;
+        }
+
+        return where;
     }
 
     /// <summary>
@@ -418,19 +481,26 @@ public sealed class HoldingResolver
         return null;
     }
 
-    private static string MovedCaveat(int build, UpdateSurvival record) => record.Verified
-        ? $"moved here by the game update to build {build}, which no log line records: after it, " +
-          $"{record.Survived} of {record.Checked} items checked were where the update had been assumed to put them"
-        : $"assumed moved here by the game update to build {build}, which no log line records — an earlier " +
-          "update moved every stored item checked to where the player first spawned after it";
+    private static string MovedCaveat(GameUpdate reset) =>
+        $"moved here by the character reset of {reset.ResetAt:yyyy-MM-dd} (game build {reset.Build}): the game moves " +
+        "every stored item to the new home location, and logs none of it";
 
     private static string UpdateCaveat(GameUpdate update, UpdateSurvival record, bool movedThePlayer) =>
         record.Verified
             ? $"placed before the game update to build {update.Build}, after which {record.Checked - record.Survived} " +
               $"of {record.Checked} items checked were not where the ledger had them"
-            : movedThePlayer || update.Spawn is null
-                ? $"placed before the game update to build {update.Build} — updates have been seen to move " +
-                  "stored items to wherever the player next spawns"
+            : update.CharacterReset
+                ? update.Spawn is null
+                    ? $"placed before the character reset of {update.ResetAt:yyyy-MM-dd} (game build {update.Build}), " +
+                      "which moved stored items to a new home location the logs do not name"
+                    : $"placed before the character reset of {update.ResetAt:yyyy-MM-dd} (game build {update.Build}), " +
+                      "which moved stored items to the new home location — this was not one of them"
+            : update.Spawn is null
+                ? $"placed before the game update to build {update.Build}, which came without a character reset — " +
+                  "the logs do not say where the player spawned after it, and no later move has checked it"
+            : movedThePlayer
+                ? $"placed before the game update to build {update.Build}, which came without a character reset — " +
+                  "the player spawned somewhere new, and no later move has checked whether stored items stayed put"
             : update.LeftFrom is null
                 ? $"placed before the game update to build {update.Build}, which no later move has checked — the " +
                   "logs do not say where the player logged out before it, so nothing says whether it moved anything"
@@ -851,13 +921,19 @@ public sealed class HoldingResolver
     /// <summary>
     /// Each build's first appearance, keeping only builds newer than every one before — a
     /// rotated backup ingested late must not read as a downgrade followed by an update — with
-    /// the first place the player arrived at in that build.
+    /// the first place the player arrived at in that build, and whether they had to recreate
+    /// their character before getting there. Also the newest build played at all.
+    /// <para>
+    /// A reset counts for the update only when it comes before the build's first spawn: that is
+    /// where a patch puts it. One the player asks for later in a build has no update to hang
+    /// off, and is not tracked.
+    /// </para>
     /// </summary>
-    private static List<GameUpdate> LoadUpdates(SqliteConnection cn)
+    private static (List<GameUpdate> Updates, int? LatestBuild) LoadUpdates(SqliteConnection cn)
     {
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
-            SELECT build, COALESCE(first_ts, last_line_ts) AS since, first_loc_id, cur_loc_id
+            SELECT build, COALESCE(first_ts, last_line_ts) AS since, first_loc_id, cur_loc_id, char_reset_at
             FROM session
             WHERE build IS NOT NULL AND COALESCE(first_ts, last_line_ts) IS NOT NULL
             ORDER BY since
@@ -865,7 +941,9 @@ public sealed class HoldingResolver
 
         var firstPlayed = new List<(int Build, DateTimeOffset At, string? LeftFrom)>();
         var spawn = new Dictionary<int, string>();
+        var reset = new Dictionary<int, DateTimeOffset>();
         string? lastSeen = null;
+        int? latest = null;
         using (var r = cmd.ExecuteReader())
         {
             while (r.Read())
@@ -876,10 +954,18 @@ public sealed class HoldingResolver
                     firstPlayed.Add((build, DateTimeOffset.Parse(r.GetString(1), CultureInfo.InvariantCulture), lastSeen));
                 }
 
+                // Before this session's own spawn is taken: a reset session reaches its first
+                // location only after the creator, so the build has no spawn yet when it is read.
+                if (!r.IsDBNull(4) && !spawn.ContainsKey(build))
+                {
+                    reset.TryAdd(build, DateTimeOffset.Parse(r.GetString(4), CultureInfo.InvariantCulture));
+                }
+
                 // A session that never reached a location — a crash at the menu, say — says
                 // nothing; the build's next one still spawned after the update.
                 if (!r.IsDBNull(2)) spawn.TryAdd(build, r.GetString(2));
                 if (!r.IsDBNull(3)) lastSeen = r.GetString(3);
+                latest = build;
             }
         }
 
@@ -889,13 +975,15 @@ public sealed class HoldingResolver
         {
             if (newest is not null && build > newest)
             {
-                updates.Add(new GameUpdate(at, build, spawn.GetValueOrDefault(build), leftFrom));
+                updates.Add(new GameUpdate(
+                    at, build, spawn.GetValueOrDefault(build), leftFrom,
+                    reset.TryGetValue(build, out var resetAt) ? resetAt : null));
             }
 
             if (newest is null || build > newest) newest = build;
         }
 
-        return updates;
+        return (updates, latest);
     }
 
     private static InventoryKind ParseKind(string s) =>

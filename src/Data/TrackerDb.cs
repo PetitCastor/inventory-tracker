@@ -77,8 +77,9 @@ public sealed class TrackerDb
     /// <c>first_loc_since</c>; 13 -> 14 adds <c>attachment_sighting</c>; 14 -> 15 adds
     /// <c>wiki_location</c> and <c>place_name</c>; 15 -> 16 adds <c>vehicle</c> and <c>wiki_vehicle</c>.</para>
     /// <para>16 -> 17 adds bounded, watermark-bound ingest correlation snapshots.</para>
+    /// <para>17 -> 18 adds <c>session.char_reset_at</c>.</para>
     /// </summary>
-    private const int SchemaVersion = 17;
+    private const int SchemaVersion = 18;
 
     public void Initialize()
     {
@@ -195,14 +196,16 @@ public sealed class TrackerDb
             -- it every container opened afterwards goes unplaced.
             cur_loc_id    TEXT,
             cur_loc_since TEXT,
-            -- The game build that wrote the file. A change of build is a game update, and
-            -- updates move stored items server-side without a single log line: after build
-            -- 12519617 every item checked had been moved to where the player next spawned.
+            -- The game build that wrote the file. A change of build is a game update.
             build         INTEGER,
-            -- Where the player first stood in this file: the spawn. The first session of a
-            -- new build spawned where the update moved the player's stored items to.
+            -- Where the player first stood in this file: the spawn. After a character reset
+            -- it is the home location the player chose, where the reset moved their items.
             first_loc_id    TEXT,
-            first_loc_since TEXT
+            first_loc_since TEXT,
+            -- When the character creator opened before the player first spawned in this file:
+            -- a character reset. The server moves every stored item to the new home location
+            -- and logs none of it, so this is the only trace of that move.
+            char_reset_at   TEXT
         );
 
         -- Bounded parser correlation state is committed with the matching byte watermark.

@@ -191,7 +191,7 @@ public class ItemHoldingTests
     private const string OtherPlace = "2000000002";
     private const string DuplicateCaveat = "we saw this arrive but never saw where it came from";
     private const string UnconfirmedCaveat = "the game never confirmed the move";
-    private const string MovedByUpdateCaveat = "assumed moved here by the game update to build 200";
+    private const string MovedByUpdateCaveat = "moved here by the character reset of 2026-07-16 (game build 200)";
 
     private static readonly DateTimeOffset ProvenanceAsOf = DateTimeOffset.Parse("2026-07-16T13:00:00Z");
 
@@ -215,19 +215,22 @@ public class ItemHoldingTests
         }
     }
 
+    /// <param name="reset">The player recreated their character before spawning: a character reset at <paramref name="firstTs"/>.</param>
     private static void AddSession(
-        TrackerDb db, string path, int? build = null, string? firstTs = null, string? location = null)
+        TrackerDb db, string path, int? build = null, string? firstTs = null, string? location = null,
+        bool reset = false)
     {
         using var connection = db.Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO session(path, first_ts, last_ts, byte_offset, complete, build, first_loc_id, cur_loc_id)
-            VALUES($path, $first, NULL, 0, 1, $build, $location, $location);
+            INSERT INTO session(path, first_ts, last_ts, byte_offset, complete, build, first_loc_id, cur_loc_id, char_reset_at)
+            VALUES($path, $first, NULL, 0, 1, $build, $location, $location, $reset);
             """;
         command.Parameters.AddWithValue("$path", path);
         command.Parameters.AddWithValue("$first", (object?)firstTs ?? DBNull.Value);
         command.Parameters.AddWithValue("$build", (object?)build ?? DBNull.Value);
         command.Parameters.AddWithValue("$location", (object?)location ?? DBNull.Value);
+        command.Parameters.AddWithValue("$reset", reset ? firstTs : DBNull.Value);
         command.ExecuteNonQuery();
     }
 
@@ -369,12 +372,12 @@ public class ItemHoldingTests
     [InlineData(true)]
     public void Units_an_update_moved_keep_its_caveat_after_later_arrivals_join_them(bool arrivalAfterUpdate)
     {
-        // Build 200 starts at 12:30 with the player spawning at another station than the one they
-        // logged out at, so the update is assumed to have moved the three units stored there.
+        // Build 200 starts at 12:30 with a character reset and the player choosing another station
+        // as home than the one they logged out at, so the reset moved the three units stored there.
         WithProvenanceDb(db =>
         {
             AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
-            AddSession(db, "provenance-2.log", build: 200, firstTs: "2026-07-16T12:30:00+00:00", location: StackStation);
+            AddSession(db, "provenance-2.log", build: 200, firstTs: "2026-07-16T12:30:00+00:00", location: StackStation, reset: true);
             AddProvenanceMove(db, 1, null, 5, "Invalid", "", "Container", SeedCrate);
             AddProvenanceMove(db, 2, null, 3, "Container", SeedCrate, "Location", OtherPlace);
             if (arrivalAfterUpdate)
@@ -806,9 +809,9 @@ public class ItemHoldingTests
         ("last picked up in hand to use", "Carried"),
         ("dropped on the floor", "Dropped"),
         ("food, drink and medical items are used up without a log line, and this one has not moved in 31 days", "UsedUp31"),
-        ("assumed moved here by the game update to build 200", "MovedBy200"),
-        ("assumed moved here by the game update to build 300", "MovedBy300"),
-        ("placed before the game update to build 200 — updates have been seen to move stored items", "Crossed200Spawned"),
+        ("moved here by the character reset of 2026-07-16 (game build 200)", "MovedBy200"),
+        ("moved here by the character reset of 2026-07-16 (game build 300)", "MovedBy300"),
+        ("placed before the game update to build 200, which came without a character reset — the player spawned somewhere new", "Crossed200Spawned"),
         ("placed before the game update to build 200, which no later move has checked — the player picked up", "Crossed200Resumed"),
         ("last seen 31 days ago", "Age31"),
         ("this station's id was never paired with a name", "UnnamedStation"),
@@ -1048,24 +1051,24 @@ public class ItemHoldingTests
     [InlineData(false)]
     public void Units_already_where_the_player_spawned_are_not_said_to_be_moved_by_the_update(bool tenWhereThePlayerSpawns)
     {
-        // HoldingResolver.cs:348 and :349. Build 200 at 12:30 sends the player from OtherPlace to
-        // StackStation. Before L05 the merged stack took the update's build for all thirteen:
-        // x13 0.350 Low "assumed moved here by the game update to build 200". The ten that were
-        // already there now say they were placed before an update that moves what is stored; the
-        // score is the same (x0.5, the update is unverified). In the control all thirteen moved.
+        // Build 200 at 12:30 comes with a character reset, and the player picks StackStation as
+        // home after logging out at OtherPlace. Before L05 the merged stack took the update's
+        // build for all thirteen. The ten that were already there were not moved by the reset,
+        // but it left them where they were, so nothing about them is in doubt either. In the
+        // control all thirteen moved. A reset's move is known, so it costs no score.
         WithProvenanceDb(db =>
         {
             AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
-            AddSession(db, "provenance-2.log", build: 200, firstTs: "2026-07-16T12:30:00+00:00", location: StackStation);
+            AddSession(db, "provenance-2.log", build: 200, firstTs: "2026-07-16T12:30:00+00:00", location: StackStation, reset: true);
             StoreAroundAnUpdate(db, tenWhereThePlayerSpawns);
 
             var rows = UnnamedRows(db, Magazine, ProvenanceAsOf, h => h.Root?.Key == StackStation);
 
             Assert.Equal(
                 tenWhereThePlayerSpawns
-                    ? "x3 0.350 Low Move 2026-07-16 12:03 [MovedBy200, UnnamedStation] | " +
-                      "x10 0.350 Low Move 2026-07-16 12:02 [Crossed200Spawned, UnnamedStation]"
-                    : "x13 0.350 Low Move 2026-07-16 12:03 [MovedBy200, UnnamedStation]",
+                    ? "x3 0.700 High Move 2026-07-16 12:03 [MovedBy200, UnnamedStation] | " +
+                      "x10 0.700 High Move 2026-07-16 12:02 [UnnamedStation]"
+                    : "x13 0.700 High Move 2026-07-16 12:03 [MovedBy200, UnnamedStation]",
                 Characterise(rows));
         });
     }
@@ -1075,26 +1078,24 @@ public class ItemHoldingTests
     [InlineData(false)]
     public void Of_two_updates_crossed_alike_each_group_is_described_by_its_own(bool tenWhereThePlayerSpawns)
     {
-        // HoldingResolver.cs:344 (and :348, :349). Build 200 at 12:30 resumes where the player
-        // logged out; build 300 at 12:50 sends them from OtherPlace to StackStation. Both updates
-        // are unverified (x0.5), so on a tie the update that moved a group speaks for it. Before
-        // L05 the merged stack took build 300 for all thirteen: x13 0.350 Low "assumed moved here
-        // by the game update to build 300". The ten that were already there were moved by
-        // neither: the first update they crossed, the resumed one, describes them.
+        // Build 200 at 12:30 resumes where the player logged out; build 300 at 12:50 comes with a
+        // character reset and StackStation as the new home. Before L05 the merged stack took build
+        // 300 for all thirteen. The reset settles every group at StackStation, moved there or
+        // found there, so the earlier, unverified update no longer weighs on any of them.
         WithProvenanceDb(db =>
         {
             AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
             AddSession(db, "provenance-2.log", build: 200, firstTs: "2026-07-16T12:30:00+00:00", location: OtherPlace);
-            AddSession(db, "provenance-3.log", build: 300, firstTs: "2026-07-16T12:50:00+00:00", location: StackStation);
+            AddSession(db, "provenance-3.log", build: 300, firstTs: "2026-07-16T12:50:00+00:00", location: StackStation, reset: true);
             StoreAroundAnUpdate(db, tenWhereThePlayerSpawns);
 
             var rows = UnnamedRows(db, Magazine, ProvenanceAsOf, h => h.Root?.Key == StackStation);
 
             Assert.Equal(
                 tenWhereThePlayerSpawns
-                    ? "x3 0.350 Low Move 2026-07-16 12:03 [MovedBy300, UnnamedStation] | " +
-                      "x10 0.350 Low Move 2026-07-16 12:02 [Crossed200Resumed, UnnamedStation]"
-                    : "x13 0.350 Low Move 2026-07-16 12:03 [MovedBy300, UnnamedStation]",
+                    ? "x3 0.700 High Move 2026-07-16 12:03 [MovedBy300, UnnamedStation] | " +
+                      "x10 0.700 High Move 2026-07-16 12:02 [UnnamedStation]"
+                    : "x13 0.700 High Move 2026-07-16 12:03 [MovedBy300, UnnamedStation]",
                 Characterise(rows));
         });
     }

@@ -194,8 +194,11 @@ public sealed class LedgerReplay
         /// </summary>
         public int EvictedThenResighted { get; internal set; }
 
-        /// <summary>Units a game update was assumed to have moved to where the player next spawned.</summary>
+        /// <summary>Units a character reset moved to the new home location.</summary>
         public int RelocatedByUpdate { get; internal set; }
+
+        /// <summary>Each relocation applied, with how many units it took out of each holding.</summary>
+        public List<RelocationReport> Relocations { get; } = [];
 
         /// <summary>Every class-level move whose source fell short, and why.</summary>
         public List<SourceMiss> Misses { get; } = [];
@@ -381,7 +384,8 @@ public sealed class LedgerReplay
         Relocation? Update = null);
 
     /// <summary>
-    /// A game update, and the station the player first spawned at in the build it started.
+    /// A character reset that came with a game update, and the home location the player chose:
+    /// where they first spawned in the build it started.
     /// </summary>
     public sealed record Relocation(DateTimeOffset At, int Build, Holding Destination);
 
@@ -389,12 +393,12 @@ public sealed class LedgerReplay
     /// Moves everything stored at a station or on the player to <paramref name="update"/>'s
     /// destination.
     /// <para>
-    /// Updates move belongings server-side and log none of it. In the local corpus, every one
-    /// of the 13 items checked after build 12519617 was taken out of the station the player
-    /// first spawned at: armour stored at Lorville, a rifle stored at Levski, and weapons and
-    /// an undersuit last seen equipped. Containers are entities too, so what is inside one
-    /// follows it. Dropped items are left where they fell, and so is anything carried in hand:
-    /// it is most likely used up, and the next body enumeration settles that.
+    /// A character reset moves belongings server-side and logs none of it. In the local corpus,
+    /// every one of the 13 items checked after the reset of build 12519617 was taken out of the
+    /// station the player first spawned at: armour stored at Lorville, a rifle stored at Levski,
+    /// and weapons and an undersuit last seen equipped. Containers are entities too, so what is
+    /// inside one follows it. Dropped items are left where they fell, and so is anything carried
+    /// in hand: it is most likely used up, and the next body enumeration settles that.
     /// </para>
     /// </summary>
     private void Relocate(Relocation update)
@@ -404,8 +408,10 @@ public sealed class LedgerReplay
             .Where(h => h != update.Destination && (h.Kind == InventoryKind.Location || h == equipped))
             .ToList();
 
+        var taken = new Dictionary<Holding, int>();
         foreach (var where in from)
         {
+            var before = Stats.RelocatedByUpdate;
             foreach (var (itemClass, slot) in _contents[where])
             {
                 foreach (var instance in slot.Named.Where(i => !_carried.Contains(i.Geid)).ToList())
@@ -424,7 +430,11 @@ public sealed class LedgerReplay
                     Stats.RelocatedByUpdate += quantity;
                 }
             }
+
+            if (Stats.RelocatedByUpdate > before) taken[where] = Stats.RelocatedByUpdate - before;
         }
+
+        Stats.Relocations.Add(new RelocationReport(update.At, update.Build, update.Destination, taken));
     }
 
     /// <summary>

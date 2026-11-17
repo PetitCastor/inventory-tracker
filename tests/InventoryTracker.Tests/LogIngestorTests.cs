@@ -885,19 +885,137 @@ public sealed class LogIngestorTests : IDisposable
         "<2026-08-27T00:39:22.500Z> [Notice] <RequestLocationInventory> Player[Pilot] requested inventory for Location[Stanton3_Area18]",
     ];
 
+    /// <summary>The gRPC channel line the client writes when the character creator opens.</summary>
+    private static string CreatorOpens(string ts) =>
+        $"<{ts}> [Notice] <ReuseChannel> Reusing channel for " +
+        "'sc.external.services.character_customizer.v1.CharacterCustomizerService' to endpoint " +
+        "pub-sc-alpha-4100-12519617.test1.cloudimperiumgames.com:443 (transport security: 1) [Team_OnlineTech][gRPC]";
+
+    /// <summary>The first lines of a new build after a character reset: the creator, then the home location.</summary>
+    private static string[] ResetThenSpawnAtArea18() =>
+    [
+        "<2026-08-27T00:30:37.588Z> [Notice] <X> first line after the update",
+        CreatorOpens("2026-08-27T00:37:38.910Z"),
+        Arrive,
+        "<2026-08-27T00:39:22.500Z> [Notice] <RequestLocationInventory> Player[Pilot] requested inventory for Location[Stanton3_Area18]",
+    ];
+
     [Fact]
-    public void A_game_update_moves_a_stored_item_to_where_the_player_spawned_after_it()
+    public void A_character_reset_moves_a_stored_item_to_the_home_location_the_player_chose()
     {
+        Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
+        Backup(12519617, "26 Aug 26 (20 30 32)", ResetThenSpawnAtArea18());
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var update = Assert.Single(resolver.Updates);
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.True(update.CharacterReset);
+        Assert.Equal(DateTimeOffset.Parse("2026-08-27T00:37:38.910Z"), update.ResetAt);
+        Assert.Equal("2273540638", holding.Chain[^1].Key);
+        Assert.Equal(1.0, holding.Score, precision: 3); // the reset's move is known, not weighed
+        Assert.Contains(holding.Caveats, c => c.StartsWith("moved here by the character reset of 2026-08-27 (game build 12519617)"));
+    }
+
+    [Fact]
+    public void A_character_reset_reports_where_it_took_the_items_from()
+    {
+        Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
+        Backup(12519617, "26 Aug 26 (20 30 32)", ResetThenSpawnAtArea18());
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var reset = Assert.Single(HoldingResolver.Load(_db).CharacterResets);
+
+        Assert.Equal(12519617, reset.Build);
+        Assert.Equal(DateTimeOffset.Parse("2026-08-27T00:37:38.910Z"), reset.ResetAt);
+        Assert.Contains("Area18", reset.Home);
+        var origin = Assert.Single(reset.From);
+        Assert.Contains("Lorville", origin.Place);
+        Assert.Equal(1, origin.Units);
+        Assert.Equal(1, reset.Moved);
+    }
+
+    [Fact]
+    public void A_character_reset_empties_other_stations_even_when_the_home_is_where_the_player_logged_out()
+    {
+        // The multitool is stored at Lorville, then the player flies to Area18 and logs out
+        // there. The reset's new home is Area18 again: the spawn says nothing new, but the
+        // reset still gathers Lorville's storage into it.
+        Backup(12344265, "04 Aug 26 (10 17 03)",
+        [
+            .. ConfirmedStoreAtLorville(),
+            "<2026-08-04T10:30:00.000Z> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
+            "Landing [4005457614] -> [2273540638]. Location [4005457614] -> [2273540638]. Pending [0]",
+        ]);
+        Backup(12519617, "26 Aug 26 (20 30 32)", ResetThenSpawnAtArea18());
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var update = Assert.Single(resolver.Updates);
+        var holding = Assert.Single(resolver.ResolveAll());
+
+        Assert.False(resolver.MovedThePlayer(update));
+        Assert.True(update.CharacterReset);
+        Assert.Equal("2273540638", holding.Chain[^1].Key);
+    }
+
+    [Fact]
+    public void A_game_update_without_a_character_reset_leaves_stored_items_where_they_were()
+    {
+        // 12572603 sent the player to Orison after a logout at ARC-L1, with no creator: a new
+        // spawn on its own is not where storage went.
         Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
         Backup(12519617, "26 Aug 26 (20 30 32)", SpawnAtArea18());
         new LogIngestor(_db, _dir).IngestAll();
 
         var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
+        var update = Assert.Single(resolver.Updates);
         var holding = Assert.Single(resolver.ResolveAll());
 
-        Assert.Equal("2273540638", holding.Chain[^1].Key);
+        Assert.False(update.CharacterReset);
+        Assert.True(resolver.MovedThePlayer(update));
+        Assert.Equal("4005457614", holding.Chain[^1].Key);
         Assert.Equal(0.5, holding.Score, precision: 3); // one update, not yet verified
-        Assert.Contains(holding.Caveats, c => c.StartsWith("assumed moved here by the game update to build 12519617"));
+        Assert.Contains(holding.Caveats, c => c.StartsWith(
+            "placed before the game update to build 12519617, which came without a character reset — the player spawned somewhere new"));
+        Assert.Empty(resolver.CharacterResets);
+    }
+
+    [Fact]
+    public void The_character_creator_marks_a_reset_only_before_the_first_spawn()
+    {
+        Append(Arrive, CreatorOpens("2026-08-27T00:45:00.000Z"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("", Scalar("SELECT char_reset_at FROM session"));
+    }
+
+    [Fact]
+    public void A_reset_survives_a_pass_that_ends_in_the_character_creator()
+    {
+        // The player sits in the creator for minutes while the watcher runs a pass every second
+        // or two: the spawn lands in a later pass, possibly one that starts cold.
+        Append("<2026-08-27T00:30:37.588Z> [Notice] <X> first line", CreatorOpens("2026-08-27T00:37:38.910Z"));
+        new LogIngestor(_db, _dir).IngestAll();
+        Append(Arrive);
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.StartsWith("2026-08-27T00:37:38.91", Scalar("SELECT char_reset_at FROM session"));
+        Assert.Equal("2273540638", Scalar("SELECT first_loc_id FROM session"));
+    }
+
+    [Fact]
+    public void A_pass_resumed_after_the_spawn_does_not_take_the_creator_for_a_reset()
+    {
+        // A cold pass starts with no FirstLocation of its own; the store's spawn is what says the
+        // creator came too late to be a reset.
+        Append(Arrive);
+        new LogIngestor(_db, _dir).IngestAll();
+        Append(CreatorOpens("2026-08-27T00:45:00.000Z"));
+        new LogIngestor(_db, _dir).IngestAll();
+
+        Assert.Equal("", Scalar("SELECT char_reset_at FROM session"));
     }
 
     [Fact]

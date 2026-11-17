@@ -2,7 +2,25 @@
   "Corpora": {
     "sample": {
       "Files": 3,
-      "Bytes": 770677,
+      "Bytes": 770942,
+      "Manifest": [
+        {
+          "Path": "logbackups/Game Build(12344265) 04 Aug 26 (10 17 03).log",
+          "Bytes": 428457,
+          "Sha256": "793DE2C6805FA6F1C66DE7369649F5286989C77BFDE25ABDE61517848ADBB69A"
+        },
+        {
+          "Path": "logbackups/Game Build(12344265) 05 Aug 26 (07 31 35).log",
+          "Bytes": 147014,
+          "Sha256": "C0CF22863326BC985CD957B9C5D9E6034AC2104F899E0D5802519BB49658CF6F"
+        },
+        {
+          "Path": "logbackups/Game Build(12519617) 26 Aug 26 (20 30 32).log",
+          "Bytes": 195471,
+          "Sha256": "02EB8F547F725F72A66501501201D75468D79E623BC671D51AB82AF80CC034D4"
+        }
+      ],
+      "CorpusFingerprint": "7EC7976747D68C984E64012E3717F60BF3436D3C77AA62C5AE13EDDF6AE0F4B3",
       "Metrics": {
         "capture.request_rate": 1,
         "capture.unrecognised_lines": 0,
@@ -11,15 +29,15 @@
         "ledger.accounted_rate": 1,
         "ledger.duplicate_risk_rate": 0,
         "worn.evicted_then_resighted": 0,
-        "holdings.high_share": 0.3212,
-        "holdings.low_share": 0.1576,
-        "holdings.mean_score": 0.611,
+        "holdings.high_share": 0.7758,
+        "holdings.low_share": 0.1394,
+        "holdings.mean_score": 0.8428,
         "holdings.inferred_share": 0,
         "holdings.first_seen_share": 0,
         "placement.within_build_same_place": 1,
         "placement.brier": 0,
         "live.parity": 1,
-        "live.cold_parity": 0.9485
+        "live.cold_parity": 0.9636
       }
     }
   }
