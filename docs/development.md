@@ -6,7 +6,7 @@ For features and everyday use, see the [main README](../README.md).
 
 Requires Windows and the **.NET 10 SDK**. The project targets `net10.0-windows`.
 
-Run from the repository root. Commands use RTK as required by [AGENTS.md](../AGENTS.md).
+Run from the repository root. Commands use RTK as required by [CLAUDE.md](../CLAUDE.md).
 
 ```powershell
 rtk dotnet build InventoryTracker.slnx
@@ -64,11 +64,13 @@ Resetting can recover only events still present in available logs.
 
 ## Configuration and ingestion
 
-`%LOCALAPPDATA%\InventoryTracker\config.json` stores the log folder, database path, UI port and wipe date. App diagnostics go to `tracker.log` in the same directory.
+`%LOCALAPPDATA%\InventoryTracker\config.json` stores the log folder, database path, UI port, wipe date and whether the latest character-reset popup was closed (`ResetNoticeDismissed`, kept outside the database so a rebuild does not show it again). App diagnostics go to `tracker.log` in the same directory.
 
 The selected game folder must contain `Game.log`. The tracker imports compatible `logbackups\*.log` files and the active log, then follows new events in `Game.log`.
 
 A wipe date excludes earlier events. **Settings → Save and rebuild from logs** clears imported data and reimports with the updated settings. After editing the date in the config file, use `--scan --reset` to apply it to previously imported data.
+
+The game version in the header is read from the RSI Launcher logs (`%APPDATA%\rsilauncher\logs`).
 
 Name refreshes use `api.star-citizen.wiki`; app updates use GitHub Releases.
 
