@@ -18,189 +18,304 @@
 
 <h1>Settings</h1>
 
-<h2>Log source</h2>
-<div class="settings-field">
-    <label for="log-dir">Game.log location</label>
-    <div class="input-row">
-        <input id="log-dir" type="text" @bind="_logDir" placeholder="C:\Program Files\Roberts Space Industries\StarCitizen\LIVE" />
-        <button type="button" class="icon-btn" title="Browse for folder" @onclick="BrowseFolder">
-            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v1H3z" />
-                <path d="M3 10h18l-2 8a2 2 0 0 1-2 1.5H5a2 2 0 0 1-2-1.5z" />
+@* Sections are links, not in-page state: a reload or a link from Browse lands on the right one,
+   and the router keeps this component alive between them, so a rebuild or download started on
+   one section keeps running while another is open. *@
+<div class="settings-layout">
+    <nav class="settings-nav" aria-label="Settings sections">
+        <a href="settings" class="@NavClass(TabLogs)" aria-current="@Current(TabLogs)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
             </svg>
-        </button>
+            Log source
+        </a>
+        <a href="settings?tab=@TabNames" class="@NavClass(TabNames)" aria-current="@Current(TabNames)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z" /><path d="M4 21V5" /><path d="M8 7h7" />
+            </svg>
+            Names
+        </a>
+        <a href="settings?tab=@TabUpdates" class="@NavClass(TabUpdates)" aria-current="@Current(TabUpdates)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" />
+            </svg>
+            Updates
+        </a>
+        <a href="settings?tab=@TabDiagnostics" class="@NavClass(TabDiagnostics)" aria-current="@Current(TabDiagnostics)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 12h4l3-8 4 16 3-8h4" />
+            </svg>
+            Diagnostics
+            @if (HasReadProblem)
+            {
+                <span class="nav-dot" title="Some log lines were not fully read"></span>
+            }
+        </a>
+    </nav>
+
+    <div class="settings-panel">
+        @switch (_tab)
+        {
+            case TabNames:
+                <h2>Names</h2>
+                <p class="panel-lead">Item and station names come from the Star Citizen wiki.</p>
+                <section class="settings-card">
+                    <div class="setting-row">
+                        <span class="setting-label">Item catalogue</span>
+                        <span class="setting-value">@Age(_catalogueAge)</span>
+                    </div>
+                    <div class="setting-row">
+                        <span class="setting-label">Place list</span>
+                        <span class="setting-value">@Age(_placesAge)</span>
+                    </div>
+                    <div class="settings-card-footer">
+                        @if (_refreshingNames)
+                        {
+                            <span class="rebuild-status"><span class="spinner"></span> @(_namesProgress ?? "starting…")</span>
+                        }
+                        else if (_namesError is { } err)
+                        {
+                            <span class="rebuild-status error" role="alert">@err</span>
+                        }
+                        else if (_namesRefreshed)
+                        {
+                            <span class="rebuild-status done">Names refreshed.</span>
+                        }
+                        <button @onclick="RefreshNames" disabled="@_refreshingNames">Refresh from wiki</button>
+                    </div>
+                </section>
+                break;
+
+            case TabUpdates:
+                <h2>Updates</h2>
+                <section class="settings-card">
+                    <div class="setting-row">
+                        <div class="setting-text">
+                            <span class="setting-label">Version</span>
+                            <span class="setting-hint">Installs and restarts if a newer release exists.</span>
+                        </div>
+                        <div class="setting-control">
+                            <span class="setting-value">v@(_currentVersion)</span>
+                            <button @onclick="CheckForUpdate" disabled="@(_checkingUpdate || _downloadingUpdate)">Check for updates</button>
+                        </div>
+                    </div>
+                    @if (_checkingUpdate || _downloadingUpdate || _updateError is not null || _updateStatus is not null)
+                    {
+                        <div class="settings-card-footer">
+                            @if (_checkingUpdate)
+                            {
+                                <span class="rebuild-status"><span class="spinner"></span> Checking…</span>
+                            }
+                            else if (_downloadingUpdate)
+                            {
+                                <span class="rebuild-status"><span class="spinner"></span> @(_updateStatus ?? $"Downloading… {(int)_updateProgress}%")</span>
+                            }
+                            else if (_updateError is { } uerr)
+                            {
+                                <span class="rebuild-status error" role="alert">@uerr</span>
+                            }
+                            else if (_updateStatus is { } ustatus)
+                            {
+                                <span class="rebuild-status done">@ustatus</span>
+                            }
+                        </div>
+                    }
+                </section>
+                break;
+
+            case TabDiagnostics:
+                <h2>Diagnostics</h2>
+                <h3>Inventory</h3>
+                <section class="settings-card">
+                    <dl class="facts">
+                        <dt>Tracked items</dt><dd>@_holdings.Count.ToString("N0")</dd>
+                        <dt>Recorded moves</dt><dd>@((State.Current.Resolver?.Moves.Count ?? 0).ToString("N0"))</dd>
+                        <dt>Confidence</dt>
+                        <dd class="conf-spread">
+                            @foreach (var group in _holdings.GroupBy(h => h.Holding.Confidence).OrderByDescending(g => g.Key))
+                            {
+                                <span class="conf conf-@(group.Key.ToString().ToLowerInvariant())">@group.Key @group.Count()</span>
+                            }
+                        </dd>
+                        <dt>Snapshot built</dt><dd>@(NotYetBuilt ? "not yet" : $"{State.Current.BuiltAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}")</dd>
+                    </dl>
+                </section>
+
+                @* The same numbers the Browse page's health banner is derived from. Before the first
+                   ingest pass the snapshot is empty and every count reads 0 — not because nothing
+                   was found, but because nothing was read — so say that once instead. *@
+                <h3>Log reading</h3>
+                <section class="settings-card">
+                    @if (NotYetBuilt)
+                    {
+                        <p class="subtle">Logs not read yet.</p>
+                    }
+                    else
+                    {
+                        <dl class="facts">
+                            <dt>Log files</dt>
+                            <dd>@($"{_health.LogFiles} found, {_health.FilesWithLinesSinceInception} with data{(Options.InceptionDate is null ? "" : " since the wipe date")}")</dd>
+                            <dt>Not fully read</dt>
+                            <dd class="@(HasReadProblem ? "warn" : null)">@_health.IncompleteFiles rotated file(s), @_health.UnrecognisedMoveLines move line(s)</dd>
+                            <dt>Newest log line</dt>
+                            <dd>@(_health.NewestLogLine is { } newest ? $"{newest.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : "none")</dd>
+                            <dt>Last read</dt>
+                            <dd>
+                                @if (Watcher.LastPass is { } pass)
+                                {
+                                    @($"{pass.At.ToLocalTime():HH:mm:ss} · {pass.Trigger.ToString().ToLowerInvariant()} · {pass.LinesRead:N0} lines, {pass.MovesInserted} new moves, {pass.Duration.TotalMilliseconds:F0} ms")
+                                    @if (pass.Error is { } passError)
+                                    {
+                                        <span class="rebuild-status error"> failed: @passError</span>
+                                    }
+                                    @if (pass.Incomplete is { } incomplete)
+                                    {
+                                        <span class="rebuild-status error"> incomplete, will retry: @incomplete</span>
+                                    }
+                                }
+                                else
+                                {
+                                    @("not run yet")
+                                }
+                            </dd>
+                            @* When the pass ran, not when the moves happened: a startup or rebuild pass
+                               reads old moves too, and the label must not suggest they are recent. *@
+                            <dt>Last new moves</dt>
+                            <dd>@(Watcher.LastMovesAt is { } movesAt ? movesAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "none since launch")</dd>
+                            <dt>App log</dt><dd><code class="path">@FileLoggerProvider.DefaultPath</code></dd>
+                        </dl>
+                    }
+                </section>
+
+                @* Each of these is a place the heuristics fell short — they explain any Low scores. *@
+                <h3>Gaps</h3>
+                <section class="settings-card gaps">
+                    <details>
+                        <summary>Unnamed stations <span class="badge-count">@_unnamedLocations.Count</span></summary>
+                        <p class="setting-hint">Location ids the log never paired with a name.</p>
+                        <ul>
+                            @foreach (var (id, count) in _unnamedLocations)
+                            {
+                                <li><code>@id</code> — @count item(s)</li>
+                            }
+                        </ul>
+                    </details>
+                    <details>
+                        <summary>Unidentified containers <span class="badge-count">@_unknownContainers.Count</span></summary>
+                        <p class="setting-hint">Items went in, but the container was never seen opened.</p>
+                        <ul>
+                            @foreach (var key in _unknownContainers)
+                            {
+                                <li><code>@key</code></li>
+                            }
+                        </ul>
+                    </details>
+                    <details>
+                        <summary>Items with no wiki name <span class="badge-count">@_unnamedItems.Count</span></summary>
+                        <ul>
+                            @foreach (var cls in _unnamedItems)
+                            {
+                                <li><code>@cls</code></li>
+                            }
+                        </ul>
+                    </details>
+                </section>
+                break;
+
+            default:
+                <h2>Log source</h2>
+                <section class="settings-card">
+                    <div class="setting-row">
+                        <div class="setting-text">
+                            <label class="setting-label" for="log-dir">Game.log folder</label>
+                            <span class="setting-hint">The LIVE or PTU folder.</span>
+                        </div>
+                        <div class="setting-control">
+                            <input id="log-dir" type="text" @bind="_logDir" placeholder="C:\Program Files\Roberts Space Industries\StarCitizen\LIVE" />
+                            <button type="button" class="icon-btn" title="Browse for folder" @onclick="BrowseFolder">
+                                <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v1H3z" />
+                                    <path d="M3 10h18l-2 8a2 2 0 0 1-2 1.5H5a2 2 0 0 1-2-1.5z" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    @* The tracker only knows an item once a log line moves it, so a date also hides
+                       everything that has sat still since then. Worth saying where it is chosen. *@
+                    <div class="setting-row">
+                        <div class="setting-text">
+                            <label class="setting-label" for="inception">Wipe date</label>
+                            <span class="setting-hint">Only after a persistence wipe. Everything logged before it is ignored, even items that have not moved since. Leave empty to read your whole history.</span>
+                        </div>
+                        <div class="setting-control">
+                            <input id="inception" type="date" class="date-input" @bind="_inceptionDate" />
+                            @if (_inceptionDate is not null)
+                            {
+                                <button type="button" @onclick="() => _inceptionDate = null">Clear</button>
+                            }
+                        </div>
+                    </div>
+                    <div class="settings-card-footer">
+                        @if (_rebuilding)
+                        {
+                            <span class="rebuild-status"><span class="spinner"></span> Rebuilding…</span>
+                        }
+                        else if (_rebuildError is not null)
+                        {
+                            <span class="rebuild-status error" role="alert">@_rebuildError</span>
+                        }
+                        else if (_rebuilt)
+                        {
+                            <span class="rebuild-status done">Saved and rebuilt.</span>
+                        }
+                        else
+                        {
+                            <span class="subtle">Saving re-reads every log from scratch.</span>
+                        }
+                        <button class="primary" @onclick="SaveAndRebuild" disabled="@_rebuilding">Save and rebuild</button>
+                    </div>
+                </section>
+                break;
+        }
     </div>
 </div>
-
-<div class="settings-field">
-    <label for="inception">Wipe date (optional)</label>
-    <div class="input-row date-row">
-        <input id="inception" type="date" @bind="_inceptionDate" />
-        @if (_inceptionDate is not null)
-        {
-            <button type="button" @onclick="() => _inceptionDate = null">Clear</button>
-        }
-    </div>
-</div>
-@* The tracker only knows an item once a log line moves it, so a date also hides everything
-   that has sat still since then. Worth saying here, where the date is chosen. *@
-<p class="subtle">
-    Leave empty to read your whole history: the tracker only knows about an item once it sees it move, so the further back it reads, the more it finds.
-    Set a date only after a Star Citizen persistence wipe. Everything logged before it is forgotten, including items that have not moved since.
-    "Save and rebuild" applies a change to the history already stored.
-</p>
-
-<div class="settings-actions">
-    <button @onclick="SaveAndRebuild" disabled="@_rebuilding">Save and rebuild from logs</button>
-    @if (_rebuilding)
-    {
-        <span class="rebuild-status"><span class="spinner"></span> Rebuilding…</span>
-    }
-    else if (_rebuilt)
-    {
-        <span class="rebuild-status done">
-            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20 6 9 17l-5-5" />
-            </svg>
-        </span>
-    }
-</div>
-@if (_rebuildError is not null)
-{
-    <p class="rebuild-status error" role="alert">@_rebuildError</p>
-}
-
-<dl class="facts">
-    <dt>Log directory</dt><dd><code>@Options.LogDir</code></dd>
-    <dt>Tracked instances</dt><dd>@_holdings.Count</dd>
-    <dt>Recorded moves</dt><dd>@(State.Current.Resolver?.Moves.Count ?? 0)</dd>
-    <dt>Snapshot built</dt><dd>@State.Current.BuiltAt.ToString("yyyy-MM-dd HH:mm:ss") UTC</dd>
-    <dt>Item catalogue</dt>
-    <dd>@(_catalogueAge is null ? "never downloaded" : $"refreshed {_catalogueAge:yyyy-MM-dd}")</dd>
-    <dt>Place list</dt>
-    <dd>@(_placesAge is null ? "never downloaded" : $"refreshed {_placesAge:yyyy-MM-dd}")</dd>
-</dl>
-
-<div class="settings-actions">
-    <button @onclick="RefreshNames" disabled="@_refreshingNames">Refresh names from wiki</button>
-    @if (_refreshingNames)
-    {
-        <span class="rebuild-status"><span class="spinner"></span> @(_namesProgress ?? "starting…")</span>
-    }
-    else if (_namesError is { } err)
-    {
-        <span class="rebuild-status error">@err</span>
-    }
-    else if (_namesRefreshed)
-    {
-        <span class="rebuild-status done">
-            <svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20 6 9 17l-5-5" />
-            </svg>
-        </span>
-    }
-</div>
-
-<h2>Updates</h2>
-<div class="settings-actions">
-    <button @onclick="CheckForUpdate" disabled="@(_checkingUpdate || _downloadingUpdate)">Check for updates</button>
-    @if (_checkingUpdate)
-    {
-        <span class="rebuild-status"><span class="spinner"></span> Checking…</span>
-    }
-    else if (_downloadingUpdate)
-    {
-        <span class="rebuild-status"><span class="spinner"></span> @(_updateStatus ?? $"Downloading… {(int)_updateProgress}%")</span>
-    }
-    else if (_updateError is { } uerr)
-    {
-        <span class="rebuild-status error">@uerr</span>
-    }
-    else if (_updateStatus is { } ustatus)
-    {
-        <span class="rebuild-status done">@ustatus</span>
-    }
-</div>
-<p class="subtle">Running v@(_currentVersion).</p>
-
-@* Read-only mirror of the numbers the Browse page's health banner is derived from — useful
-   for confirming *why* it is (or isn't) showing a banner without leaving Settings. Before the
-   first background ingest pass finishes, State.Current is still Snapshot.Empty and every one
-   of these numbers reads 0 — not because ingest found nothing, but because it hasn't run yet —
-   so show "not read yet" rather than a row of misleading zeros. *@
-<h2>Ingest health</h2>
-@{ var notYetBuilt = State.Current.BuiltAt == DateTimeOffset.MinValue; }
-<dl class="facts">
-    <dt>Log files found</dt><dd>@(notYetBuilt ? "not read yet" : _health.LogFiles.ToString())</dd>
-    <dt>@(Options.InceptionDate is null ? "Files with data" : "Files with data since the wipe date")</dt><dd>@(notYetBuilt ? "not read yet" : _health.FilesWithLinesSinceInception.ToString())</dd>
-    <dt>Rotated files not fully read</dt><dd>@(notYetBuilt ? "not read yet" : _health.IncompleteFiles.ToString())</dd>
-    <dt>Move lines not fully read</dt><dd>@(notYetBuilt ? "not read yet" : _health.UnrecognisedMoveLines.ToString())</dd>
-    <dt>Newest log line</dt>
-    <dd>@(notYetBuilt ? "not read yet" : _health.NewestLogLine is { } newest ? $"{newest:yyyy-MM-dd HH:mm:ss} UTC" : "none read yet")</dd>
-    @* Local time, unlike the rows above: this answers "did it read the move I just made?",
-       which is asked against the clock on the wall. *@
-    <dt>Last log read</dt>
-    <dd>
-        @if (Watcher.LastPass is { } pass)
-        {
-            @($"{pass.At.ToLocalTime():HH:mm:ss} ({pass.Trigger.ToString().ToLowerInvariant()}) — {pass.LinesRead:N0} line(s), {pass.MovesInserted} new move(s), {pass.Duration.TotalMilliseconds:F0} ms")
-            @if (pass.Error is { } passError)
-            {
-                <span class="rebuild-status error"> failed: @passError</span>
-            }
-            @if (pass.Incomplete is { } incomplete)
-            {
-                <span class="rebuild-status error"> incomplete; will retry: @incomplete</span>
-            }
-        }
-        else
-        {
-            @("not run yet")
-        }
-    </dd>
-    @* When the pass ran, not when the moves happened: a startup or rebuild pass reads old
-       moves too, and the label must not suggest they are recent. *@
-    <dt>Last read with new moves</dt>
-    <dd>@(Watcher.LastMovesAt is { } movesAt ? movesAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "none since launch")</dd>
-    <dt>Log file</dt><dd><code>@FileLoggerProvider.DefaultPath</code></dd>
-</dl>
-
-<h2>Confidence spread</h2>
-<ul>
-    @foreach (var group in _holdings.GroupBy(h => h.Holding.Confidence).OrderByDescending(g => g.Key))
-    {
-        <li>@group.Key: @group.Count()</li>
-    }
-</ul>
-
-@* Each of these is a place the heuristics fell short — they explain any Low scores. *@
-<h2>Unnamed stations (@_unnamedLocations.Count)</h2>
-<p class="subtle">Location ids the log never paired with a name, so items there show only a number.</p>
-<ul>
-    @foreach (var (id, count) in _unnamedLocations)
-    {
-        <li><code>@id</code> — @count item(s)</li>
-    }
-</ul>
-
-<h2>Unidentified containers (@_unknownContainers.Count)</h2>
-<p class="subtle">Containers we saw items go into but never saw opened, so we cannot say what or where they are.</p>
-<ul>
-    @foreach (var key in _unknownContainers)
-    {
-        <li><code>@key</code></li>
-    }
-</ul>
-
-<h2>Items with no wiki name (@_unnamedItems.Count)</h2>
-<ul>
-    @foreach (var cls in _unnamedItems)
-    {
-        <li><code>@cls</code></li>
-    }
-</ul>
 
 @code {
+    private const string TabLogs = "logs";
+    private const string TabNames = "names";
+    private const string TabUpdates = "updates";
+    private const string TabDiagnostics = "diagnostics";
+
+    [SupplyParameterFromQuery(Name = "tab")]
+    public string? Tab { get; set; }
+
+    private string _tab = TabLogs;
+
+    protected override void OnParametersSet() =>
+        _tab = Tab?.ToLowerInvariant() switch
+        {
+            TabNames => TabNames,
+            TabUpdates => TabUpdates,
+            TabDiagnostics => TabDiagnostics,
+            _ => TabLogs,
+        };
+
+    private string NavClass(string tab) => tab == _tab ? "active" : "";
+
+    private string? Current(string tab) => tab == _tab ? "page" : null;
+
+    /// <summary>Before the first ingest pass the snapshot is <c>Snapshot.Empty</c>.</summary>
+    private bool NotYetBuilt => State.Current.BuiltAt == DateTimeOffset.MinValue;
+
+    /// <summary>Flags the Diagnostics section in the side nav, so a reader problem is seen
+    /// without opening it.</summary>
+    private bool HasReadProblem =>
+        !NotYetBuilt && (_health.IncompleteFiles > 0 || _health.UnrecognisedMoveLines > 0
+            || Watcher.LastPass is { Error: not null } or { Incomplete: not null });
+
+    private static string Age(DateTimeOffset? refreshed) =>
+        refreshed is { } at ? $"refreshed {at.ToLocalTime():yyyy-MM-dd}" : "never downloaded";
+
     private IReadOnlyList<NamedHolding> _holdings = [];
     private IngestHealth _health = IngestHealth.Empty;
     private List<(string Id, int Count)> _unnamedLocations = [];
