@@ -45,6 +45,27 @@ public sealed class TrackerOptionsTests : IDisposable
     }
 
     [Fact]
+    public async Task Closing_the_reset_popup_is_remembered_without_touching_the_rest_of_the_config()
+    {
+        var configPath = Path.Combine(_dir, "config.json");
+        var inception = new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero);
+        new AppConfig { LogDir = _options.LogDir, InceptionDate = inception, SetupComplete = true }.Save(configPath);
+        var resetAt = new DateTimeOffset(2026, 11, 13, 1, 2, 3, 456, TimeSpan.Zero);
+        Assert.False(_options.HasDismissedReset(resetAt));
+
+        await _options.DismissResetNoticeAsync(resetAt, configPath);
+
+        Assert.True(_options.HasDismissedReset(resetAt));
+        Assert.True(_options.HasDismissedReset(resetAt.AddDays(-40)));
+        Assert.False(_options.HasDismissedReset(resetAt.AddMilliseconds(1)));
+
+        var saved = AppConfig.Load(configPath);
+        Assert.Equal(resetAt, saved.ResetNoticeDismissed);
+        Assert.Equal(inception, saved.InceptionDate);
+        Assert.True(saved.SetupComplete);
+    }
+
+    [Fact]
     public async Task Concurrent_source_applications_keep_config_source_parser_and_diagnostics_together()
     {
         var configPath = Path.Combine(_dir, "config.json");

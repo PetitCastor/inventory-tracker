@@ -89,6 +89,47 @@
     .banner-info { background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
     .banner a { color: var(--accent); }
 
+    /* A one-time notice over the page, such as a character reset; closed by the user. */
+    .popup-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+        background: rgba(0, 0, 0, 0.6);
+    }
+    .popup {
+        position: relative;
+        width: 100%;
+        max-width: 34rem;
+        max-height: calc(100vh - 2rem);
+        overflow-y: auto;
+        padding: 1.25rem 1.5rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+        font-size: 0.95rem;
+    }
+    .popup h2 { margin: 0 2rem 0.75rem 0; }
+    .popup p { margin: 0 0 0.75rem; }
+    .popup ul { margin: 0 0 1rem; padding-left: 1.25rem; color: var(--muted); }
+    .popup-close {
+        position: absolute;
+        top: 0.5rem;
+        right: 0.5rem;
+        padding: 0.1rem 0.55rem;
+        background: none;
+        border: none;
+        color: var(--muted);
+        font-size: 1.3rem;
+        line-height: 1;
+    }
+    .popup-close:hover { color: var(--text); }
+    .popup-actions { display: flex; justify-content: flex-end; }
+
     .settings-field {
         display: flex;
         align-items: center;

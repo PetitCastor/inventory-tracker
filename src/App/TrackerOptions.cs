@@ -67,6 +67,42 @@ public sealed class TrackerOptions
     /// <summary>False until the first-run setup wizard has been completed; see <see cref="AppConfig.SetupComplete"/>.</summary>
     public bool SetupComplete { get; set; }
 
+    private DateTimeOffset? _resetNoticeDismissed;
+
+    /// <summary>See <see cref="AppConfig.ResetNoticeDismissed"/>.</summary>
+    public DateTimeOffset? ResetNoticeDismissed
+    {
+        get { lock (_logSourceGate) return _resetNoticeDismissed; }
+        set { lock (_logSourceGate) _resetNoticeDismissed = value; }
+    }
+
+    /// <summary>True once the user has closed the popup for this reset, or for a later one.</summary>
+    public bool HasDismissedReset(DateTimeOffset resetAt) => ResetNoticeDismissed >= resetAt;
+
+    /// <summary>
+    /// Closes the character-reset popup for good: at once for this run, then in config.json.
+    /// <para>
+    /// The save waits behind any log-source change, which loads, edits and saves the same file:
+    /// two unsynchronised read-modify-writes could put back the wipe date the user just changed.
+    /// </para>
+    /// </summary>
+    public async Task DismissResetNoticeAsync(
+        DateTimeOffset resetAt, string? configPath = null, CancellationToken cancellationToken = default)
+    {
+        ResetNoticeDismissed = resetAt;
+        await _applyLogSourceGate.WaitAsync(cancellationToken);
+        try
+        {
+            var config = AppConfig.Load(configPath);
+            config.ResetNoticeDismissed = resetAt;
+            config.Save(configPath);
+        }
+        finally
+        {
+            _applyLogSourceGate.Release();
+        }
+    }
+
     public string Url => $"http://localhost:{Port}";
 
     /// <summary>
@@ -85,6 +121,7 @@ public sealed class TrackerOptions
             Port = config.Port ?? AppConfig.DefaultPort,
             InceptionDate = config.InceptionDate,
             SetupComplete = config.SetupComplete,
+            ResetNoticeDismissed = config.ResetNoticeDismissed,
         };
     }
 

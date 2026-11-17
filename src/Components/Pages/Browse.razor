@@ -5,6 +5,7 @@
 @using InventoryTracker.Ingest
 @using InventoryTracker.Naming
 @inject TrackerState State
+@inject TrackerOptions Options
 @inject PlaceNameService Places
 @inject LogWatchService Watcher
 
@@ -35,22 +36,38 @@
 }
 
 @* A character reset moved everything without a log line; the tracker has followed, and says
-   so, because the station view would otherwise just look rearranged. *@
-@if (RecentReset() is { } reset)
+   so once, because the station view would otherwise just look rearranged. The popup stays
+   until the user closes it, and closing it is remembered in config.json. *@
+@if (UnreadReset() is { } reset)
 {
-    <p class="banner banner-info">
-        Character reset on @FormatDate(reset.ResetAt) with @GameVersionCatalog.Describe(reset.Build):
-        the game moved your stored items to your new home location, <strong>@reset.Home</strong>.
-        @if (reset.Moved > 0)
-        {
-            @($"The tracker moved {reset.Moved:N0} item(s) there with them: ")
-            @string.Join(", ", reset.From.Select(f => $"{f.Units:N0} from {f.Place}"))@(".")
-        }
-        else
-        {
-            @("None of the items the tracker knew about were stored anywhere else.")
-        }
-    </p>
+    <div class="popup-backdrop" @onkeydown="e => CloseResetOnEscape(e, reset)">
+        <div class="popup" role="dialog" aria-modal="true" aria-labelledby="reset-popup-title">
+            <button type="button" class="popup-close" title="Close" aria-label="Close"
+                    @onclick="() => DismissReset(reset)">&times;</button>
+            <h2 id="reset-popup-title">Character reset</h2>
+            <p>
+                On @FormatDate(reset.ResetAt), with @GameVersionCatalog.Describe(reset.Build), the game moved
+                your stored items to your new home location, <strong>@reset.Home</strong>.
+            </p>
+            @if (reset.Moved > 0)
+            {
+                <p>The tracker moved @reset.Moved.ToString("N0") item(s) there with them:</p>
+                <ul>
+                    @foreach (var from in reset.From)
+                    {
+                        <li>@from.Units.ToString("N0") from @from.Place to @reset.Home</li>
+                    }
+                </ul>
+            }
+            else
+            {
+                <p>None of the items the tracker knew about were stored anywhere else.</p>
+            }
+            <div class="popup-actions">
+                <button type="button" autofocus @onclick="() => DismissReset(reset)">OK</button>
+            </div>
+        </div>
+    </div>
 }
 
 @* Before the first background ingest pass finishes, State.Current is still Snapshot.Empty:
@@ -685,15 +702,35 @@ else
         || snapshot.Health.FilesWithLinesSinceInception == 0
         || snapshot.Health.Moves == 0;
 
-    /// <summary>How long after a character reset its banner stays up.</summary>
+    /// <summary>
+    /// How long after a character reset its popup can still appear. A fresh install reading
+    /// months of history should not open on a reset from two patches ago.
+    /// </summary>
     private static readonly TimeSpan ResetNoticeFor = TimeSpan.FromDays(30);
 
-    /// <summary>The newest character reset, while it is recent enough to still be news.</summary>
-    private CharacterResetReport? RecentReset() =>
+    /// <summary>The newest character reset, while it is still news and the user has not closed it.</summary>
+    private CharacterResetReport? UnreadReset() =>
         State.Current.Resolver?.CharacterResets.FirstOrDefault() is { } reset
         && DateTimeOffset.UtcNow - reset.ResetAt < ResetNoticeFor
+        && !Options.HasDismissedReset(reset.ResetAt)
             ? reset
             : null;
+
+    private async Task DismissReset(CharacterResetReport reset)
+    {
+        try
+        {
+            await Options.DismissResetNoticeAsync(reset.ResetAt);
+        }
+        catch (Exception ex) when (FormOperationErrors.TryGetMessage(ex, out _))
+        {
+            // The popup is already closed for this run; it comes back on the next launch only
+            // if config.json could not be written.
+        }
+    }
+
+    private Task CloseResetOnEscape(KeyboardEventArgs e, CharacterResetReport reset) =>
+        e.Key == "Escape" ? DismissReset(reset) : Task.CompletedTask;
 
     /// <summary>Calendar-day formatting for the health banners; "-" stands in for a date that
     /// was never set (no wipe date) or never seen (no log line read yet).</summary>
