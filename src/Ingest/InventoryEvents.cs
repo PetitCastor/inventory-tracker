@@ -166,6 +166,12 @@ public sealed record AttachmentSeen(
     /// <c>Hat_ItemPort</c> and <c>Eye_Accessories_ItemPort</c> are left out on purpose: a mask or
     /// a pair of glasses there is a real item, bought and moved like any other.
     /// </para>
+    /// <para>
+    /// <c>universal_necksock_undersuit</c> is the neck seal that comes with every undersuit. It
+    /// is listed with the body, never in a move line, so it is not an item of its own either.
+    /// It cannot be read as a part of the undersuit instead: in the enumeration it comes after
+    /// the helmet and its visor, not after the undersuit, so it would be put on the helmet.
+    /// </para>
     /// </summary>
     private static readonly HashSet<string> CharacterPorts = new(StringComparer.Ordinal)
     {
@@ -173,7 +179,7 @@ public sealed record AttachmentSeen(
         "Eyelashes_ItemPort", "Eyes_ItemPort", "Eyedetail_ItemPort", "Teeth_ItemPort",
         "Universal_Scalp_ItemPort", "Piercings_L_Ear_ItemPort", "Piercings_R_Ear_ItemPort",
         "mobiglas_attach", "mobiglas_screen_attach", "legacy_mobiglas_screen_attach",
-        "Lens_ItemPort", "radar",
+        "Lens_ItemPort", "radar", "universal_necksock_undersuit",
     };
 
     /// <summary>Whether a port holds part of the character rather than an item the player owns.</summary>

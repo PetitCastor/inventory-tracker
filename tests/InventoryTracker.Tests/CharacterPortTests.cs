@@ -29,6 +29,7 @@ public class CharacterPortTests
     [InlineData("legacy_mobiglas_screen_attach")]
     [InlineData("Lens_ItemPort")]
     [InlineData("radar")]
+    [InlineData("universal_necksock_undersuit")]
     public void A_port_of_the_character_itself_is_a_character_port(string port)
     {
         Assert.True(AttachmentSeen.IsCharacterPort(port));
@@ -42,6 +43,7 @@ public class CharacterPortTests
     [InlineData("backpack")]
     [InlineData("wep_sidearm")]
     [InlineData("helmet_visor")]
+    [InlineData("universal_necksock")]
     [InlineData("medPen_attach_1")]
     [InlineData("weapon_attach_hand_right")]
     public void A_port_holding_an_item_the_player_owns_is_not(string port)
@@ -68,6 +70,7 @@ public class CharacterPortTests
             ["HELMET", "grin_utility_medium_helmet_01_01_01", "Armor_Helmet"],
             ["MASK", "srvl_mask_01_01_01", "Hat_ItemPort"],
             ["GLASSES", "r6p_glasses_01_01_01", "Eye_Accessories_ItemPort"],
+            ["NECKSOCK", "universal_necksock_undersuit_01", "universal_necksock_undersuit"],
         ];
 
         var directory = Path.Combine(Path.GetTempPath(), $"itrk-{Guid.NewGuid():N}");
