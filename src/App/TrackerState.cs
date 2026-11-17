@@ -12,6 +12,7 @@ public sealed record NamedHolding(ItemHolding Holding, ResolvedName Name)
 {
     public string Display => Name.Display;
     public string ClassName => Holding.ItemClass;
+    public ItemCategory Category => ItemCategories.Of(Name.Item?.TypeLabel);
 }
 
 /// <summary>

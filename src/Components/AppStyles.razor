@@ -49,13 +49,14 @@
 
     code { font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9em; color: var(--muted); }
 
-    .picker { display: flex; gap: 0.75rem; margin-bottom: 1.25rem; }
+    /* Search and the station picker on one row; it wraps on a narrow window. */
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
 
     .picker-field { display: flex; align-items: center; gap: 0.5rem; }
 
     .picker-icon { width: 1.1rem; height: 1.1rem; flex: none; color: var(--muted); }
 
-    .picker select {
+    .toolbar select {
         padding: 0.6rem 0.8rem;
         background: var(--panel);
         border: 1px solid var(--line);
@@ -64,11 +65,26 @@
         font-size: 1rem;
     }
 
-    .picker select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    .toolbar select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
-    /* Sits above the station picker rather than inside it: search replaces the whole
-       station view, so it isn't scoped to "picking a place" the way the two dropdowns are. */
-    .search-field { margin-bottom: 1.25rem; max-width: 28rem; }
+    .search-field { flex: 1 1 18rem; max-width: 28rem; }
+
+    /* Quick category filters under the toolbar. */
+    .chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1.25rem; }
+
+    .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        padding: 0.3rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.85rem;
+        color: var(--muted);
+    }
+
+    .chip:hover { color: var(--text); }
+    .chip.active { color: var(--text); border-color: var(--accent); background: rgba(77, 171, 247, 0.12); }
+    .chip-count { font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 
     .search-input {
         flex: 1;

@@ -130,6 +130,10 @@ public sealed class HoldingResolver
     /// <summary>What the replay did with every move, for measuring its reliability.</summary>
     public LedgerReplay.ReplayStats ReplayStats => _ledger.Stats;
 
+    /// <summary>Whether parts hang off this entity (a helmet's visor, a weapon's scope), so what
+    /// sits on it is a part of it rather than something stored in it.</summary>
+    public bool HasParts(string geid) => _ledger.IsPartParent(geid);
+
     /// <summary>Systems and place names as a player would recognise them.</summary>
     public PlaceCatalog Places { get; }
 
