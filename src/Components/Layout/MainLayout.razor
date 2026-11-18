@@ -17,12 +17,19 @@
                 @InventoryTracker.Ingest.GameVersionCatalog.Describe(build)
             </span>
         }
+        <ThemeToggle />
     </nav>
 </header>
 
 <main>
     @Body
 </main>
+
+@* Not over the setup wizard: a first run has no news, and records its version instead. *@
+@if (Options.SetupComplete)
+{
+    <WhatsNewPopup />
+}
 
 @code {
     protected override void OnInitialized()

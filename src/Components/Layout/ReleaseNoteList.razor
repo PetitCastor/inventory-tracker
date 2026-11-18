@@ -1,0 +1,35 @@
+@* Releases and their user-facing changes, newest first. Shared by the "what's new" popup and
+   Settings → Updates. Text comes from GitHub release bodies and is rendered as plain text. *@
+
+<ul class="release-notes">
+    @foreach (var release in Releases)
+    {
+        <li>
+            <h3>
+                v@(ReleaseNoteParser.Format(release.Version))
+                @if (release.PublishedAt is { } at)
+                {
+                    <span class="release-date">@at.ToLocalTime().ToString("yyyy-MM-dd")</span>
+                }
+            </h3>
+            <ul>
+                @foreach (var entry in release.Entries)
+                {
+                    <li><span class="note-kind">@KindLabel(entry.Kind)</span>@entry.Text</li>
+                }
+            </ul>
+        </li>
+    }
+</ul>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<ReleaseNote> Releases { get; set; } = [];
+
+    private static string KindLabel(ReleaseNoteKind kind) => kind switch
+    {
+        ReleaseNoteKind.New => "New",
+        ReleaseNoteKind.Improved => "Improved",
+        _ => "Fixed",
+    };
+}

@@ -45,6 +45,37 @@ public sealed class TrackerOptionsTests : IDisposable
     }
 
     [Fact]
+    public async Task A_theme_change_applies_at_once_and_is_saved_without_touching_the_rest()
+    {
+        var configPath = Path.Combine(_dir, "config.json");
+        var inception = new DateTimeOffset(2026, 8, 1, 0, 0, 0, TimeSpan.Zero);
+        new AppConfig { LogDir = _options.LogDir, InceptionDate = inception, SetupComplete = true }.Save(configPath);
+        var raised = new List<AppTheme>();
+        _options.ThemeChanged += raised.Add;
+
+        await _options.SetThemeAsync(AppTheme.Light, configPath);
+
+        Assert.Equal(AppTheme.Light, _options.Theme);
+        Assert.Equal(new[] { AppTheme.Light }, raised);
+        var saved = AppConfig.Load(configPath);
+        Assert.Equal(AppTheme.Light, saved.Theme);
+        Assert.Equal(inception, saved.InceptionDate);
+        Assert.True(saved.SetupComplete);
+        Assert.Contains("\"Theme\": \"Light\"", File.ReadAllText(configPath));
+    }
+
+    [Fact]
+    public void A_config_without_a_theme_follows_windows()
+    {
+        var configPath = Path.Combine(_dir, "config.json");
+        new AppConfig { LogDir = _options.LogDir }.Save(configPath);
+
+        Assert.Null(AppConfig.Load(configPath).Theme);
+        Assert.DoesNotContain("Theme", File.ReadAllText(configPath));
+        Assert.Equal(AppTheme.System, new TrackerOptions().Theme);
+    }
+
+    [Fact]
     public async Task Closing_the_reset_popup_is_remembered_without_touching_the_rest_of_the_config()
     {
         var configPath = Path.Combine(_dir, "config.json");

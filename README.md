@@ -12,16 +12,18 @@ Find your items in **Star Citizen**. Inventory Tracker reads the game's logs to 
 | **Ships** | View inferred ship-locker contents and, when available, the ship's last retrieval location and time. |
 | **Dropped** | Find recorded ground drops, grouped by location. |
 | **Item details** | See an item's estimated location, last move, confidence and movement history. |
-| **Settings** | Change the log folder or wipe date, rebuild the inventory, refresh names from the wiki, check for updates and inspect log-reading diagnostics. |
+| **Settings** | Change the log folder or wipe date, rebuild the inventory, refresh names from the wiki, check for updates, read recent changes, pick a light, dark or system theme and inspect log-reading diagnostics. |
 
 ## Getting started
 
 1. Download the executable, put it in a writable folder and run it.
 2. Select the Star Citizen folder containing **`Game.log`**, usually **`LIVE`** or **`PTU`**. Common install locations are detected automatically.
 3. Optionally set a persistence wipe date to ignore earlier events. Leave it blank to use all available compatible history.
-4. Open [http://localhost:5730](http://localhost:5730). Keep the tracker running while you play: it imports available compatible logs, then follows new events.
+4. The tracker opens in its own window. Keep it running while you play: it imports available compatible logs, then follows new events.
 
-The app runs in the Windows system tray. Double-click its icon to open the interface. Right-click for **Rescan logs now**, **Refresh names from wiki** or **Exit**.
+Closing the window keeps the tracker running in the Windows system tray. Double-click the tray icon to reopen the window. Right-click for **Open in browser**, **Rescan logs now**, **Refresh names from wiki** or **Exit**. The browser shows the same interface at [http://localhost:5730](http://localhost:5730), for a second screen for example.
+
+The window needs the Microsoft Edge WebView2 Runtime, which Windows 11 and up-to-date Windows 10 include. Without it the interface opens in your browser instead.
 
 The header shows the Star Citizen version of the newest log read, taken from the RSI Launcher's logs; it falls back to the build number when the launcher no longer names that build.
 
@@ -40,7 +42,7 @@ See the [replay reliability study](docs/reliability/README.md) for measured limi
 
 ## Updates and troubleshooting
 
-The tray app checks for updates at startup, installs a newer release if available and restarts. Wiki name refreshes and GitHub updates require an internet connection.
+The tray app checks for updates at startup, installs a newer release if available and restarts. After an update, a **What's new** popup lists the changes since the version you last used. Wiki name refreshes, GitHub updates and release notes require an internet connection.
 
 If tracking stops, check the selected log folder and last-read time in **Settings**. App logs and configuration are in `%LOCALAPPDATA%\InventoryTracker` (`tracker.log` and `config.json`).
 

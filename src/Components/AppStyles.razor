@@ -1,6 +1,9 @@
 @* Styles live in a component rather than wwwroot/app.css so that a single-file
    publish really is a single file — static web assets stay loose on disk. *@
 <style>
+    /* Dark is the base palette. Root.razor sets data-theme from Settings: "light" always uses the
+       light palette, "system" uses it when Windows (or the browser) prefers light. The app
+       window's WebView2 reports the Windows setting as prefers-color-scheme. */
     :root {
         color-scheme: dark;
         --bg: #0e1116;
@@ -9,9 +12,40 @@
         --text: #e6edf3;
         --muted: #8b949e;
         --accent: #4dabf7;
+        --on-accent: #0b1220;
         --high: #3fb950;
         --medium: #d29922;
         --low: #f85149;
+    }
+
+    :root[data-theme="light"] {
+        color-scheme: light;
+        --bg: #f6f8fa;
+        --panel: #ffffff;
+        --line: #d0d7de;
+        --text: #1f2328;
+        --muted: #59636e;
+        --accent: #0969da;
+        --on-accent: #ffffff;
+        --high: #1a7f37;
+        --medium: #9a6700;
+        --low: #cf222e;
+    }
+
+    @@media (prefers-color-scheme: light) {
+        :root[data-theme="system"] {
+            color-scheme: light;
+            --bg: #f6f8fa;
+            --panel: #ffffff;
+            --line: #d0d7de;
+            --text: #1f2328;
+            --muted: #59636e;
+            --accent: #0969da;
+            --on-accent: #ffffff;
+            --high: #1a7f37;
+            --medium: #9a6700;
+            --low: #cf222e;
+        }
     }
 
     * { box-sizing: border-box; }
@@ -29,8 +63,6 @@
         display: flex;
         align-items: center;
         gap: 1.25rem;
-        max-width: 1100px;
-        margin: 0 auto;
         padding: 0.85rem 1.25rem;
     }
 
@@ -39,8 +71,25 @@
     nav .brand { font-weight: 600; color: var(--text); margin-right: 0.75rem; display: inline-flex; align-items: center; gap: 0.5rem; }
     nav .brand-icon { width: 1.25rem; height: 1.25rem; border-radius: 4px; }
     nav .game-version { margin-left: auto; color: var(--muted); font-size: 0.85rem; white-space: nowrap; }
+    nav .game-version + .theme-toggle { margin-left: 0; }
+    .theme-toggle {
+        margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2rem;
+        height: 2rem;
+        padding: 0;
+        background: none;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        color: var(--muted);
+    }
+    .theme-toggle:hover { color: var(--text); border-color: var(--line); }
+    .theme-toggle svg { width: 1.1rem; height: 1.1rem; }
 
-    main { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
+    /* Full width: the item grid uses all of the window or browser tab it is given. */
+    main { padding: 1.5rem 1.25rem 4rem; }
 
     h1 { font-size: 1.5rem; margin: 0 0 1rem; }
     h2 { font-size: 1.05rem; margin: 2rem 0 0.6rem; }
@@ -203,7 +252,7 @@
 
     @@keyframes spin { to { transform: rotate(360deg); } }
 
-    .rebuild-status.done { color: #3fb950; }
+    .rebuild-status.done { color: var(--high); }
     .rebuild-status.done .check { width: 1.25rem; height: 1.25rem; }
     .rebuild-status.error { color: var(--low); }
 
@@ -258,8 +307,9 @@
         padding: 0.05rem 0.5rem;
     }
 
-    /* Wide chains and long class names must scroll inside the table, never the page. */
-    table { width: 100%; border-collapse: collapse; display: block; overflow-x: auto; }
+    /* Tables stretch to the page; on a narrow screen (see the media query at the end) wide
+       chains and long class names scroll inside the table instead of the page. */
+    table { width: 100%; border-collapse: collapse; }
 
     thead th {
         text-align: left;
@@ -337,7 +387,8 @@
 
     /* Settings: section nav on the left, the open section's cards on the right. Below 760px
        the nav becomes a row of tabs over the panel. */
-    .settings-layout { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: 2rem; align-items: start; }
+    /* Forms stay readable on a wide window: only the item grids use the full width. */
+    .settings-layout { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: 2rem; align-items: start; max-width: 72rem; }
 
     .settings-nav { display: flex; flex-direction: column; gap: 0.15rem; position: sticky; top: 1rem; }
     .settings-nav a {
@@ -409,7 +460,30 @@
     }
     .settings-card-footer > :first-child:not(button) { margin-right: auto; }
 
-    button.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+
+    /* Settings → Appearance: three cards, one per theme. */
+    .theme-choices { display: flex; flex-wrap: wrap; gap: 0.6rem; padding: 0.9rem 1rem; }
+    .theme-choice {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 0.9rem;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        cursor: pointer;
+    }
+    .theme-choice:has(input:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+    .theme-choice input { accent-color: var(--accent); margin: 0; }
+
+    /* "What's new" lists, in the popup after an update and under Settings → Updates. */
+    ul.release-notes { margin: 0 0 1rem; padding: 0; list-style: none; }
+    .release-notes > li + li { margin-top: 0.9rem; }
+    .release-notes h3 { margin: 0 0 0.3rem; font-size: 0.95rem; }
+    .release-notes h3 .release-date { color: var(--muted); font-weight: normal; margin-left: 0.4rem; }
+    .release-notes ul { margin: 0; padding-left: 1.25rem; color: var(--text); }
+    .release-notes .note-kind { color: var(--muted); font-size: 0.85em; margin-right: 0.35rem; }
+    .settings-card > .release-notes { padding: 0.9rem 1rem; }
     button.primary:hover { filter: brightness(1.1); }
 
     .conf-spread { display: flex; flex-wrap: wrap; gap: 0.4rem; }
@@ -424,6 +498,7 @@
     .gaps ul { margin: 0.5rem 0 0; padding-left: 1.25rem; max-height: 18rem; overflow-y: auto; }
 
     @@media (max-width: 760px) {
+        table { display: block; overflow-x: auto; }
         .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
         .settings-nav { flex-direction: row; flex-wrap: wrap; position: static; border-bottom: 1px solid var(--line); padding-bottom: 0.5rem; }
         .settings-nav a.active { box-shadow: inset 0 -2px 0 var(--accent); }

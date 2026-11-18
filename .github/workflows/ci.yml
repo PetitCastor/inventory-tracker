@@ -145,6 +145,14 @@ jobs:
         shell: pwsh
         run: ./publish.ps1 -Version '${{ steps.release.outputs.version }}'
 
+      # The release body is the squash commit's subject: the merged PR's title. The app's
+      # "what's new" popup and Settings → Updates read it (src/App/ReleaseNoteParser.cs) and
+      # show its feat, perf and fix lines to users; other types stay in the release only.
+      # Written to a file for body_path, so the subject is never expanded by a shell.
+      - name: Write release notes
+        shell: bash
+        run: git log -1 --format=%s > release-notes.md
+
       # Pinned to a commit rather than the mutable v2 tag: this step runs with a
       # write-capable token.
       #
@@ -158,4 +166,5 @@ jobs:
         with:
           tag_name: v${{ steps.release.outputs.version }}
           name: v${{ steps.release.outputs.version }}
+          body_path: release-notes.md
           files: dist/InventoryTracker.exe

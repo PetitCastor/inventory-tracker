@@ -13,6 +13,8 @@
 @inject UpdateService Updates
 @inject Microsoft.Extensions.Hosting.IHostApplicationLifetime Lifetime
 @inject WikiRefreshTaskOwner OperationOwner
+@inject ReleaseNotesService ReleaseNotes
+@inject NavigationManager Nav
 
 <PageTitle>Settings — Star Citizen inventory</PageTitle>
 
@@ -40,6 +42,12 @@
                 <path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" />
             </svg>
             Updates
+        </a>
+        <a href="settings?tab=@TabAppearance" class="@NavClass(TabAppearance)" aria-current="@Current(TabAppearance)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" /><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" />
+            </svg>
+            Appearance
         </a>
         <a href="settings?tab=@TabDiagnostics" class="@NavClass(TabDiagnostics)" aria-current="@Current(TabDiagnostics)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -118,6 +126,54 @@
                             {
                                 <span class="rebuild-status done">@ustatus</span>
                             }
+                        </div>
+                    }
+                </section>
+
+                <h2>Recent changes</h2>
+                <section class="settings-card">
+                    @if (_releaseNotesError is { } nerr)
+                    {
+                        <p class="subtle">@nerr</p>
+                    }
+                    else if (_recentReleases is null)
+                    {
+                        <p class="subtle"><span class="spinner"></span> Loading release notes…</p>
+                    }
+                    else if (_recentReleases.Count == 0)
+                    {
+                        <p class="subtle">No release notes yet.</p>
+                    }
+                    else
+                    {
+                        <ReleaseNoteList Releases="_recentReleases" />
+                    }
+                </section>
+                break;
+
+            case TabAppearance:
+                <h2>Appearance</h2>
+                <section class="settings-card">
+                    <div class="setting-row">
+                        <div class="setting-text">
+                            <span class="setting-label">Theme</span>
+                            <span class="setting-hint">System follows the Windows light or dark setting.</span>
+                        </div>
+                    </div>
+                    <div class="theme-choices" role="radiogroup" aria-label="Theme">
+                        @foreach (var theme in Enum.GetValues<AppTheme>())
+                        {
+                            <label class="theme-choice">
+                                <input type="radio" name="theme" checked="@(Options.Theme == theme)"
+                                       disabled="@_savingTheme" @onchange="() => ChangeTheme(theme)" />
+                                @theme
+                            </label>
+                        }
+                    </div>
+                    @if (_themeError is { } terr)
+                    {
+                        <div class="settings-card-footer">
+                            <span class="rebuild-status error" role="alert">@terr</span>
                         </div>
                     }
                 </section>
@@ -284,6 +340,7 @@
     private const string TabLogs = "logs";
     private const string TabNames = "names";
     private const string TabUpdates = "updates";
+    private const string TabAppearance = "appearance";
     private const string TabDiagnostics = "diagnostics";
 
     [SupplyParameterFromQuery(Name = "tab")]
@@ -296,6 +353,7 @@
         {
             TabNames => TabNames,
             TabUpdates => TabUpdates,
+            TabAppearance => TabAppearance,
             TabDiagnostics => TabDiagnostics,
             _ => TabLogs,
         };
@@ -343,6 +401,62 @@
     private double _updateProgress;
     private string? _updateStatus;
     private string? _updateError;
+
+    /// <summary>Released versions up to the running one with notes to show; null while loading.</summary>
+    private IReadOnlyList<ReleaseNote>? _recentReleases;
+    private string? _releaseNotesError;
+
+    private bool _savingTheme;
+    private string? _themeError;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        // After the first render, not during it: the notes come from GitHub, and the page must
+        // not wait on the network to appear. One shared read serves every section.
+        try
+        {
+            var releases = await ReleaseNotes.GetReleasesAsync();
+            _recentReleases = WhatsNewDecision.Select(
+                releases, lastSeen: new Version(0, 0, 0, 0), UpdateService.CurrentVersion);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            _releaseNotesError = "Release notes could not be loaded from GitHub.";
+            System.Diagnostics.Trace.WriteLine($"Settings release notes: {ex.Message}");
+        }
+
+        if (!_disposed) StateHasChanged();
+    }
+
+    /// <summary>
+    /// Saves the theme, then reloads the page: the palette hangs off the document's data-theme,
+    /// which is rendered once per page load. The app window's title bar follows at once through
+    /// <see cref="TrackerOptions.ThemeChanged"/>.
+    /// </summary>
+    private async Task ChangeTheme(AppTheme theme)
+    {
+        if (theme == Options.Theme) return;
+
+        _themeError = null;
+        _savingTheme = true;
+        try
+        {
+            await Options.SetThemeAsync(theme);
+        }
+        catch (Exception ex) when (FormOperationErrors.TryGetMessage(ex, out _))
+        {
+            // Applied for this run already; only remembering it failed.
+            _themeError = $"The theme applies until you quit, but could not be saved: {ex.Message}";
+        }
+        finally
+        {
+            _savingTheme = false;
+        }
+
+        if (_themeError is null) Nav.NavigateTo(Nav.Uri, forceLoad: true);
+    }
 
     private async Task BrowseFolder()
     {

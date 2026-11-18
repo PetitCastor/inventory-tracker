@@ -74,6 +74,16 @@ public sealed class PublishIsolationTests
             publishJob.Groups["body"].Value);
     }
 
+    [Fact]
+    public void Each_release_carries_the_squash_subject_the_whats_new_popup_reads()
+    {
+        var workflow = File.ReadAllText(Path.Combine(FindRepositoryRoot(), ".github", "workflows", "ci.yml"));
+
+        // ReleaseNoteParser reads one Conventional Commits subject per line from the body.
+        Assert.Matches(new Regex("(?m)^\\s*run: git log -1 --format=%s > release-notes\\.md\\s*$"), workflow);
+        Assert.Matches(new Regex("(?m)^\\s*body_path: release-notes\\.md\\s*$"), workflow);
+    }
+
     private static string FindRepositoryRoot()
     {
         foreach (var startingPoint in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
