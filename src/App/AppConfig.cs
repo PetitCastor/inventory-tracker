@@ -39,6 +39,17 @@ public sealed class AppConfig
     /// </summary>
     public DateTimeOffset? ResetNoticeDismissed { get; set; }
 
+    /// <summary>The UI palette chosen in Settings. Null, the default, follows Windows.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter<AppTheme>))]
+    public AppTheme? Theme { get; set; }
+
+    /// <summary>
+    /// The newest version whose "what's new" notes were shown or skipped, as <c>major.minor.patch</c>
+    /// (or four parts for a test build). Kept beside <see cref="ResetNoticeDismissed"/> for the same
+    /// reason: a database rebuild must not show notes the user already read.
+    /// </summary>
+    public string? LastSeenVersion { get; set; }
+
     /// <summary>The port the local UI listens on. Fixed so a bookmark keeps working.</summary>
     public const int DefaultPort = 5730;
 

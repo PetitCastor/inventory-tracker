@@ -26,6 +26,10 @@
     <!-- 11.0.0 depends on SQLitePCLRaw.bundle_e_sqlite3 3.0.5 itself, past
          GHSA-2m69-gcr7-jv3q, so the explicit bundle pin 10.0 needed is gone. -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="11.0.0" />
+    <!-- The app window (App/AppWindow.cs). Its native WebView2Loader.dll is bundled into the
+         single-file exe by publish.ps1's IncludeNativeLibrariesForSelfExtract. Same version as
+         the OCRX engine's window. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
   </ItemGroup>
 
   <!--

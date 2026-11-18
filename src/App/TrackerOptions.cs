@@ -90,11 +90,59 @@ public sealed class TrackerOptions
         DateTimeOffset resetAt, string? configPath = null, CancellationToken cancellationToken = default)
     {
         ResetNoticeDismissed = resetAt;
+        await SaveConfigAsync(config => config.ResetNoticeDismissed = resetAt, configPath, cancellationToken);
+    }
+
+    private AppTheme _theme;
+
+    /// <summary>See <see cref="AppConfig.Theme"/>.</summary>
+    public AppTheme Theme
+    {
+        get { lock (_logSourceGate) return _theme; }
+        set { lock (_logSourceGate) _theme = value; }
+    }
+
+    /// <summary>Raised after <see cref="SetThemeAsync"/> changes the theme, on the caller's thread.
+    /// The app window follows it so its title bar matches the page.</summary>
+    public event Action<AppTheme>? ThemeChanged;
+
+    /// <summary>Applies a theme at once for this run, then saves it in config.json, behind the
+    /// same gate as <see cref="DismissResetNoticeAsync"/>.</summary>
+    public async Task SetThemeAsync(
+        AppTheme theme, string? configPath = null, CancellationToken cancellationToken = default)
+    {
+        Theme = theme;
+        ThemeChanged?.Invoke(theme);
+        await SaveConfigAsync(config => config.Theme = theme, configPath, cancellationToken);
+    }
+
+    private string? _lastSeenVersion;
+
+    /// <summary>See <see cref="AppConfig.LastSeenVersion"/>.</summary>
+    public string? LastSeenVersion
+    {
+        get { lock (_logSourceGate) return _lastSeenVersion; }
+        set { lock (_logSourceGate) _lastSeenVersion = value; }
+    }
+
+    /// <summary>Records <paramref name="version"/> as announced: at once for this run, then in config.json.</summary>
+    public async Task MarkVersionSeenAsync(
+        string version, string? configPath = null, CancellationToken cancellationToken = default)
+    {
+        LastSeenVersion = version;
+        await SaveConfigAsync(config => config.LastSeenVersion = version, configPath, cancellationToken);
+    }
+
+    // Load, edit, save under the log-source gate: ApplyLogSourceAsync rewrites the same file, and
+    // two unsynchronised read-modify-writes would each put back what the other just changed.
+    private async Task SaveConfigAsync(
+        Action<AppConfig> edit, string? configPath, CancellationToken cancellationToken)
+    {
         await _applyLogSourceGate.WaitAsync(cancellationToken);
         try
         {
             var config = AppConfig.Load(configPath);
-            config.ResetNoticeDismissed = resetAt;
+            edit(config);
             config.Save(configPath);
         }
         finally
@@ -122,6 +170,8 @@ public sealed class TrackerOptions
             InceptionDate = config.InceptionDate,
             SetupComplete = config.SetupComplete,
             ResetNoticeDismissed = config.ResetNoticeDismissed,
+            Theme = config.Theme ?? AppTheme.System,
+            LastSeenVersion = config.LastSeenVersion,
         };
     }
 

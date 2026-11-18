@@ -1,0 +1,69 @@
+@rendermode InteractiveServer
+@inject WhatsNewService WhatsNew
+
+@* After an update, says once what changed since the version the user last saw. Loaded after the
+   first render rather than during it: the notes come from GitHub, and the page must not wait on
+   the network to appear. Closing it is remembered in config.json. *@
+@if (_releases.Count > 0)
+{
+    <div class="popup-backdrop" @onkeydown="CloseOnEscape">
+        <div class="popup" role="dialog" aria-modal="true" aria-labelledby="whats-new-title">
+            <button type="button" class="popup-close" title="Close" aria-label="Close" @onclick="Dismiss">&times;</button>
+            <h2 id="whats-new-title">What's new</h2>
+            <ReleaseNoteList Releases="_releases" />
+            <div class="popup-actions">
+                <button type="button" @ref="_ok" @onclick="Dismiss">OK</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private IReadOnlyList<ReleaseNote> _releases = [];
+    private ElementReference _ok;
+    private bool _focusPending;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _releases = await WhatsNew.PendingAsync();
+            if (_releases.Count == 0) return;
+
+            _focusPending = true;
+            StateHasChanged();
+            return;
+        }
+
+        // autofocus only acts on a page's first load, and this dialog appears after it. Focus
+        // inside the dialog is also what lets the backdrop see Escape.
+        if (_focusPending && _releases.Count > 0)
+        {
+            _focusPending = false;
+            try
+            {
+                await _ok.FocusAsync();
+            }
+            catch (Exception ex) when (ex is JSException or JSDisconnectedException or TaskCanceledException)
+            {
+                // The circuit went away with the page; nothing left to focus.
+            }
+        }
+    }
+
+    private async Task Dismiss()
+    {
+        _releases = [];
+        try
+        {
+            await WhatsNew.DismissAsync();
+        }
+        catch (Exception ex) when (FormOperationErrors.TryGetMessage(ex, out _))
+        {
+            // Closed for this run; it comes back on the next launch only if config.json could
+            // not be written.
+        }
+    }
+
+    private Task CloseOnEscape(KeyboardEventArgs e) => e.Key == "Escape" ? Dismiss() : Task.CompletedTask;
+}

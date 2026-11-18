@@ -35,7 +35,7 @@ rtk powershell -NoProfile -File .\publish.ps1 -OutputPath .\publish-review
 
 ## Run and inspect
 
-Normal launch starts the tray app and local UI at [http://localhost:5730](http://localhost:5730). Console mode (`--scan`) imports logs without a UI or automatic updates.
+Normal launch starts the tray app, the local UI at [http://localhost:5730](http://localhost:5730) and the app window, a WebView2 view of that UI (`src/App/AppWindow.cs`). Closing the window hides it to the tray. A second launch brings the running window forward. When WebView2 cannot start, the UI opens in the default browser. The window's WebView2 profile is in `%LOCALAPPDATA%\InventoryTracker\WebView2`. Console mode (`--scan`) imports logs without a UI or automatic updates.
 
 ```powershell
 rtk .\dist\InventoryTracker.exe
@@ -64,7 +64,7 @@ Resetting can recover only events still present in available logs.
 
 ## Configuration and ingestion
 
-`%LOCALAPPDATA%\InventoryTracker\config.json` stores the log folder, database path, UI port, wipe date and whether the latest character-reset popup was closed (`ResetNoticeDismissed`, kept outside the database so a rebuild does not show it again). App diagnostics go to `tracker.log` in the same directory.
+`%LOCALAPPDATA%\InventoryTracker\config.json` stores the log folder, database path, UI port, wipe date, theme (`Theme`: `System`, `Light` or `Dark`; absent means `System`), whether the latest character-reset popup was closed (`ResetNoticeDismissed`) and the last version whose release notes were shown (`LastSeenVersion`). The last two are kept outside the database so a rebuild does not show them again. App diagnostics go to `tracker.log` in the same directory.
 
 The selected game folder must contain `Game.log`. The tracker imports compatible `logbackups\*.log` files and the active log, then follows new events in `Game.log`.
 
@@ -96,3 +96,5 @@ See the [log-format notes](domain/README.md) and [reliability study](reliability
 The [CI workflow](../.github/workflows/ci.yml) creates a GitHub Release after successful builds and tests on pushes to `main`. If `VERSION` is ahead of the latest release, CI uses it; otherwise, it increments the patch version.
 
 The tray app checks for updates at startup and restarts after installing a newer release. Console mode never updates automatically.
+
+Each release's body is the subject of the squash commit that shipped it, which is the merged PR's title. The **What's new** popup and **Settings → Updates** read those bodies from the GitHub API and show `feat:`, `perf:` and `fix:` lines as New, Improved and Fixed. Other types (`ci:`, `docs:`, `test:`, dependency bumps) stay out of the app. A PR title is therefore also the release note, so write `feat:` and `fix:` titles for players.

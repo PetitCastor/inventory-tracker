@@ -44,13 +44,18 @@ public static class TrayHost
 
         // The port is fixed so the bookmark keeps working, which means a second instance
         // cannot bind and would die on app.Start() with no console to report it. Hand the
-        // user the running instance's window instead.
+        // user the running instance's window instead; a running build from before the window
+        // existed, or one still starting, gets the browser as before.
         using var single = new Mutex(initiallyOwned: true, SingleInstanceMutex, out var isFirstInstance);
         if (!isFirstInstance)
         {
-            OpenBrowser(options.Url);
+            if (!ShowWindowSignal.TrySignal()) OpenBrowser(options.Url);
             return 0;
         }
+
+        // Created before the update check and the host start, so a second launch made while
+        // this one boots is held until the window exists rather than lost.
+        using var showSignal = new ShowWindowSignal();
 
         // A crash in an event handler or on a background thread would otherwise take the
         // tray app down silently: it is a WinExe, so there is no console for the trace.
@@ -135,6 +140,11 @@ public static class TrayHost
         builder.Services.AddSingleton(sp => new UpdateService(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient(UpdateClient)));
 
+        // Release notes come from the same GitHub API, so they share its client and headers.
+        builder.Services.AddSingleton(sp => new ReleaseNotesService(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(UpdateClient)));
+        builder.Services.AddSingleton<WhatsNewService>();
+
         builder.Services.AddSingleton<LogWatchService>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<LogWatchService>());
         builder.Services.AddSingleton<WikiRefreshTaskOwner>();
@@ -191,29 +201,57 @@ public static class TrayHost
 
         // Under the app's own category: ILogger<WebApplication> logs as Microsoft.AspNetCore.*,
         // which the file filter above holds to Warning, so this line never reached tracker.log.
-        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(TrayHost).FullName!).LogInformation(
+        var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(TrayHost).FullName!);
+        log.LogInformation(
             "InventoryTracker {Version} started on {Url}, reading {LogDir}",
             UpdateService.CurrentVersion, options.Url, options.LogDir);
 
+        // Started now rather than when the first page asks: a first run records its version
+        // here even though the popup never shows over the setup wizard, and after an update the
+        // notes are usually in by the time the window has loaded. It never throws.
+        _ = app.Services.GetRequiredService<WhatsNewService>().PendingAsync();
+
         var wikiRefreshOwner = app.Services.GetRequiredService<WikiRefreshTaskOwner>();
-        var tray = BuildTrayIcon(app, options, wikiRefreshOwner);
         var messageLoopContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+
+        // Land first-time users on the setup wizard; the UI gate enforces it regardless.
+        var window = new AppWindow(
+            options,
+            options.SetupComplete ? options.Url : $"{options.Url}/setup",
+            WebViewDataFolder,
+            LoadAppIcon(),
+            OpenBrowser,
+            () => messageLoopContext.Post(static _ => Application.Exit(), null),
+            log);
+        var tray = BuildTrayIcon(app, options, wikiRefreshOwner, window);
         var shutdownRegistration = RegisterMessageLoopStop(
             app.Lifetime, messageLoopContext, Application.ExitThread);
         try
         {
-            // Land first-time users on the setup wizard; the UI gate enforces it regardless.
-            OpenBrowser(options.SetupComplete ? options.Url : $"{options.Url}/setup");
+            window.Show();
+            // Posted to the message loop rather than called on the waiting thread: a signal held
+            // from a launch made during boot fires the moment this registers, and a form must
+            // only ever be touched from the thread that owns it.
+            showSignal.Listen(() => messageLoopContext.Post(static state => ((AppWindow)state!).ShowAndActivate(), window));
             Application.Run();
         }
         finally
         {
-            // Gone before the host stops: an open browser tab holds a Blazor circuit that
+            // Gone before the host stops: the window's page holds a Blazor circuit that
             // Kestrel waits on, and the icon should not linger in the tray while it does.
             try
             {
-                tray.Visible = false;
-                tray.Dispose();
+                try
+                {
+                    tray.Visible = false;
+                    tray.Dispose();
+                }
+                finally
+                {
+                    // Its WebView2 process would otherwise outlive the tracker and keep the
+                    // profile folder locked for the next launch.
+                    window.Dispose();
+                }
             }
             finally
             {
@@ -263,12 +301,20 @@ public static class TrayHost
         return true;
     }
 
+    /// <summary>WebView2's profile, beside config.json and the database: this install's private state.</summary>
+    private static string WebViewDataFolder => Path.Combine(
+        Path.GetDirectoryName(AppConfig.DefaultPath)!, "WebView2");
+
     private static NotifyIcon BuildTrayIcon(
-        WebApplication app, TrackerOptions options, WikiRefreshTaskOwner wikiRefreshOwner)
+        WebApplication app, TrackerOptions options, WikiRefreshTaskOwner wikiRefreshOwner, AppWindow window)
     {
         var menu = new ContextMenuStrip();
 
-        menu.Items.Add("Open InventoryTracker", null, (_, _) => OpenBrowser(options.Url));
+        var open = new ToolStripMenuItem("Open Inventory Tracker", null, (_, _) => window.ShowAndActivate());
+        open.Font = new Font(open.Font, FontStyle.Bold);
+        menu.Items.Add(open);
+        // The same pages, for a second screen or a browser the user prefers.
+        menu.Items.Add("Open in browser", null, (_, _) => OpenBrowser(options.Url));
         menu.Items.Add(new ToolStripSeparator());
 
         menu.Items.Add("Rescan logs now", null, (_, _) =>
@@ -350,7 +396,7 @@ public static class TrayHost
             ContextMenuStrip = menu,
         };
 
-        icon.DoubleClick += (_, _) => OpenBrowser(options.Url);
+        icon.DoubleClick += (_, _) => window.ShowAndActivate();
         return icon;
     }
 

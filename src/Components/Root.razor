@@ -1,6 +1,8 @@
-@* Root document for the whole app. Rendered statically; the pages inside are interactive. *@
+@* Root document for the whole app. Rendered statically; the pages inside are interactive.
+   data-theme picks the palette in AppStyles; Settings reloads the page after changing it. *@
+@inject InventoryTracker.App.TrackerOptions Options
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="@Options.Theme.ToString().ToLowerInvariant()">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
