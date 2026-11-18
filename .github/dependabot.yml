@@ -16,7 +16,7 @@ updates:
         patterns: ["*"]
     ignore:
       # Microsoft.Data.Sqlite majors track the .NET release the app targets
-      # (net10.0-windows); move it together with the TargetFramework, not on its own.
+      # (net11.0-windows); move it together with the TargetFramework, not on its own.
       - dependency-name: Microsoft.Data.Sqlite
         update-types: ["version-update:semver-major"]
 
