@@ -4,7 +4,7 @@
     <!-- WinExe keeps the tray app from flashing a console window. The CLI paths
          re-attach to the parent console themselves, so scan mode still prints. -->
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <TargetFramework>net11.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -23,44 +23,55 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.15" />
-    <!-- Microsoft.Data.Sqlite 10.0.0 pulls SQLitePCLRaw 2.1.11, which carries
-         GHSA-2m69-gcr7-jv3q. Pin the bundle forward past the advisory. -->
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+    <!-- 11.0.0 depends on SQLitePCLRaw.bundle_e_sqlite3 3.0.5 itself, past
+         GHSA-2m69-gcr7-jv3q, so the explicit bundle pin 10.0 needed is gone. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="11.0.0" />
   </ItemGroup>
 
   <!--
-    Embed the Blazor startup script instead of letting it ship as a loose static
-    web asset. Two reasons:
-      1. The SDK target that registers it is gated on OutputType == 'Exe', and this
-         is a WinExe so the tray never flashes a console window. Without this the
-         script is simply absent and no interactive circuit is ever established.
-      2. Static web assets are written next to the executable on publish, which
-         would defeat the single-file output.
+    Embed the Blazor startup script and serve it from TrayHost rather than as a
+    static web asset: static web assets are written next to the executable on
+    publish, which would defeat the single-file output.
+    (Up to .NET 10 there was a second reason: the SDK only registered the script
+    for OutputType Exe, so this WinExe got no script at all. .NET 11 also enables
+    it for WinExe, but the app maps no static assets, so it is still not served.)
   -->
   <!-- Pinned to the exact bundled shared-framework version rather than a "*" wildcard:
-       a machine with more than one 10.0.x AspNetCore runtime installed has more than one
-       microsoft.aspnetcore.app.internal.assets version under NuGetPackageRoot, and the
-       wildcard matched all of them, embedding "blazor.web.js" twice (CS1508). This
-       property is the SDK's own record of which shared-framework version it targets, so
-       it always resolves to exactly one path. -->
+       a machine with more than one AspNetCore runtime of the same major version has
+       more than one microsoft.aspnetcore.app.internal.assets version under
+       NuGetPackageRoot, and the wildcard matched all of them, embedding "blazor.web.js"
+       twice (CS1508). This property is the SDK's own record of which shared-framework
+       version it targets, so it always resolves to exactly one path.
+       .NET 11 moved the script from _framework\ to staticwebassets\_framework\ inside
+       the package; the rc SDK built against the old path is what failed with CS1566. -->
+  <PropertyGroup>
+    <BlazorStartupScriptPath>$(NuGetPackageRoot)microsoft.aspnetcore.app.internal.assets\$(BundledNETCoreAppPackageVersion)\staticwebassets\_framework\blazor.web.js</BlazorStartupScriptPath>
+  </PropertyGroup>
+
   <ItemGroup>
-    <EmbeddedResource Include="$(NuGetPackageRoot)microsoft.aspnetcore.app.internal.assets\$(BundledNETCoreAppPackageVersion)\_framework\blazor.web.js"
-                      LogicalName="blazor.web.js" />
+    <EmbeddedResource Include="$(BlazorStartupScriptPath)" LogicalName="blazor.web.js" />
   </ItemGroup>
 
-  <!-- Embedding is easy to lose silently: the app would still serve pages, they
-       would just never respond to input. Fail the build instead.
-       The check must filter by LogicalName rather than test @(EmbeddedResource) for
-       emptiness: the application icon above is also an EmbeddedResource, so the list
-       is never empty and a bare emptiness test would never fire. -->
-  <Target Name="VerifyBlazorScriptEmbedded" BeforeTargets="CoreCompile">
+  <!-- .NET 11 turns the package's static web assets on for WinExe too, so publish
+       wrote a loose wwwroot\_framework\ (blazor.web.js, blazor.server.js, maps,
+       .br/.gz) beside the exe. Nothing serves them (no MapStaticAssets; the embedded
+       copy above is served from TrayHost), so drop the package's manifest before the
+       SDK reads it and keep the output a single file. -->
+  <Target Name="ExcludeFrameworkStaticWebAssets" BeforeTargets="UpdateExistingPackageStaticWebAssets">
     <ItemGroup>
-      <_BlazorStartupScript Include="@(EmbeddedResource)"
-                            Condition="'%(EmbeddedResource.LogicalName)' == 'blazor.web.js'" />
+      <StaticWebAssetPackageManifest Remove="@(StaticWebAssetPackageManifest)"
+                                     Condition="'%(StaticWebAssetPackageManifest.SourceId)' == 'Microsoft.AspNetCore.App.Internal.Assets'" />
     </ItemGroup>
-    <Error Condition="'@(_BlazorStartupScript)' == ''"
-           Text="blazor.web.js was not found under '$(NuGetPackageRoot)microsoft.aspnetcore.app.internal.assets\$(BundledNETCoreAppPackageVersion)'. Without it the UI renders but never becomes interactive." />
+  </Target>
+
+  <!-- Embedding is easy to lose silently: the app would still serve pages, they
+       would just never respond to input. Fail the build instead, with a message that
+       names the path, before csc reports the bare CS1566 a missing resource file gives.
+       The check tests the file itself: an EmbeddedResource item whose file does not
+       exist is still an item, so testing the item list alone would never fire. -->
+  <Target Name="VerifyBlazorScriptEmbedded" BeforeTargets="CoreCompile">
+    <Error Condition="!Exists('$(BlazorStartupScriptPath)')"
+           Text="blazor.web.js was not found at '$(BlazorStartupScriptPath)'. Without it the UI renders but never becomes interactive. If the SDK moved it again, update BlazorStartupScriptPath." />
   </Target>
 
 </Project>

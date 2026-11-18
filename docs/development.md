@@ -4,7 +4,7 @@ For features and everyday use, see the [main README](../README.md).
 
 ## Build and test
 
-Requires Windows and the **.NET 10 SDK**. The project targets `net10.0-windows`.
+Requires Windows and the **.NET 11 SDK** (11.0.100 or a later 11.0.x; `global.json` pins it so a preview SDK is never picked). The project targets `net11.0-windows`.
 
 Run from the repository root. Commands use RTK as required by [CLAUDE.md](../CLAUDE.md).
 

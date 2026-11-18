@@ -61,7 +61,7 @@ jobs:
     # merge also rebuilt and retested main in that second run, alongside the push run
     # that actually gates publish.
     if: github.event_name != 'pull_request_target'
-    # WinExe / net10.0-windows (UseWindowsForms) only builds on Windows.
+    # WinExe / net11.0-windows (UseWindowsForms) only builds on Windows.
     runs-on: windows-latest
 
     steps:
@@ -69,8 +69,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
-          dotnet-quality: preview
+          dotnet-version: '11.0.x'
 
       - name: Restore
         run: dotnet restore InventoryTracker.slnx
@@ -99,8 +98,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
-          dotnet-quality: preview
+          dotnet-version: '11.0.x'
 
       # The version comes from the VERSION file. A PR can bump it by hand for a
       # deliberate minor/major release; github.run_number was previously used instead,
