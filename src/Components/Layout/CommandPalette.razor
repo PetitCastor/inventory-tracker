@@ -1,0 +1,152 @@
+@inject TrackerState State
+@inject NavigationManager Nav
+
+@* Ctrl+K: type part of a station, system or page name and press Enter to go there. Stations
+   come from the same list as the Locations picker. Whatever was typed can also be searched
+   for among your items, which opens Locations with that search. Rendered by AppSidebar, so
+   it shares its interactivity. *@
+@if (Open)
+{
+    <div class="palette-backdrop" @onclick="Close">
+        <div class="palette" role="dialog" aria-modal="true" aria-label="Go to" @onclick:stopPropagation="true">
+            <div class="palette-input-row">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                    <circle cx="10.5" cy="10.5" r="6.5" />
+                    <path d="m20 20-4.35-4.35" stroke-linecap="round" />
+                </svg>
+                <input @ref="_input" type="text" class="palette-input" placeholder="Area18, Pyro, Ships…"
+                       role="combobox" aria-expanded="true" aria-controls="palette-list"
+                       aria-activedescendant="@(_matches.Count > 0 ? $"palette-{_selected}" : null)"
+                       value="@_query" @oninput="OnInput" @onkeydown="OnKeyDown" />
+                <kbd>Esc</kbd>
+            </div>
+            <ul id="palette-list" class="palette-list" role="listbox">
+                @for (var i = 0; i < _matches.Count; i++)
+                {
+                    var index = i;
+                    var entry = _matches[i];
+                    <li id="palette-@index" role="option" aria-selected="@(index == _selected)"
+                        class="palette-item @(index == _selected ? "selected" : "")"
+                        @onclick="() => Go(entry)" @onmousemove="() => _selected = index">
+                        <span class="palette-label">@entry.Label</span>
+                        <span class="palette-kind">@entry.Kind</span>
+                    </li>
+                }
+            </ul>
+        </div>
+    </div>
+}
+
+@code {
+    /// <summary>One place the palette can go: its label, what kind of place it is (shown on
+    /// the right, and searched too, so "Stanton" finds every station there), and where.</summary>
+    private sealed record Entry(string Label, string Kind, string Href);
+
+    [Parameter] public bool Open { get; set; }
+
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int MaxShown = 40;
+
+    private ElementReference _input;
+    private bool _wasOpen;
+    private bool _focusPending;
+    private string _query = "";
+    private List<Entry> _all = [];
+    private List<Entry> _matches = [];
+    private int _selected;
+
+    protected override void OnParametersSet()
+    {
+        // Built afresh on each opening: stations come and go as the log is read.
+        if (Open && !_wasOpen)
+        {
+            _query = "";
+            _all = Entries();
+            Filter();
+            _focusPending = true;
+        }
+
+        _wasOpen = Open;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_focusPending)
+        {
+            _focusPending = false;
+            await _input.FocusAsync();
+        }
+    }
+
+    private List<Entry> Entries()
+    {
+        List<Entry> pages =
+        [
+            new("Locations", "Page", ""),
+            new("Ships", "Page", "ships"),
+            new("Dropped", "Page", "dropped"),
+            new("Settings", "Page", "settings"),
+        ];
+
+        var stations = StationList.Holding(State.Current)
+            .OrderBy(p => p.System, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(p => new Entry(p.LabelInSystem, $"Station · {p.System}", $"?at={Uri.EscapeDataString(p.Id)}"));
+
+        return [.. pages, .. stations];
+    }
+
+    private void OnInput(ChangeEventArgs e)
+    {
+        _query = e.Value?.ToString() ?? "";
+        Filter();
+    }
+
+    /// <summary>Every word typed must appear in the label or the kind, in any order.</summary>
+    private void Filter()
+    {
+        var words = _query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        _matches = _all
+            .Where(entry => words.All(word =>
+                entry.Label.Contains(word, StringComparison.OrdinalIgnoreCase)
+                || entry.Kind.Contains(word, StringComparison.OrdinalIgnoreCase)))
+            .Take(MaxShown)
+            .ToList();
+
+        if (words.Length > 0)
+        {
+            _matches.Add(new Entry($"Search your items for \"{_query.Trim()}\"", "Search",
+                $"?q={Uri.EscapeDataString(_query.Trim())}"));
+        }
+
+        _selected = 0;
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case "ArrowDown" when _matches.Count > 0:
+                _selected = (_selected + 1) % _matches.Count;
+                break;
+            case "ArrowUp" when _matches.Count > 0:
+                _selected = (_selected - 1 + _matches.Count) % _matches.Count;
+                break;
+            case "Enter" when _matches.Count > 0:
+                await Go(_matches[_selected]);
+                break;
+            case "Escape":
+                await Close();
+                break;
+        }
+    }
+
+    private async Task Go(Entry entry)
+    {
+        await Close();
+        Nav.NavigateTo(entry.Href);
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+}

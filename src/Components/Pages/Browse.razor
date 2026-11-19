@@ -135,29 +135,24 @@ else if (health.Moves == 0)
 
 @* The station picker and search share one row, the picker first. Search covers every station,
    ship and drop, so the dropdowns do not narrow it; picking a station while searching leaves
-   the search to show it. *@
+   the search to show it. The picker reads as a path, system then station, each part a
+   dropdown; Ctrl+K reaches any station in any system in one step. *@
 <div class="toolbar">
     @if (_systems.Count > 0)
     {
-        <div class="picker-field">
+        <div class="location-path">
             <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
                 <circle cx="12" cy="12" r="3.5" />
                 <ellipse cx="12" cy="12" rx="10" ry="3.4" transform="rotate(-25 12 12)" />
             </svg>
-            <select aria-label="System" @bind="_system" @bind:after="PickSystem">
+            <select class="path-select" aria-label="System" @bind="_system" @bind:after="PickSystem">
                 @foreach (var system in _systems)
                 {
                     <option value="@system">@system</option>
                 }
             </select>
-        </div>
-
-        <div class="picker-field">
-            <svg class="picker-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-                <path d="M12 21s7-6.79 7-12a7 7 0 1 0-14 0c0 5.21 7 12 7 12z" />
-                <circle cx="12" cy="9" r="2.5" />
-            </svg>
-            <select aria-label="Station" @bind="_placeId" @bind:after="PickPlace">
+            <span class="crumb-sep" aria-hidden="true">›</span>
+            <select class="path-select path-station" aria-label="Station" @bind="_placeId" @bind:after="PickPlace">
                 @foreach (var place in _placesInSystem)
                 {
                     <option value="@place.Id">@place.LabelInSystem@(place.NameConfirmed ? "" : " (unconfirmed)")</option>
@@ -234,7 +229,7 @@ else if (health.Moves == 0)
                         </td>
                         <td class="qty">@h.Holding.Quantity&times;</td>
                         <td class="chain">@h.Holding.Where</td>
-                        <td class="when" title="@h.Holding.LastMove.ToString("u")">@Ago(h.Holding.LastMove)</td>
+                        <td class="when" title="@h.Holding.LastMove.ToString("u")">@TimeAgo.Format(h.Holding.LastMove)</td>
                         <td>
                             <span class="conf conf-@h.Holding.Confidence.ToString().ToLowerInvariant()"
                                   title="@string.Join("; ", h.Holding.Caveats)">
@@ -422,16 +417,41 @@ else
     /// <summary>Any id of the place to open, so a particular station can be linked to.</summary>
     [SupplyParameterFromQuery(Name = "at")] private string? At { get; set; }
 
+    /// <summary>A search to run on arrival: the command palette's "search your items".</summary>
+    [SupplyParameterFromQuery(Name = "q")] private string? Q { get; set; }
+
+    /// <summary>The ?at= and ?q= last acted on. The command palette navigates here while the
+    /// page is already open, which sets new parameters without initialising the page again;
+    /// only a value that changed is applied, so a re-render never undoes a pick made since.</summary>
+    private string? _appliedAt;
+    private string? _appliedQ;
+
     protected override void OnInitialized()
     {
         State.Changed += OnChanged;
         RefreshOptions();
+    }
 
-        if (At is not null && State.Current.Resolver?.Places.ByLocationId(At) is { } requested)
+    protected override void OnParametersSet()
+    {
+        if (At != _appliedAt)
         {
-            _system = requested.System;
-            _placeId = requested.Id;
-            OnSystemChanged();
+            _appliedAt = At;
+            if (At is not null && State.Current.Resolver?.Places.ByLocationId(At) is { } requested)
+            {
+                // Again, so a deep-linked station holding nothing is in the picker to select.
+                RefreshOptions();
+                _system = requested.System;
+                _placeId = requested.Id;
+                _query = "";
+                OnSystemChanged();
+            }
+        }
+
+        if (Q != _appliedQ)
+        {
+            _appliedQ = Q;
+            if (!string.IsNullOrWhiteSpace(Q)) _query = Q;
         }
     }
 
@@ -451,28 +471,11 @@ else
             return;
         }
 
-        // The catalogue lists every station the game ever paired with a local-inventory name,
-        // whether or not anything was ever recorded there since the tracker's wipe date.
-        // Only places holding something now belong in the picker, so it doesn't fill up with
-        // stations the player has simply never visited.
-        var holdingKeys = snapshot.Holdings
-            .Where(h => h.Holding.IsAtStation)
-            .Select(h => h.Holding.Root!.Key)
-            .ToHashSet(StringComparer.Ordinal);
-
-        var known = catalogue.Places.SelectMany(p => p.AliasIds).ToHashSet(StringComparer.Ordinal);
-        var orphans = holdingKeys
-            .Where(key => !known.Contains(key))
-            .Select(id => catalogue.ByLocationId(id) ?? PlaceCatalog.Unnamed(id))
-            .DistinctBy(p => p.Id);
-
         // A deep link (?at=) must resolve even to a place currently holding nothing, or it
         // gets silently dropped from the very picker it needs to appear in.
         var deepLinked = At is not null ? catalogue.ByLocationId(At) : null;
 
-        _bySystem = catalogue.Places
-            .Where(p => p.AliasIds.Any(holdingKeys.Contains) || p.Id == deepLinked?.Id)
-            .Concat(orphans)
+        _bySystem = StationList.Holding(snapshot, deepLinked)
             .GroupBy(p => p.System, StringComparer.OrdinalIgnoreCase)
             .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
@@ -739,7 +742,7 @@ else
                     }
                 </td>
                 <td class="qty">@row.Quantity&times;</td>
-                <td class="when" title="@row.LastMove.ToString("u")">@Ago(row.LastMove)</td>
+                <td class="when" title="@row.LastMove.ToString("u")">@TimeAgo.Format(row.LastMove)</td>
                 <td>
                     <span class="conf conf-@row.Confidence.ToString().ToLowerInvariant()"
                           title="@string.Join("; ", row.Caveats)">
@@ -827,19 +830,6 @@ else
     /// <summary>Calendar-day formatting for the health banners; "-" stands in for a date that
     /// was never set (no wipe date) or never seen (no log line read yet).</summary>
     private static string FormatDate(DateTimeOffset? when) => when?.ToString("yyyy-MM-dd") ?? "-";
-
-    private static string Ago(DateTimeOffset when)
-    {
-        var span = DateTimeOffset.UtcNow - when;
-        return span switch
-        {
-            { TotalMinutes: < 1 } => "just now",
-            { TotalHours: < 1 } => $"{span.TotalMinutes:F0} min ago",
-            { TotalDays: < 1 } => $"{span.TotalHours:F0} h ago",
-            { TotalDays: < 30 } => $"{span.TotalDays:F0} d ago",
-            _ => when.ToString("yyyy-MM-dd"),
-        };
-    }
 
     private void OnChanged() => InvokeAsync(() => { RefreshOptions(); StateHasChanged(); });
 

@@ -1,0 +1,62 @@
+@rendermode InteractiveServer
+@implements IDisposable
+@using InventoryTracker.Ingest
+@inject TrackerState State
+@inject LogWatchService Watcher
+
+@* The left of the status bar: whether the logs are being followed, and how fresh the newest
+   line read is. Settings has the full detail. *@
+<a href="settings" class="status-item status-watch" title="@Detail">
+    <span class="status-dot status-@Tone" aria-hidden="true"></span>@Text
+</a>
+@if (State.Current.Health.NewestLogLine is { } newest)
+{
+    <span class="status-item" title="@newest.ToString("u")">Newest log line @TimeAgo.Format(newest)</span>
+}
+
+@code {
+    /// <summary>"3 min ago" goes stale between passes, so it is redrawn on its own too.</summary>
+    private static readonly TimeSpan Tick = TimeSpan.FromSeconds(30);
+
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        State.Changed += Redraw;
+        Watcher.PassCompleted += Redraw;
+        _timer = new System.Threading.Timer(_ => Redraw(), null, Tick, Tick);
+    }
+
+    private string Tone => Watcher.LastPass switch
+    {
+        null => "idle",
+        { Error: not null } => "error",
+        { Incomplete: not null } => "warn",
+        _ => "ok",
+    };
+
+    private string Text => Watcher.LastPass switch
+    {
+        null => "Reading logs…",
+        { Error: not null } => "Last log read failed",
+        { Incomplete: not null } => "Some logs not read yet",
+        _ => "Following game logs",
+    };
+
+    private string Detail => Watcher.LastPass switch
+    {
+        null => "The first read of your logs is still running.",
+        { Error: { } error } => error,
+        { Incomplete: { } files } => $"Will retry: {files}",
+        { } pass => $"Logs last read {TimeAgo.Format(pass.At)}",
+    };
+
+    private void Redraw() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        State.Changed -= Redraw;
+        Watcher.PassCompleted -= Redraw;
+        _timer?.Dispose();
+    }
+}
