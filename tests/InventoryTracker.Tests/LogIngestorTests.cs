@@ -914,7 +914,9 @@ public sealed class LogIngestorTests : IDisposable
         Assert.True(update.CharacterReset);
         Assert.Equal(DateTimeOffset.Parse("2026-08-27T00:37:38.910Z"), update.ResetAt);
         Assert.Equal("2273540638", holding.Chain[^1].Key);
-        Assert.Equal(1.0, holding.Score, precision: 3); // the reset's move is known, not weighed
+        // Where the reset took it is known; that it kept it is not, until a move sees it.
+        Assert.Equal(0.5, holding.Score, precision: 3);
+        Assert.True(holding.ToConfirm);
         Assert.Contains(holding.Caveats, c => c.StartsWith("moved here by the character reset of 2026-08-27 (game build 12519617)"));
     }
 
