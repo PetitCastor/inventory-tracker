@@ -655,163 +655,109 @@ public class LedgerReplayTests
     private static LedgerReplay.WornSighting Worn(int minute, string geid, string itemClass) =>
         new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), geid, itemClass);
 
-    /// <summary>A game update the ledger moves the player's belongings through.</summary>
-    private static LedgerReplay.Relocation Update(Holding spawn, int minute) =>
-        new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), 12519617, spawn);
+    /// <summary>A character reset the ledger starts over at.</summary>
+    private static LedgerReplay.Reset Reset(int minute) =>
+        new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), 12519617);
 
-    private static LedgerReplay RunAcross(LedgerReplay.Relocation update, params MoveRecord[] moves) =>
-        LedgerReplay.Run(moves, [], relocations: [update]);
-
-    [Fact]
-    public void A_game_update_moves_what_was_stored_or_equipped_to_where_the_player_spawned()
-    {
-        // Build 12519617: armour stored at Lorville and weapons last equipped were all taken
-        // out of Area18, where the player first spawned after the update.
-        var ledger = RunAcross(
-            Update(OtherStation, minute: 5),
-            Move(Nowhere, Station, "armor_core_01", geid: "111111111111", minute: 1),
-            Move(Station, OnPlayer, "rifle_01", geid: "222222222222", minute: 2),
-            Move(Nowhere, Station, "ammo_box_01", amount: 4, minute: 3));
-
-        Assert.Equal(OtherStation, ledger.InstanceAt["111111111111"]);
-        Assert.Equal(OtherStation, ledger.InstanceAt["222222222222"]);
-        Assert.Equal(4, ledger.Contents(OtherStation).Single(c => c.ItemClass == "ammo_box_01").Loose!.Quantity);
-        Assert.Empty(ledger.Contents(Station));
-        Assert.All(ledger.NamedIn(OtherStation, "armor_core_01"), i => Assert.Equal(12519617, i.MovedByUpdate));
-        Assert.Equal(6, ledger.Stats.RelocatedByUpdate);
-    }
-
-    [Fact]
-    public void A_containers_contents_follow_it_through_an_update()
-    {
-        var ledger = RunAcross(
-            Update(OtherStation, minute: 5),
-            Move(Nowhere, Station, "crate_01", geid: Crate.Key, minute: 1),
-            Move(Nowhere, Crate, "rifle_01", geid: "111111111111", minute: 2));
-
-        Assert.Equal(OtherStation, ledger.InstanceAt[Crate.Key]);
-        Assert.Equal(Crate, ledger.InstanceAt["111111111111"]);
-    }
-
-    [Fact]
-    public void A_reset_leaves_hand_carried_items_where_they_were()
-    {
-        // A carry is most likely eaten or drunk: the next body enumeration is what settles it,
-        // and it only looks on the player.
-        var ledger = RunAcross(
-            Update(OtherStation, minute: 5),
-            Carry(Crate, "drink_01", "222222222222", minute: 2));
-
-        Assert.Equal(OnPlayer, ledger.InstanceAt["222222222222"]);
-    }
+    private static LedgerReplay RunAcross(LedgerReplay.Reset reset, params MoveRecord[] moves) =>
+        LedgerReplay.Run(moves, [], resets: [reset]);
 
     /// <summary>A ship's locker: a container the resolver knows by its PersonalStorage_ class.</summary>
     private static readonly Holding ShipLocker = new(InventoryKind.Container, "876737713105");
 
+    [Fact]
+    public void A_reset_wipes_everything_the_ledger_held()
+    {
+        // Stored, equipped, carried in hand, dropped, in a backpack, in a ship's lockers: a
+        // character reset starts the player over, and the ledger with it.
+        var world = new Holding(InventoryKind.World, Station.Key);
+        var ledger = RunAcross(
+            Reset(minute: 9),
+            Move(Nowhere, Station, "armor_core_01", geid: "111111111111", minute: 1),
+            Move(Station, OnPlayer, "rifle_01", geid: "222222222222", minute: 2),
+            Move(Nowhere, Station, "ammo_box_01", amount: 4, minute: 3),
+            Carry(Crate, "drink_01", "333333333333", minute: 4),
+            Move(Nowhere, Station, "backpack_01", geid: Backpack.Key, minute: 5),
+            Move(Nowhere, Backpack, "pistol_01", geid: "444444444444", minute: 5),
+            Move(Nowhere, OtherStation, "helmet_01", geid: "555555555555", minute: 6),
+            Move(Station, world, "knife_01", geid: "666666666666", minute: 7, moveType: "Drop"),
+            Move(Nowhere, ShipLocker, "medpen_01", amount: 2, minute: 8));
+
+        Assert.Empty(ledger.Occupied);
+        Assert.Empty(ledger.InstanceAt);
+        Assert.Equal(13, ledger.Stats.WipedByReset);
+        var report = Assert.Single(ledger.Stats.Resets);
+        Assert.Equal((12519617, 13), (report.Build, report.Wiped));
+    }
+
     [Theory]
     [InlineData(5, false)]
     [InlineData(0, true)]
-    public void A_reset_wipes_what_was_dropped_with_whatever_was_inside_it(int resetMinute, bool afterTheReset)
+    public void A_reset_keeps_what_the_logs_show_after_it(int resetMinute, bool afterTheReset)
     {
-        // The reset of build 13165946 cleared the floor. A drop after the reset is unaffected.
         var world = new Holding(InventoryKind.World, Station.Key);
         var moves = new[]
         {
             Move(Nowhere, Station, "backpack_01", geid: Backpack.Key, minute: 1),
             Move(Nowhere, Backpack, "rifle_01", geid: "111111111111", minute: 2),
             Move(Nowhere, Backpack, "ammo_box_01", amount: 3, minute: 2),
-            Move(Station, world, "backpack_01", geid: Backpack.Key, minute: 3, moveType: "Drop"),
             Move(Station, world, "pistol_01", geid: "333333333333", minute: 4, moveType: "Drop"),
         };
         var ledger = LedgerReplay.Run(
             afterTheReset ? moves.Select(m => m with { Timestamp = m.Timestamp.AddMinutes(10) }) : moves, [],
-            relocations: [Update(OtherStation, resetMinute)]);
+            resets: [Reset(resetMinute)]);
 
         if (afterTheReset)
         {
-            Assert.Equal(world, ledger.InstanceAt[Backpack.Key]);
+            Assert.Equal(Station, ledger.InstanceAt[Backpack.Key]);
             Assert.Equal(world, ledger.InstanceAt["333333333333"]);
             Assert.Equal(Backpack, ledger.InstanceAt["111111111111"]);
             Assert.Equal(0, ledger.Stats.WipedByReset);
         }
         else
         {
-            Assert.False(ledger.InstanceAt.ContainsKey(Backpack.Key));
-            Assert.False(ledger.InstanceAt.ContainsKey("333333333333"));
-            Assert.False(ledger.InstanceAt.ContainsKey("111111111111"));
-            Assert.Empty(ledger.Contents(world));
-            Assert.Empty(ledger.Contents(Backpack));
+            Assert.Empty(ledger.InstanceAt);
+            Assert.Empty(ledger.Occupied);
             Assert.Equal(6, ledger.Stats.WipedByReset);
-        }
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void A_reset_empties_ship_lockers_but_no_other_container(bool isShipLocker)
-    {
-        // The locker's class is all that tells it from a crate; the resolver passes the geids.
-        var ledger = LedgerReplay.Run(
-            [
-                Move(Nowhere, ShipLocker, "rifle_01", geid: "111111111111", minute: 1),
-                Move(Nowhere, ShipLocker, "ammo_box_01", amount: 2, minute: 2),
-            ],
-            [],
-            relocations: [Update(OtherStation, minute: 5)],
-            shipLockers: isShipLocker ? new HashSet<string> { ShipLocker.Key } : null);
-
-        if (isShipLocker)
-        {
-            Assert.Empty(ledger.Contents(ShipLocker));
-            Assert.False(ledger.InstanceAt.ContainsKey("111111111111"));
-            Assert.Equal(3, ledger.Stats.WipedByReset);
-        }
-        else
-        {
-            Assert.Equal(ShipLocker, ledger.InstanceAt["111111111111"]);
-            Assert.Equal(2, ledger.Contents(ShipLocker).Single(c => c.ItemClass == "ammo_box_01").Loose!.Quantity);
         }
     }
 
     [Fact]
     public void A_ship_locker_filled_after_the_reset_keeps_what_was_put_in_it()
     {
-        var ledger = LedgerReplay.Run(
-            [
-                Move(Nowhere, ShipLocker, "rifle_01", geid: "111111111111", minute: 1),
-                Move(Nowhere, ShipLocker, "pistol_01", geid: "222222222222", minute: 9),
-            ],
-            [],
-            relocations: [Update(OtherStation, minute: 5)],
-            shipLockers: new HashSet<string> { ShipLocker.Key });
+        var ledger = RunAcross(
+            Reset(minute: 5),
+            Move(Nowhere, ShipLocker, "rifle_01", geid: "111111111111", minute: 1),
+            Move(Nowhere, ShipLocker, "pistol_01", geid: "222222222222", minute: 9));
 
         Assert.False(ledger.InstanceAt.ContainsKey("111111111111"));
         Assert.Equal(ShipLocker, ledger.InstanceAt["222222222222"]);
     }
 
     [Fact]
-    public void A_move_out_of_the_spawn_station_after_an_update_confirms_the_relocation()
+    public void An_item_the_reset_kept_reappears_when_a_line_moves_it()
     {
+        // The ledger no longer has a belief about it, so the move checks nothing.
         var ledger = RunAcross(
-            Update(OtherStation, minute: 5),
+            Reset(minute: 5),
             Move(Nowhere, Station, "armor_core_01", geid: "111111111111", minute: 1),
             Move(OtherStation, OnPlayer, "armor_core_01", geid: "111111111111", minute: 9));
 
-        var check = Assert.Single(ledger.Stats.PlacementChecks);
-        Assert.True(check.SamePlace);
-        Assert.Equal(12519617, check.BelievedMovedByUpdate);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["111111111111"]);
+        Assert.Empty(ledger.Stats.PlacementChecks);
     }
 
     [Fact]
-    public void A_class_level_move_after_an_update_finds_the_stack_at_the_spawn_station()
+    public void A_class_level_move_after_a_reset_finds_nothing_held_before_it()
     {
         var ledger = RunAcross(
-            Update(OtherStation, minute: 5),
+            Reset(minute: 5),
             Move(Nowhere, Station, "ammo_box_01", amount: 4, minute: 1),
-            Move(OtherStation, Crate, "ammo_box_01", amount: 3, minute: 9));
+            Move(Station, Crate, "ammo_box_01", amount: 3, minute: 9));
 
-        Assert.Equal(3, ledger.Stats.UnitsFromLoose);
-        Assert.DoesNotContain(ledger.Stats.Misses, m => m.Source == OtherStation);
+        Assert.Equal(0, ledger.Stats.UnitsFromLoose);
+        Assert.Contains(ledger.Stats.Misses, m => m.Source == Station);
+        Assert.Equal(3, ledger.Contents(Crate).Single().Loose!.Quantity);
     }
 
     // A04: an unnamed stack keeps how many of its units were inferred, so a named entity turning
@@ -953,33 +899,6 @@ public class LedgerReplayTests
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
-    public void Stacks_merged_by_an_update_keep_the_inferred_count_of_each_part(int namedArrivals)
-    {
-        // The update moves the station's three counted units and one guess onto the two counted
-        // units already at the spawn station. The merged stack still holds a single guess.
-        var moves = new List<MoveRecord>
-        {
-            Move(Nowhere, Crate, Magazine, geid: "G1", minute: 1),
-            Move(Nowhere, Crate, Magazine, geid: "G2", minute: 2),
-        };
-        moves.AddRange(Counted(Station, units: 3, minute: 3));
-        moves.AddRange(Counted(OtherStation, units: 2, minute: 4));
-        moves.Add(Unsourced(Station, units: 1, minute: 6));
-        for (var i = 1; i <= namedArrivals; i++)
-        {
-            moves.Add(Move(Crate, OtherStation, Magazine, geid: $"G{i}", minute: 30 + i));
-        }
-
-        var ledger = LedgerReplay.Run(moves, [], relocations: [Update(OtherStation, minute: 20)]);
-
-        Assert.Empty(ledger.Contents(Station));
-        Assert.Equal(4, ledger.Stats.RelocatedByUpdate);
-        AssertProvenanceOutcome(ledger, OtherStation, named: namedArrivals, loose: 5, reconciled: 1);
-    }
-
-    [Theory]
-    [InlineData(1)]
-    [InlineData(2)]
     public void Units_drawn_from_a_mixed_stack_on_the_player_leave_its_inferred_count_intact(int namedArrivals)
     {
         var moves = new List<MoveRecord>
@@ -1068,7 +987,7 @@ public class LedgerReplayTests
 
     private static string GroupsOf(LedgerReplay ledger, Holding at) =>
         string.Join(" | ", ledger.LooseIn(at, Magazine).Select(g =>
-            $"x{g.Quantity} confirmed={g.Confirmed} inferred={g.Inferred} risk={g.DuplicateRisk} update={g.MovedByUpdate}"));
+            $"x{g.Quantity} confirmed={g.Confirmed} inferred={g.Inferred} risk={g.DuplicateRisk}"));
 
     private static void AssertGroupsAddUp(LedgerReplay ledger, Holding at)
     {
@@ -1089,8 +1008,8 @@ public class LedgerReplayTests
         var ledger = Run([.. moves]);
 
         Assert.Equal(
-            "x10 confirmed=True inferred=False risk=False update= | x1 confirmed=True inferred=True risk=True update= | " +
-            "x1 confirmed=False inferred=False risk=False update=",
+            "x10 confirmed=True inferred=False risk=False | x1 confirmed=True inferred=True risk=True | " +
+            "x1 confirmed=False inferred=False risk=False",
             GroupsOf(ledger, TargetCrate));
         AssertGroupsAddUp(ledger, TargetCrate);
         var (_, _, loose) = Assert.Single(ledger.Contents(TargetCrate));
@@ -1109,7 +1028,7 @@ public class LedgerReplayTests
         var partial = Run([.. moves]);
 
         Assert.Equal(
-            "x1 confirmed=True inferred=True risk=False update= | x6 confirmed=True inferred=False risk=False update=",
+            "x1 confirmed=True inferred=True risk=False | x6 confirmed=True inferred=False risk=False",
             GroupsOf(partial, TargetCrate));
         AssertGroupsAddUp(partial, TargetCrate);
 
@@ -1118,33 +1037,7 @@ public class LedgerReplayTests
 
         Assert.Empty(complete.LooseIn(TargetCrate, Magazine));
         Assert.Empty(complete.Contents(TargetCrate));
-        Assert.Equal("x11 confirmed=True inferred=False risk=False update=", GroupsOf(complete, OtherStation));
-    }
-
-    [Fact]
-    public void An_update_merge_keeps_each_groups_flags_and_build()
-    {
-        var moves = new List<MoveRecord> { Move(Nowhere, Crate, Magazine, geid: "G1", minute: 1) };
-        moves.AddRange(Counted(Station, units: 3, minute: 3));
-        moves.AddRange(Counted(OtherStation, units: 2, minute: 4));
-        moves.Add(Unsourced(Station, units: 1, minute: 6));
-        var update = Update(OtherStation, minute: 20);
-
-        var merged = LedgerReplay.Run(moves, [], relocations: [update]);
-
-        Assert.Equal(
-            "x2 confirmed=True inferred=False risk=False update= | x3 confirmed=True inferred=False risk=False update=12519617 | " +
-            "x1 confirmed=True inferred=True risk=True update=12519617",
-            GroupsOf(merged, OtherStation));
-        AssertGroupsAddUp(merged, OtherStation);
-        Assert.Equal(12519617, merged.Contents(OtherStation).Single().Loose!.MovedByUpdate);
-
-        moves.Add(Move(Crate, OtherStation, Magazine, geid: "G1", minute: 31));
-        var reconciled = LedgerReplay.Run(moves, [], relocations: [update]);
-
-        Assert.Equal(
-            "x2 confirmed=True inferred=False risk=False update= | x3 confirmed=True inferred=False risk=False update=12519617",
-            GroupsOf(reconciled, OtherStation));
+        Assert.Equal("x11 confirmed=True inferred=False risk=False", GroupsOf(complete, OtherStation));
     }
 
     [Fact]
@@ -1157,7 +1050,7 @@ public class LedgerReplayTests
 
         Assert.Empty(ledger.LooseIn(OnPlayer, Magazine));
         Assert.Equal(
-            "x1 confirmed=True inferred=True risk=False update= | x2 confirmed=True inferred=False risk=False update=",
+            "x1 confirmed=True inferred=True risk=False | x2 confirmed=True inferred=False risk=False",
             GroupsOf(ledger, LedgerReplay.LostTrack));
         Assert.Equal(3, ledger.Stats.WornEvicted);
     }
@@ -1177,7 +1070,7 @@ public class LedgerReplayTests
 
         var firstSighting = Run([.. moves]);
 
-        Assert.Equal("x1 confirmed=True inferred=True risk=True update=", GroupsOf(firstSighting, TargetCrate));
+        Assert.Equal("x1 confirmed=True inferred=True risk=True", GroupsOf(firstSighting, TargetCrate));
 
         moves.Add(Move(ElsewhereStation, TargetCrate, Magazine, geid: "KNOWN", minute: 5));
         var ledger = Run([.. moves]);
@@ -1215,7 +1108,7 @@ public class LedgerReplayTests
             Assert.Throws<NotSupportedException>(() => view.Clear());
         }
 
-        Assert.Equal("x10 confirmed=True inferred=False risk=False update= | x1 confirmed=True inferred=True risk=True update=", before);
+        Assert.Equal("x10 confirmed=True inferred=False risk=False | x1 confirmed=True inferred=True risk=True", before);
         Assert.Equal(before, GroupsOf(ledger, TargetCrate));
         Assert.Equal(11, LooseCount(ledger, TargetCrate));
     }
@@ -1260,7 +1153,7 @@ public class LedgerReplayTests
             Assert.Throws<NotSupportedException>(attempt);
         }
 
-        Assert.Equal("x10 confirmed=True inferred=False risk=False update= | x1 confirmed=True inferred=True risk=True update=", before);
+        Assert.Equal("x10 confirmed=True inferred=False risk=False | x1 confirmed=True inferred=True risk=True", before);
         Assert.Equal(before, GroupsOf(ledger, TargetCrate));
         Assert.Equal(11, LooseCount(ledger, TargetCrate));
         Assert.Equal(11, ledger.LooseIn(TargetCrate, Magazine).Sum(g => g.Quantity));
@@ -1293,49 +1186,42 @@ public class LedgerReplayTests
 
         Assert.Equal(
             guessCreatedLast
-                ? "x2 confirmed=True inferred=False risk=False update="
-                : "x1 confirmed=True inferred=True risk=False update= | x1 confirmed=True inferred=False risk=False update=",
+                ? "x2 confirmed=True inferred=False risk=False"
+                : "x1 confirmed=True inferred=True risk=False | x1 confirmed=True inferred=False risk=False",
             GroupsOf(ledger, TargetCrate));
         AssertGroupsAddUp(ledger, TargetCrate);
-        Assert.Equal("x1 confirmed=True inferred=False risk=False update=", GroupsOf(ledger, OtherStation));
+        Assert.Equal("x1 confirmed=True inferred=False risk=False", GroupsOf(ledger, OtherStation));
     }
 
-    private static void AssertStackHeader(LedgerReplay ledger, Holding at, int minute, string arrivedBy, int? movedByUpdate)
+    private static void AssertStackHeader(LedgerReplay ledger, Holding at, int minute, string arrivedBy)
     {
         var (_, _, loose) = Assert.Single(ledger.Contents(at), c => c.ItemClass == Magazine);
         Assert.NotNull(loose);
         Assert.Equal(
-            (new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), arrivedBy, movedByUpdate),
-            (loose.Since, loose.ArrivedBy, loose.MovedByUpdate));
+            (new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), arrivedBy),
+            (loose.Since, loose.ArrivedBy));
     }
 
     [Fact]
-    public void The_stack_header_follows_arrivals_and_update_merges_but_not_a_withdrawn_group()
+    public void The_stack_header_follows_arrivals_but_not_a_withdrawn_group()
     {
-        // The header is the whole-stack date, arrival and update that a listing and an update
-        // decide on. An arrival re-dates it; an update merge keeps the newer of the two stacks'
-        // and stamps the build; a withdrawal leaves it as it was, even when the group that set
-        // it is gone (inherited from before L05: review objection L05-R2, registered as D03).
+        // The header is the whole-stack date and arrival that a listing decides on. An arrival
+        // re-dates it; a withdrawal leaves it as it was, even when the group that set it is gone
+        // (inherited from before L05: review objection L05-R2, registered as D03).
         var moves = new List<MoveRecord>();
         moves.AddRange(Counted(Station, units: 3, minute: 3));
         moves.AddRange(Counted(OtherStation, units: 2, minute: 4));
         moves.Add(Move(EmptyStation, Station, Magazine, amount: 1, minute: 6, moveType: "Store"));
 
         var added = Run([.. moves]);
-        AssertStackHeader(added, Station, minute: 6, arrivedBy: "Store", movedByUpdate: null);
-        AssertStackHeader(added, OtherStation, minute: 4, arrivedBy: "Move", movedByUpdate: null);
+        AssertStackHeader(added, Station, minute: 6, arrivedBy: "Store");
+        AssertStackHeader(added, OtherStation, minute: 4, arrivedBy: "Move");
 
-        var update = Update(OtherStation, minute: 20);
-        var merged = LedgerReplay.Run(moves, [], relocations: [update]);
-        AssertStackHeader(merged, OtherStation, minute: 6, arrivedBy: "Store", movedByUpdate: 12519617);
+        moves.Add(Move(Station, Crate, Magazine, amount: 1, minute: 30));
+        var withdrawn = Run([.. moves]);
 
-        moves.Add(Move(OtherStation, Crate, Magazine, amount: 1, minute: 30));
-        var withdrawn = LedgerReplay.Run(moves, [], relocations: [update]);
-
-        Assert.Equal(
-            "x2 confirmed=True inferred=False risk=False update= | x3 confirmed=True inferred=False risk=False update=12519617",
-            GroupsOf(withdrawn, OtherStation));
-        AssertStackHeader(withdrawn, OtherStation, minute: 6, arrivedBy: "Store", movedByUpdate: 12519617);
+        Assert.Equal("x3 confirmed=True inferred=False risk=False", GroupsOf(withdrawn, Station));
+        AssertStackHeader(withdrawn, Station, minute: 6, arrivedBy: "Store");
     }
 
     /// <summary>
@@ -1364,8 +1250,8 @@ public class LedgerReplayTests
         // structured twin, A_listing_still_uses_up_the_stored_units_counted_one_by_one (L05-R10),
         // checks the same quantities and flags field by field, with the replay's counters.
         var beforeListing = Run([.. moves]);
-        Assert.Equal("x10 confirmed=True inferred=False risk=False update=", GroupsOf(beforeListing, OnPlayer));
-        AssertStackHeader(beforeListing, OnPlayer, minute: 4, arrivedBy: "Carry", movedByUpdate: null);
+        Assert.Equal("x10 confirmed=True inferred=False risk=False", GroupsOf(beforeListing, OnPlayer));
+        AssertStackHeader(beforeListing, OnPlayer, minute: 4, arrivedBy: "Carry");
 
         var ledger = LedgerReplay.Run(moves, [], [Enumerated(minute: 10)]);
 
@@ -1373,24 +1259,7 @@ public class LedgerReplayTests
         Assert.Empty(ledger.LooseIn(LedgerReplay.LostTrack, Magazine));
         Assert.Equal(10, ledger.Stats.CarriedUsedUp);
         Assert.Equal(0, ledger.Stats.WornEvicted);
-        Assert.Equal("x1 confirmed=True inferred=False risk=False update=", GroupsOf(ledger, OtherStation));
-    }
-
-    [Fact]
-    public void An_update_still_leaves_behind_a_stored_stack_whose_carried_unit_has_left()
-    {
-        // Astra's S2 probe (revue-01). Inherited behaviour, pinned as it is: the Carry header
-        // keeps the ten Stored units on the player through the update, while the unit that left
-        // is moved with the station it went to (L05-R2, registered as D03).
-        var ledger = LedgerReplay.Run(StoredStackWhoseCarriedUnitLeft(), [], relocations: [Update(Station, minute: 20)]);
-
-        // GroupsOf strings are compared whole, as in S1 above; the structured twin is
-        // An_update_still_leaves_the_stored_units_on_the_player_counted_one_by_one (L05-R10).
-        Assert.Equal("x10 confirmed=True inferred=False risk=False update=", GroupsOf(ledger, OnPlayer));
-        AssertStackHeader(ledger, OnPlayer, minute: 4, arrivedBy: "Carry", movedByUpdate: null);
-        Assert.Equal("x1 confirmed=True inferred=False risk=False update=12519617", GroupsOf(ledger, Station));
-        Assert.Empty(ledger.LooseIn(OtherStation, Magazine));
-        Assert.Equal(1, ledger.Stats.RelocatedByUpdate);
+        Assert.Equal("x1 confirmed=True inferred=False risk=False", GroupsOf(ledger, OtherStation));
     }
 
     // L05-R10 (iteration 03): structured twins of S1 and S2. They pin the same inherited
@@ -1399,12 +1268,11 @@ public class LedgerReplayTests
     // unit never leaves) differs in one parameter: there the Carry header is accurate, so a fix
     // of D03 must leave it as it is, while the case where the unit left must change.
 
-    private static void AssertGroup(
-        LedgerReplay.Anonymous group, int quantity, bool confirmed, bool inferred, int? movedByUpdate)
+    private static void AssertGroup(LedgerReplay.Anonymous group, int quantity, bool confirmed, bool inferred)
     {
         Assert.Equal(
-            (quantity, confirmed, inferred, false, movedByUpdate),
-            (group.Quantity, group.Confirmed, group.Inferred, group.DuplicateRisk, group.MovedByUpdate));
+            (quantity, confirmed, inferred, false),
+            (group.Quantity, group.Confirmed, group.Inferred, group.DuplicateRisk));
     }
 
     private static List<MoveRecord> StoredStackWithCarriedUnit(bool carriedUnitLeft)
@@ -1424,61 +1292,28 @@ public class LedgerReplayTests
         var beforeListing = Run([.. moves]);
         var held = beforeListing.LooseIn(OnPlayer, Magazine);
         Assert.Equal(carriedUnitLeft ? 1 : 2, held.Count);
-        AssertGroup(held[0], quantity: 10, confirmed: true, inferred: false, movedByUpdate: null);
-        if (!carriedUnitLeft) AssertGroup(held[1], quantity: 1, confirmed: false, inferred: false, movedByUpdate: null);
+        AssertGroup(held[0], quantity: 10, confirmed: true, inferred: false);
+        if (!carriedUnitLeft) AssertGroup(held[1], quantity: 1, confirmed: false, inferred: false);
         Assert.Equal("Carry", beforeListing.Contents(OnPlayer).Single().Loose!.ArrivedBy);
 
-        // L05-R15 (iteration 04): the header's date and update as well, the two other fields
-        // AssertStackHeader checks in S1, so that a fix of D03 changing only one of them shows here.
+        // L05-R15 (iteration 04): the header's date as well, the other field AssertStackHeader
+        // checks in S1, so that a fix of D03 changing only one of them shows here.
         var header = beforeListing.Contents(OnPlayer).Single().Loose!;
         Assert.Equal(new DateTimeOffset(2026, 7, 16, 12, 4, 0, TimeSpan.Zero), header.Since);
-        Assert.Null(header.MovedByUpdate);
 
         var ledger = LedgerReplay.Run(moves, [], [Enumerated(minute: 10)]);
 
         Assert.Equal(carriedUnitLeft ? 10 : 11, ledger.Stats.CarriedUsedUp);
         Assert.Equal(0, ledger.Stats.WornEvicted);
-        Assert.Equal(0, ledger.Stats.RelocatedByUpdate);
         Assert.Empty(ledger.Contents(OnPlayer));
         Assert.Empty(ledger.LooseIn(LedgerReplay.LostTrack, Magazine));
 
         var left = ledger.LooseIn(OtherStation, Magazine);
         Assert.Equal(carriedUnitLeft ? 1 : 0, left.Count);
-        if (carriedUnitLeft) AssertGroup(left[0], quantity: 1, confirmed: true, inferred: false, movedByUpdate: null);
+        if (carriedUnitLeft) AssertGroup(left[0], quantity: 1, confirmed: true, inferred: false);
 
         // Every one of the eleven units is accounted for: used up, or at the station it went to.
         Assert.Equal(11, ledger.Stats.CarriedUsedUp + left.Sum(g => g.Quantity));
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void An_update_still_leaves_the_stored_units_on_the_player_counted_one_by_one(bool carriedUnitLeft)
-    {
-        var ledger = LedgerReplay.Run(
-            StoredStackWithCarriedUnit(carriedUnitLeft), [], relocations: [Update(Station, minute: 20)]);
-
-        var held = ledger.LooseIn(OnPlayer, Magazine);
-        Assert.Equal(carriedUnitLeft ? 1 : 2, held.Count);
-        AssertGroup(held[0], quantity: 10, confirmed: true, inferred: false, movedByUpdate: null);
-        if (!carriedUnitLeft) AssertGroup(held[1], quantity: 1, confirmed: false, inferred: false, movedByUpdate: null);
-        Assert.Equal("Carry", ledger.Contents(OnPlayer).Single().Loose!.ArrivedBy);
-
-        // L05-R15 (iteration 04): the header's date and update as well, as AssertStackHeader checks
-        // them in S2: the update left the stack behind and did not stamp it.
-        var header = ledger.Contents(OnPlayer).Single().Loose!;
-        Assert.Equal(new DateTimeOffset(2026, 7, 16, 12, 4, 0, TimeSpan.Zero), header.Since);
-        Assert.Null(header.MovedByUpdate);
-
-        Assert.Equal(carriedUnitLeft ? 1 : 0, ledger.Stats.RelocatedByUpdate);
-        Assert.Equal(0, ledger.Stats.CarriedUsedUp);
-        Assert.Equal(0, ledger.Stats.WornEvicted);
-        Assert.Empty(ledger.LooseIn(OtherStation, Magazine));
-
-        var atSpawn = ledger.LooseIn(Station, Magazine);
-        Assert.Equal(carriedUnitLeft ? 1 : 0, atSpawn.Count);
-        if (carriedUnitLeft) AssertGroup(atSpawn[0], quantity: 1, confirmed: true, inferred: false, movedByUpdate: 12519617);
-
-        Assert.Equal(11, held.Sum(g => g.Quantity) + atSpawn.Sum(g => g.Quantity));
-    }
 }

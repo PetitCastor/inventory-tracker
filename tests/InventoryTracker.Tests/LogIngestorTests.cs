@@ -901,7 +901,7 @@ public sealed class LogIngestorTests : IDisposable
     ];
 
     [Fact]
-    public void A_character_reset_moves_a_stored_item_to_the_home_location_the_player_chose()
+    public void A_character_reset_clears_every_item_held_before_it()
     {
         Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
         Backup(12519617, "26 Aug 26 (20 30 32)", ResetThenSpawnAtArea18());
@@ -909,19 +909,14 @@ public sealed class LogIngestorTests : IDisposable
 
         var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
         var update = Assert.Single(resolver.Updates);
-        var holding = Assert.Single(resolver.ResolveAll());
 
         Assert.True(update.CharacterReset);
         Assert.Equal(DateTimeOffset.Parse("2026-08-27T00:37:38.910Z"), update.ResetAt);
-        Assert.Equal("2273540638", holding.Chain[^1].Key);
-        // Where the reset took it is known; that it kept it is not, until a move sees it.
-        Assert.Equal(0.5, holding.Score, precision: 3);
-        Assert.True(holding.ToConfirm);
-        Assert.Contains(holding.Caveats, c => c.StartsWith("moved here by the character reset of 2026-08-27 (game build 12519617)"));
+        Assert.Empty(resolver.ResolveAll());
     }
 
     [Fact]
-    public void A_character_reset_reports_where_it_took_the_items_from()
+    public void A_character_reset_reports_how_many_items_it_cleared()
     {
         Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
         Backup(12519617, "26 Aug 26 (20 30 32)", ResetThenSpawnAtArea18());
@@ -932,34 +927,7 @@ public sealed class LogIngestorTests : IDisposable
         Assert.Equal(12519617, reset.Build);
         Assert.Equal(DateTimeOffset.Parse("2026-08-27T00:37:38.910Z"), reset.ResetAt);
         Assert.Contains("Area18", reset.Home);
-        var origin = Assert.Single(reset.From);
-        Assert.Contains("Lorville", origin.Place);
-        Assert.Equal(1, origin.Units);
-        Assert.Equal(1, reset.Moved);
-    }
-
-    [Fact]
-    public void A_character_reset_empties_other_stations_even_when_the_home_is_where_the_player_logged_out()
-    {
-        // The multitool is stored at Lorville, then the player flies to Area18 and logs out
-        // there. The reset's new home is Area18 again: the spawn says nothing new, but the
-        // reset still gathers Lorville's storage into it.
-        Backup(12344265, "04 Aug 26 (10 17 03)",
-        [
-            .. ConfirmedStoreAtLorville(),
-            "<2026-08-04T10:30:00.000Z> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
-            "Landing [4005457614] -> [2273540638]. Location [4005457614] -> [2273540638]. Pending [0]",
-        ]);
-        Backup(12519617, "26 Aug 26 (20 30 32)", ResetThenSpawnAtArea18());
-        new LogIngestor(_db, _dir).IngestAll();
-
-        var resolver = HoldingResolver.Load(_db, asOf: new DateTimeOffset(2026, 8, 28, 0, 0, 0, TimeSpan.Zero));
-        var update = Assert.Single(resolver.Updates);
-        var holding = Assert.Single(resolver.ResolveAll());
-
-        Assert.False(resolver.MovedThePlayer(update));
-        Assert.True(update.CharacterReset);
-        Assert.Equal("2273540638", holding.Chain[^1].Key);
+        Assert.Equal(1, reset.Cleared);
     }
 
     [Fact]

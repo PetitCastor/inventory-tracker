@@ -35,8 +35,8 @@
     </p>
 }
 
-@* A character reset moved everything without a log line; the tracker has followed, and says
-   so once, because the station view would otherwise just look rearranged. The popup stays
+@* A character reset starts the player over without a log line; the tracker has started over
+   too, and says so once, because the pages would otherwise just look emptied. The popup stays
    until the user closes it, and closing it is remembered in config.json. *@
 @if (UnreadReset() is { } reset)
 {
@@ -46,28 +46,14 @@
                     @onclick="() => DismissReset(reset)">&times;</button>
             <h2 id="reset-popup-title">Character reset</h2>
             <p>
-                On @FormatDate(reset.ResetAt), with @GameVersionCatalog.Describe(reset.Build), the game moved
-                your stored items to your new home location, <strong>@reset.Home</strong>.
+                On @FormatDate(reset.ResetAt), with @GameVersionCatalog.Describe(reset.Build), you reset your
+                character@(reset.Home is { } home ? $" and chose {home} as your home location" : "").
             </p>
-            @if (reset.Moved > 0)
-            {
-                <p>The tracker moved @reset.Moved.ToString("N0") item(s) there with them:</p>
-                <ul>
-                    @foreach (var from in reset.From)
-                    {
-                        <li>@from.Units.ToString("N0") from @from.Place to @reset.Home</li>
-                    }
-                </ul>
-                <p>
-                    A reset does not keep everything, and the logs do not say what it left behind. These
-                    items are marked <span class="badge-unconfirmed">to confirm</span> until you move them
-                    in game.
-                </p>
-            }
-            else
-            {
-                <p>None of the items the tracker knew about were stored anywhere else.</p>
-            }
+            <p>
+                The tracker started over with it@(reset.Cleared > 0
+                    ? $" and cleared the {reset.Cleared:N0} item(s) it knew about before the reset"
+                    : ""). It now shows only what the logs have shown since.
+            </p>
             <div class="popup-actions">
                 <button type="button" autofocus @onclick="() => DismissReset(reset)">OK</button>
             </div>
@@ -179,9 +165,7 @@ else if (health.Moves == 0)
 @* Quick filters for whatever the page is showing: search results, or the level of the station
    being browsed. A category with nothing in it is not offered, except the one already chosen,
    so it can still be turned off. *@
-@* "To confirm" narrows whichever category is chosen, rather than being one more category: it
-   is offered only while something on the page needs checking, or while it is on. *@
-@{ var categoryCounts = CategoryCounts(); var toConfirmCount = ToConfirmCount(); }
+@{ var categoryCounts = CategoryCounts(); }
 @if (categoryCounts.Count > 0 || _category is not null)
 {
     <div class="chips" role="group" aria-label="Filter by category">
@@ -196,14 +180,6 @@ else if (health.Moves == 0)
                 @ItemCategories.Label(category) <span class="chip-count">@count</span>
             </button>
         }
-        @if (toConfirmCount > 0 || _toConfirmOnly)
-        {
-            <button type="button" class="chip @(_toConfirmOnly ? "active" : "")" aria-pressed="@_toConfirmOnly"
-                    title="Moved here by a character reset and not seen since: check them in game"
-                    @onclick="() => _toConfirmOnly = !_toConfirmOnly">
-                To confirm <span class="chip-count">@toConfirmCount</span>
-            </button>
-        }
     </div>
 }
 
@@ -214,7 +190,7 @@ else if (health.Moves == 0)
         <h2>Search results <span class="badge-count">@results.Count</span></h2>
         @if (results.Count == 0)
         {
-            <p class="empty">None of your items matches "@_query"@(_category is { } c ? $" in {ItemCategories.Label(c)}" : "")@(_toConfirmOnly ? " among those to confirm" : "").</p>
+            <p class="empty">None of your items matches "@_query"@(_category is { } c ? $" in {ItemCategories.Label(c)}" : "").</p>
         }
         else
         {
@@ -240,10 +216,6 @@ else if (health.Moves == 0)
                             else
                             {
                                 @h.Display
-                            }
-                            @if (h.Holding.ToConfirm)
-                            {
-                                @ToConfirmBadge
                             }
                         </td>
                         <td class="qty">@h.Holding.Quantity&times;</td>
@@ -343,10 +315,7 @@ else
                 </div>
             }
 
-            var shown = _direct
-                .Where(r => _category is not { } c || r.Categories.Contains(c))
-                .Where(r => !_toConfirmOnly || r.ToConfirm)
-                .ToList();
+            var shown = _direct.Where(r => _category is not { } c || r.Categories.Contains(c)).ToList();
             <section class="place">
                 <h2>Local Inventory <span class="badge-count">@shown.Sum(r => r.Quantity)</span></h2>
                 @if (_direct.Count == 0)
@@ -355,9 +324,7 @@ else
                 }
                 else if (shown.Count == 0)
                 {
-                    <p class="empty">
-                        Nothing@(_category is { } chosen ? $" in {ItemCategories.Label(chosen)}" : "")@(_toConfirmOnly ? " to confirm" : "") here.
-                    </p>
+                    <p class="empty">Nothing in @ItemCategories.Label(_category!.Value) here.</p>
                 }
                 else
                 {
@@ -400,12 +367,7 @@ else
         bool Unnamed,
         IReadOnlyList<string> Caveats,
         IReadOnlySet<ItemCategory> Categories,
-        ContainerRow? Opens = null)
-    {
-        /// <summary>Some unit in it, or in what it holds, was carried here by a character reset
-        /// and not seen since: see <see cref="ItemHolding.ToConfirm"/>.</summary>
-        public bool ToConfirm { get; init; }
-    }
+        ContainerRow? Opens = null);
 
     /// <summary>
     /// Something at the level being browsed that can be opened: a container, or an item with
@@ -429,12 +391,6 @@ else
 
     /// <summary>The quick filter chosen, or null for everything. Kept when the station changes.</summary>
     private ItemCategory? _category;
-
-    /// <summary>Units at the level being browsed, at any depth below it, that are to confirm.</summary>
-    private int _levelToConfirm;
-
-    /// <summary>Only what a character reset carried and nothing has seen since. Kept when the station changes.</summary>
-    private bool _toConfirmOnly;
 
     /// <summary>The containers entered at the selected station, outermost first.</summary>
     private List<ContainerRow> _path = [];
@@ -571,7 +527,6 @@ else
         {
             _direct = [];
             _levelCounts = [];
-            _levelToConfirm = 0;
             return;
         }
 
@@ -618,9 +573,6 @@ else
             .Where(h => !IsPartBelow(h))
             .GroupBy(h => h.Holding.Category)
             .ToDictionary(g => g.Key, g => g.Sum(h => h.Holding.Holding.Quantity));
-        _levelToConfirm = level
-            .Where(h => !IsPartBelow(h) && h.Holding.Holding.ToConfirm)
-            .Sum(h => h.Holding.Holding.Quantity);
 
         var atLevel = level.Where(h => h.Inside.Count == depth).Select(h => h.Holding).ToList();
         var byGeid = atLevel
@@ -653,11 +605,8 @@ else
 
                 // An item known only through its parts has nothing else to go by.
                 if (categories.Count == 0) categories = inside.Select(h => h.Category).ToHashSet();
-
-                // To confirm when it, or anything in it, is: the filter then leads to it.
-                var toConfirm = own?.Holding.ToConfirm == true || inside.Any(h => h.Holding.ToConfirm);
                 return own is not null
-                    ? Pool([own])[0] with { Opens = opens, Categories = categories, ToConfirm = toConfirm }
+                    ? Pool([own])[0] with { Opens = opens, Categories = categories }
                     : new Row(
                         opens.Label,
                         opens.Label,
@@ -667,7 +616,7 @@ else
                         false,
                         inside.SelectMany(h => h.Holding.Caveats).Distinct().ToList(),
                         categories,
-                        opens) { ToConfirm = toConfirm };
+                        opens);
             })
             .ToList();
 
@@ -749,10 +698,7 @@ else
                 g.Min(h => h.Holding.Confidence),
                 g.First().Name.Match == NameMatch.None,
                 g.SelectMany(h => h.Holding.Caveats).Distinct().ToList(),
-                new HashSet<ItemCategory> { g.First().Category })
-            {
-                ToConfirm = g.Any(h => h.Holding.ToConfirm),
-            })
+                new HashSet<ItemCategory> { g.First().Category }))
             .OrderBy(r => r.Display, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
@@ -785,10 +731,6 @@ else
                     {
                         <span class="unnamed" title="Not found in the wiki catalogue">?</span>
                     }
-                    @if (row.ToConfirm)
-                    {
-                        @ToConfirmBadge
-                    }
                 </td>
                 <td class="qty">@row.Quantity&times;</td>
                 <td class="when" title="@row.LastMove.ToString("u")">@TimeAgo.Format(row.LastMove)</td>
@@ -815,7 +757,6 @@ else
     private List<NamedHolding> SearchResults() =>
         SearchMatches()
             .Where(h => _category is not { } c || h.Category == c)
-            .Where(h => !_toConfirmOnly || h.Holding.ToConfirm)
             .OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase)
             .ThenByDescending(h => h.Holding.LastMove)
             .ToList();
@@ -836,22 +777,6 @@ else
         string.IsNullOrWhiteSpace(_query)
             ? _levelCounts
             : SearchMatches().GroupBy(h => h.Category).ToDictionary(g => g.Key, g => g.Count());
-
-    /// <summary>
-    /// How much of what the page could show is to confirm, counted as <see cref="CategoryCounts"/>
-    /// counts: rows while searching, units otherwise. Within the chosen category, since the
-    /// two filters combine.
-    /// </summary>
-    private int ToConfirmCount() =>
-        string.IsNullOrWhiteSpace(_query)
-            ? _category is { } c
-                ? _direct.Where(r => r.ToConfirm && r.Categories.Contains(c)).Sum(r => r.Quantity)
-                : _levelToConfirm
-            : SearchMatches().Count(h => h.Holding.ToConfirm && (_category is not { } sc || h.Category == sc));
-
-    /// <summary>The mark of an item a character reset carried and nothing has seen since.</summary>
-    private RenderFragment ToConfirmBadge => @<span class="badge-unconfirmed badge-confirm"
-        title="Moved here by a character reset, which does not keep everything. Check it is there in game: moving it confirms it.">to confirm</span>;
 
     /// <summary>True when the not-yet-built banner or one of the three IngestHealth banners
     /// above already accounts for an empty page — used to suppress the generic "no locations
