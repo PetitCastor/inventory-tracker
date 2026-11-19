@@ -173,21 +173,28 @@ public sealed class HoldingResolver
             .Concat(wornContainers)
             .ToHashSet(StringComparer.Ordinal);
 
-        // A character reset clears everything the ledger held, whether or not the logs name the
-        // home location chosen. An update without a reset is only weighed: nothing says it moved
-        // anything. In the local corpus a spawn somewhere new without a reset (12572603, Orison
-        // after logging out at ARC-L1) is just where the player was sent, not where their storage
-        // went.
+        // A character reset gathers everything the player owns at the home location they chose,
+        // the first place they spawn at afterwards. An update without a reset is only weighed:
+        // nothing says it moved anything. In the local corpus a spawn somewhere new without a reset
+        // (12572603, Orison after logging out at ARC-L1) is just where the player was sent, not
+        // where their storage went.
         var resets = updates
             .Where(u => u.CharacterReset)
-            .Select(u => new LedgerReplay.Reset(u.At, u.Build));
+            .Select(u => new LedgerReplay.Reset(
+                u.At, u.Build, u.Spawn is { } home ? new Holding(InventoryKind.Location, home) : null, u.ResetAt ?? u.At));
 
-        _ledger = LedgerReplay.Run(moves, worn, enumerations, carried, resets);
+        // A reset empties a ship's lockers too, which only their class tells apart from any box.
+        var shipLockers = containers
+            .Where(kv => ShipStorage.TryShipClass(kv.Value.ClassName, out _))
+            .Select(kv => kv.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        _ledger = LedgerReplay.Run(moves, worn, enumerations, carried, resets, shipLockers);
         _survival = MeasureSurvival(_ledger.Stats.PlacementChecks, updates);
     }
 
     /// <summary>
-    /// Each character reset and what it cleared, newest first, with places named as the player
+    /// Each character reset and what it gathered, newest first, with places named as the player
     /// knows them.
     /// </summary>
     public IReadOnlyList<CharacterResetReport> CharacterResets => _characterResets ??= ReportResets();
@@ -200,7 +207,8 @@ public sealed class HoldingResolver
             {
                 var update = _updates.First(u => u.Build == r.Build);
                 return new CharacterResetReport(
-                    update.ResetAt ?? r.At, r.Build, update.Spawn is { } home ? PlaceLabel(home) : null, r.Wiped);
+                    update.ResetAt ?? r.At, r.Build, update.Spawn is { } home ? PlaceLabel(home) : null,
+                    r.Gathered, r.Wiped);
             })
             .OrderByDescending(r => r.ResetAt)
             .ToList();
@@ -402,8 +410,8 @@ public sealed class HoldingResolver
         }
 
         // A game update played since this placement is the one thing observed to invalidate
-        // one. A character reset clears the ledger, so nothing placed before one is still here;
-        // any other update is weighed by how often the ledger's belief across it held. Across
+        // one. A character reset re-dates everything it gathers at the home location, so nothing
+        // placed before one is weighed by it; any other update is weighed by how often the ledger's belief across it held. Across
         // several, the least trustworthy one decides.
         var crossed = _updates.Where(u => u.At > since && u.At <= _asOf).ToList();
         if (crossed.Count > 0)
@@ -435,7 +443,7 @@ public sealed class HoldingResolver
               $"of {record.Checked} items checked were not where the ledger had them"
             : update.CharacterReset
                 ? $"placed before the character reset of {update.ResetAt:yyyy-MM-dd} (game build {update.Build}), " +
-                  "which cleared everything held before it"
+                  "after which the logs did not say where the player's items went"
             : update.Spawn is null
                 ? $"placed before the game update to build {update.Build}, which came without a character reset — " +
                   "the logs do not say where the player spawned after it, and no later move has checked it"

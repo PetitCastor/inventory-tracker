@@ -35,8 +35,8 @@
     </p>
 }
 
-@* A character reset starts the player over without a log line; the tracker has started over
-   too, and says so once, because the pages would otherwise just look emptied. The popup stays
+@* A character reset gathers everything at the new home without a log line; the tracker has
+   followed, and says so once, because the pages would otherwise just look rearranged. The popup stays
    until the user closes it, and closing it is remembered in config.json. *@
 @if (UnreadReset() is { } reset)
 {
@@ -49,11 +49,20 @@
                 On @FormatDate(reset.ResetAt), with @GameVersionCatalog.Describe(reset.Build), you reset your
                 character@(reset.Home is { } home ? $" and chose {home} as your home location" : "").
             </p>
-            <p>
-                The tracker started over with it@(reset.Cleared > 0
-                    ? $" and cleared the {reset.Cleared:N0} item(s) it knew about before the reset"
-                    : ""). It now shows only what the logs have shown since.
-            </p>
+            @if (reset.Home is { } gatheredAt)
+            {
+                <p>
+                    The game brought everything you owned back to @gatheredAt. The tracker did the same:
+                    @reset.Gathered.ToString("N0") item(s) are now there, dated by the reset.
+                </p>
+            }
+            else
+            {
+                <p>
+                    The logs do not say where your items went, so the tracker cleared the
+                    @reset.Cleared.ToString("N0") item(s) it knew about. It shows them again once you move them.
+                </p>
+            }
             <div class="popup-actions">
                 <button type="button" autofocus @onclick="() => DismissReset(reset)">OK</button>
             </div>

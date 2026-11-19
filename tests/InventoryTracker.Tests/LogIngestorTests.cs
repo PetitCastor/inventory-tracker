@@ -901,7 +901,7 @@ public sealed class LogIngestorTests : IDisposable
     ];
 
     [Fact]
-    public void A_character_reset_clears_every_item_held_before_it()
+    public void A_character_reset_gathers_a_stored_item_at_the_home_location_the_player_chose()
     {
         Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
         Backup(12519617, "26 Aug 26 (20 30 32)", ResetThenSpawnAtArea18());
@@ -912,11 +912,16 @@ public sealed class LogIngestorTests : IDisposable
 
         Assert.True(update.CharacterReset);
         Assert.Equal(DateTimeOffset.Parse("2026-08-27T00:37:38.910Z"), update.ResetAt);
-        Assert.Empty(resolver.ResolveAll());
+        var holding = Assert.Single(resolver.ResolveAll());
+        Assert.Equal("2273540638", holding.Chain[^1].Key);
+        Assert.Equal(1.0, holding.Score, precision: 3);
+        Assert.Equal(update.ResetAt, holding.LastMove);
+        Assert.Equal(LedgerReplay.ResetArrival, holding.LastMoveType);
+        Assert.Empty(holding.Caveats);
     }
 
     [Fact]
-    public void A_character_reset_reports_how_many_items_it_cleared()
+    public void A_character_reset_reports_how_many_items_it_gathered()
     {
         Backup(12344265, "04 Aug 26 (10 17 03)", ConfirmedStoreAtLorville());
         Backup(12519617, "26 Aug 26 (20 30 32)", ResetThenSpawnAtArea18());
@@ -927,7 +932,7 @@ public sealed class LogIngestorTests : IDisposable
         Assert.Equal(12519617, reset.Build);
         Assert.Equal(DateTimeOffset.Parse("2026-08-27T00:37:38.910Z"), reset.ResetAt);
         Assert.Contains("Area18", reset.Home);
-        Assert.Equal(1, reset.Cleared);
+        Assert.Equal((1, 0), (reset.Gathered, reset.Cleared));
     }
 
     [Fact]

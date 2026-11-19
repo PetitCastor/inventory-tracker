@@ -8,7 +8,7 @@ Find your items in **Star Citizen**. Inventory Tracker reads the game's logs to 
 
 | View | What you can do |
 |---|---|
-| **Locations** | Search items, view quantities, filter by system and station, and browse containers and nested contents. Name or confirm unresolved stations. |
+| **Locations** | Search items, view quantities, filter by system and station, and browse containers and nested contents. Name or confirm unresolved stations. After a character reset, see everything gathered at your new home location. |
 | **Ships** | View inferred ship-locker contents and, when available, the ship's last retrieval location and time. |
 | **Dropped** | Find recorded ground drops, grouped by location. |
 | **Item details** | See an item's estimated location, last move, confidence and movement history. |
@@ -33,7 +33,7 @@ To change the log folder or wipe date later, open **Settings** and use **Save an
 
 - **No starting inventory.** Items appear only after a usable log event identifies them. Missing logs or a wipe cutoff can leave items out.
 - **Locations are estimates.** The game does not log every movement. Positions may be stale, inferred or unconfirmed. Confidence reflects available evidence, not a guarantee that an item is still there.
-- **A character reset starts the tracker over.** When you reset your character, the tracker clears everything it knew about and shows only what the logs show from then on. It tells you once in a popup. An item the reset kept reappears the first time you move it. A patch without a reset clears nothing.
+- **Character resets are followed, other patch moves are not.** A character reset brings everything you own back to the home location you pick: station storage, ship lockers, dropped items and what you wore. The game logs none of it. The tracker detects the reset, gathers the items it knows about there, dated by the reset, and tells you once in a popup. Spawning somewhere new without a reset moves nothing.
 - **Very large multi-item moves can be cut short.** Game.log truncates long lines, so moving about 25 items or more at once can leave some of them unnamed. A warning on **Locations** reports log lines that could not be fully read.
 - **Ships are grouped by model.** Lockers from multiple ships of the same model may appear together; the logs cannot distinguish individual ships.
 - **Ground drops are search leads.** Items can despawn without a log event. Drops from holsters or other equipment slots do not appear in **Dropped**.
