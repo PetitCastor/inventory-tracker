@@ -3,27 +3,29 @@
 @inject InventoryTracker.App.TrackerState State
 @inject NavigationManager Nav
 
-<header>
-    <nav>
-        <a href="" class="brand"><img src="favicon.ico" alt="" class="brand-icon" />Inventory Tracker</a>
-        <NavLink href="" Match="NavLinkMatch.All">Locations</NavLink>
-        <NavLink href="ships">Ships</NavLink>
-        <NavLink href="dropped">Dropped</NavLink>
-        <NavLink href="settings">Settings</NavLink>
-        @* The build of the newest log read, so it is the game the inventory below was last seen in. *@
-        @if (State.Current.Resolver?.LatestBuild is { } build)
-        {
-            <span class="game-version" title="Game build of the newest log read">
-                @InventoryTracker.Ingest.GameVersionCatalog.Describe(build)
-            </span>
-        }
-        <ThemeToggle />
-    </nav>
-</header>
+@* A desktop app's frame: navigation down the left, the page scrolling on its own beside it,
+   and a status bar along the bottom that stays put. *@
+<div class="app-shell">
+    <AppSidebar />
 
-<main>
-    @Body
-</main>
+    <div class="app-body">
+        <main>
+            @Body
+        </main>
+
+        <footer class="status-bar">
+            <StatusBar />
+            @* The build of the newest log read, so it is the game the inventory was last seen in. *@
+            @if (State.Current.Resolver?.LatestBuild is { } build)
+            {
+                <span class="status-item game-version" title="Game build of the newest log read">
+                    @InventoryTracker.Ingest.GameVersionCatalog.Describe(build)
+                </span>
+            }
+            <ThemeToggle />
+        </footer>
+    </div>
+</div>
 
 @* Not over the setup wizard: a first run has no news, and records its version instead. *@
 @if (Options.SetupComplete)

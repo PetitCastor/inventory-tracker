@@ -1,0 +1,106 @@
+@rendermode InteractiveServer
+@implements IDisposable
+@inject TrackerState State
+
+@* The app's main navigation, down the left of the window. Interactive so the counts follow
+   the log as it is read, and so it can open the command palette (also on Ctrl+K, which
+   Root.razor turns into a click on the "Go to" button). *@
+<aside class="sidebar">
+    <a href="" class="brand"><img src="favicon.ico" alt="" class="brand-icon" /><span class="brand-name">Inventory Tracker</span></a>
+
+    <button type="button" id="palette-trigger" class="palette-trigger" title="Go to a station or page (Ctrl+K)"
+            aria-label="Go to a station or page" aria-keyshortcuts="Control+K" @onclick="OpenPalette">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="6.5" />
+            <path d="m20 20-4.35-4.35" stroke-linecap="round" />
+        </svg>
+        <span class="nav-label">Go to…</span>
+        <kbd>Ctrl K</kbd>
+    </button>
+
+    <nav class="side-nav" aria-label="Main">
+        <NavLink href="" Match="NavLinkMatch.All" title="Locations">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+                <path d="M12 21s7-6.79 7-12a7 7 0 1 0-14 0c0 5.21 7 12 7 12z" />
+                <circle cx="12" cy="9" r="2.5" />
+            </svg>
+            <span class="nav-label">Locations</span>
+            @if (_stations > 0)
+            {
+                <span class="nav-count" title="Stations holding something">@_stations</span>
+            }
+        </NavLink>
+        <NavLink href="ships" title="Ships">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 2.5c2.9 2.1 4.5 5.6 4.5 9.5l-1.8 4.5H9.3L7.5 12c0-3.9 1.6-7.4 4.5-9.5z" />
+                <circle cx="12" cy="10" r="1.8" />
+                <path d="M9.3 16.5 7 21M14.7 16.5 17 21M12 16.5V21" stroke-linecap="round" />
+            </svg>
+            <span class="nav-label">Ships</span>
+            @if (_ships > 0)
+            {
+                <span class="nav-count" title="Ships with something in their lockers">@_ships</span>
+            }
+        </NavLink>
+        <NavLink href="dropped" title="Dropped">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 3v12M7 10l5 5 5-5M5 20h14" />
+            </svg>
+            <span class="nav-label">Dropped</span>
+            @if (_dropped > 0)
+            {
+                <span class="nav-count" title="Items dropped and not picked up">@_dropped</span>
+            }
+        </NavLink>
+    </nav>
+
+    <nav class="side-nav side-nav-end" aria-label="App">
+        <NavLink href="settings" title="Settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+                <path d="M4 7h9M17 7h3M4 17h3M11 17h9" />
+                <circle cx="15" cy="7" r="2" />
+                <circle cx="9" cy="17" r="2" />
+            </svg>
+            <span class="nav-label">Settings</span>
+        </NavLink>
+    </nav>
+</aside>
+
+<CommandPalette Open="_paletteOpen" OnClose="ClosePalette" />
+
+@code {
+    private int _stations;
+    private int _ships;
+    private int _dropped;
+    private bool _paletteOpen;
+
+    protected override void OnInitialized()
+    {
+        State.Changed += OnChanged;
+        Count();
+    }
+
+    /// <summary>
+    /// Each count is what its page lists: stations in the Locations picker, ship sections on
+    /// Ships, and the units in the Dropped total.
+    /// </summary>
+    private void Count()
+    {
+        var snapshot = State.Current;
+        _stations = StationList.Holding(snapshot).Count;
+        _ships = snapshot.Holdings
+            .Where(h => h.Holding.IsInShip)
+            .Select(h => h.Holding.Root!.Key)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        _dropped = snapshot.Holdings.Where(h => h.Holding.IsDropped).Sum(h => h.Holding.Quantity);
+    }
+
+    private void OpenPalette() => _paletteOpen = true;
+
+    private void ClosePalette() => _paletteOpen = false;
+
+    private void OnChanged() => InvokeAsync(() => { Count(); StateHasChanged(); });
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

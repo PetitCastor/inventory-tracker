@@ -15,5 +15,15 @@
 <body>
     <Routes />
     <script src="_framework/blazor.web.js"></script>
+    @* Ctrl+K opens the command palette from anywhere, as a click on the sidebar's "Go to"
+       button: the palette lives in that interactive component, and a click is all it needs. *@
+    <script>
+        document.addEventListener('keydown', function (e) {
+            if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'k') {
+                var trigger = document.getElementById('palette-trigger');
+                if (trigger) { e.preventDefault(); trigger.click(); }
+            }
+        });
+    </script>
 </body>
 </html>
