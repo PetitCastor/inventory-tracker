@@ -411,6 +411,21 @@ internal sealed class ProcessUpdateInstallOperations : IUpdateInstallOperations
 {
     private readonly Dictionary<int, Process> _candidates = [];
 
+    /// <summary>
+    /// How the updated (or restored) app is launched: as the user would launch it, with its
+    /// window shown. No <see cref="ProcessStartInfo.WindowStyle"/>: .NET passes anything but
+    /// Normal to Windows as STARTF_USESHOWWINDOW even without the shell, and Windows then
+    /// applies it to the first window the process shows. Hidden there made the app start in
+    /// the tray with its window hidden, and since WinForms then believed the window visible,
+    /// "Open Inventory Tracker" could not bring it back either (0.2.48 to 0.2.49, 2026-11-19).
+    /// </summary>
+    internal static ProcessStartInfo AppStartInfo(string path, params string[] arguments)
+    {
+        var start = new ProcessStartInfo(path) { UseShellExecute = false };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        return start;
+    }
+
     public async Task<bool> WaitForParentExitAsync(int processId, TimeSpan timeout, CancellationToken cancellationToken)
     {
         Process parent;
@@ -441,15 +456,7 @@ internal sealed class ProcessUpdateInstallOperations : IUpdateInstallOperations
 
     public UpdateInstallProcess StartCandidate(string path, string pipeName, string nonce)
     {
-        var start = new ProcessStartInfo(path)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WindowStyle = ProcessWindowStyle.Hidden,
-        };
-        start.ArgumentList.Add("--update-confirm");
-        start.ArgumentList.Add(pipeName);
-        start.ArgumentList.Add(nonce);
+        var start = AppStartInfo(path, "--update-confirm", pipeName, nonce);
         var process = Process.Start(start) ?? throw new InvalidOperationException("Could not launch update candidate.");
         _candidates.Add(process.Id, process);
         return new UpdateInstallProcess(process.Id, Stopwatch.GetTimestamp());
@@ -496,14 +503,7 @@ internal sealed class ProcessUpdateInstallOperations : IUpdateInstallOperations
 
     public void StartRollback(string path, string argument)
     {
-        var start = new ProcessStartInfo(path)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            WindowStyle = ProcessWindowStyle.Hidden,
-        };
-        start.ArgumentList.Add(argument);
-        if (Process.Start(start) is null)
+        if (Process.Start(AppStartInfo(path, argument)) is null)
         {
             throw new InvalidOperationException("Could not restart the previous version.");
         }

@@ -228,7 +228,7 @@ public static class TrayHost
             app.Lifetime, messageLoopContext, Application.ExitThread);
         try
         {
-            window.Show();
+            window.ShowOnScreen();
             // Posted to the message loop rather than called on the waiting thread: a signal held
             // from a launch made during boot fires the moment this registers, and a form must
             // only ever be touched from the thread that owns it.
