@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using InventoryTracker.App;
 using Microsoft.AspNetCore.Builder;
 
@@ -5,6 +6,20 @@ namespace InventoryTracker.Tests;
 
 public sealed class UpdateInstallTests
 {
+    [Theory]
+    [InlineData("--update-confirm", "InventoryTracker.Update.0123456789abcdef0123456789abcdef", "nonce")]
+    [InlineData("--skip-update-once")]
+    public void The_updated_app_is_launched_with_its_window_shown(params string[] arguments)
+    {
+        // Anything but Normal reaches Windows as the show state of the app's first window:
+        // Hidden left 0.2.49 in the tray with no way to open its window.
+        var start = ProcessUpdateInstallOperations.AppStartInfo(@"C:\Apps\InventoryTracker.exe", arguments);
+
+        Assert.Equal(ProcessWindowStyle.Normal, start.WindowStyle);
+        Assert.False(start.UseShellExecute);
+        Assert.Equal(arguments, start.ArgumentList);
+    }
+
     [Fact]
     public void TryParseStartupArguments_UpdateConfirmationKeepsUpdaterValuesOutOfApplicationArguments()
     {
