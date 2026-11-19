@@ -197,6 +197,9 @@ public sealed class LedgerReplay
         /// <summary>Units a character reset moved to the new home location.</summary>
         public int RelocatedByUpdate { get; internal set; }
 
+        /// <summary>Units a character reset wiped: dropped on the floor, or in a ship's lockers.</summary>
+        public int WipedByReset { get; internal set; }
+
         /// <summary>Each relocation applied, with how many units it took out of each holding.</summary>
         public List<RelocationReport> Relocations { get; } = [];
 
@@ -333,12 +336,20 @@ public sealed class LedgerReplay
     /// Every complete listing of the player's body, each authoritative for what was on the
     /// player at that moment.
     /// </param>
+    /// <param name="shipLockers">
+    /// Geids of ship lockers. A character reset empties them; see <see cref="Relocate"/>.
+    /// </param>
     public static LedgerReplay Run(
         IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn,
         IEnumerable<BodyEnumeration>? enumerations = null,
-        IReadOnlySet<string>? carriedContainers = null, IEnumerable<Relocation>? relocations = null)
+        IReadOnlySet<string>? carriedContainers = null, IEnumerable<Relocation>? relocations = null,
+        IReadOnlySet<string>? shipLockers = null)
     {
-        var ledger = new LedgerReplay { _carriedContainers = carriedContainers ?? new HashSet<string>() };
+        var ledger = new LedgerReplay
+        {
+            _carriedContainers = carriedContainers ?? new HashSet<string>(),
+            _shipLockers = shipLockers ?? new HashSet<string>(),
+        };
 
         // Attachment sightings are enumerations of the player's body rather than moves, so
         // they are merged into the same timeline and applied by timestamp like anything else.
@@ -397,12 +408,24 @@ public sealed class LedgerReplay
     /// every one of the 13 items checked after the reset of build 12519617 was taken out of the
     /// station the player first spawned at: armour stored at Lorville, a rifle stored at Levski,
     /// and weapons and an undersuit last seen equipped. Containers are entities too, so what is
-    /// inside one follows it. Dropped items are left where they fell, and so is anything carried
-    /// in hand: it is most likely used up, and the next body enumeration settles that.
+    /// inside one follows it. Anything carried in hand is left where it was: it is most likely
+    /// used up, and the next body enumeration settles that.
+    /// </para>
+    /// <para>
+    /// What lay on the floor and what was in a ship's lockers is not moved but gone: the reset
+    /// wipes the world the player left, hangar floors and ships included (the player reported
+    /// both empty after the reset of build 13165946, 2026-11-13). Containers among them go with
+    /// what is in them.
     /// </para>
     /// </summary>
     private void Relocate(Relocation update)
     {
+        var wiped = _contents.Keys
+            .Where(h => h.Kind == InventoryKind.World
+                        || (h.Kind == InventoryKind.Container && _shipLockers.Contains(h.Key)))
+            .ToList();
+        foreach (var where in wiped) Stats.WipedByReset += Wipe(where, depth: 0);
+
         var equipped = new Holding(InventoryKind.Equipped, "");
         var from = _contents.Keys
             .Where(h => h != update.Destination && (h.Kind == InventoryKind.Location || h == equipped))
@@ -435,6 +458,34 @@ public sealed class LedgerReplay
         }
 
         Stats.Relocations.Add(new RelocationReport(update.At, update.Build, update.Destination, taken));
+    }
+
+    /// <summary>Containers nested deeper than this are a data error, not a real loadout.</summary>
+    private const int MaxWipeDepth = 6;
+
+    /// <summary>
+    /// Takes a holding and everything in it out of the ledger, following each named entity into
+    /// what it holds in turn. Returns how many units went.
+    /// </summary>
+    private int Wipe(Holding where, int depth)
+    {
+        if (!_contents.Remove(where, out var byClass)) return 0;
+
+        var units = 0;
+        foreach (var slot in byClass.Values)
+        {
+            foreach (var instance in slot.Named)
+            {
+                _instanceAt.Remove(instance.Geid);
+                _carried.Remove(instance.Geid);
+                units++;
+                if (depth < MaxWipeDepth) units += Wipe(new Holding(InventoryKind.Container, instance.Geid), depth + 1);
+            }
+
+            units += slot.LooseQuantity;
+        }
+
+        return units;
     }
 
     /// <summary>
@@ -485,6 +536,9 @@ public sealed class LedgerReplay
     private const string CarryArrival = "Carry";
 
     private IReadOnlySet<string> _carriedContainers = new HashSet<string>();
+
+    /// <summary>Ship lockers, which a character reset empties.</summary>
+    private IReadOnlySet<string> _shipLockers = new HashSet<string>();
 
     /// <summary>
     /// Entities last put on the player by being carried in hand, and not moved anywhere since.
