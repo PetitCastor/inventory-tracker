@@ -180,7 +180,8 @@ public static class ReliabilityStudy
         report.Counts["ledger.worn_evicted"] = s.WornEvicted;
         report.Counts["ledger.units_from_lost_track"] = s.UnitsFromLostTrack;
         report.Metrics["worn.evicted_then_resighted"] = s.EvictedThenResighted;
-        report.Counts["ledger.relocated_by_update"] = s.RelocatedByUpdate;
+        report.Counts["ledger.gathered_by_reset"] = s.GatheredByReset;
+        report.Counts["ledger.wiped_by_reset"] = s.WipedByReset;
 
         MeasurePlacements(s, resolver, report);
 
@@ -300,8 +301,7 @@ public static class ReliabilityStudy
         {
             report.PlacementTable.Add(
                 $"- `{c.At:yyyy-MM-dd HH:mm} {c.ItemClass} {c.Geid}: believed {c.Believed.Kind} {c.Believed.Key} " +
-                $"(by {c.BelievedArrivedBy}, {c.Age.TotalDays:F1} d{(Crossed(c) ? ", across an update" : "")}" +
-                $"{(c.BelievedMovedByUpdate is { } b ? $", relocated by {b}" : "")}), " +
+                $"(by {c.BelievedArrivedBy}, {c.Age.TotalDays:F1} d{(Crossed(c) ? ", across an update" : "")}), " +
                 $"moved from {c.Actual.Kind} {c.Actual.Key}`");
         }
 

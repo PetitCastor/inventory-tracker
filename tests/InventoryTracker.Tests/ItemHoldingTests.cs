@@ -191,7 +191,6 @@ public class ItemHoldingTests
     private const string OtherPlace = "2000000002";
     private const string DuplicateCaveat = "we saw this arrive but never saw where it came from";
     private const string UnconfirmedCaveat = "the game never confirmed the move";
-    private const string MovedByUpdateCaveat = "moved here by the character reset of 2026-07-16 (game build 200)";
 
     private static readonly DateTimeOffset ProvenanceAsOf = DateTimeOffset.Parse("2026-07-16T13:00:00Z");
 
@@ -370,10 +369,12 @@ public class ItemHoldingTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void Units_an_update_moved_keep_its_caveat_after_later_arrivals_join_them(bool arrivalAfterUpdate)
+    public void A_reset_gathers_stored_units_at_the_home_and_later_arrivals_join_them(bool arrivalAfterUpdate)
     {
         // Build 200 starts at 12:30 with a character reset and the player choosing another station
-        // as home than the one they logged out at, so the reset moved the three units stored there.
+        // as home than the one they logged out at, so the reset gathers the three units stored
+        // there, and the two left in the seed crate, which the ledger never saw placed: nothing is
+        // left behind. An arrival after the reset joins them.
         WithProvenanceDb(db =>
         {
             AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
@@ -386,13 +387,9 @@ public class ItemHoldingTests
             }
 
             var rows = RowsAt(db, StackStation);
-            var moved = UnnamedUnits(rows, MovedByUpdateCaveat, flagged: true);
-            var arrived = UnnamedUnits(rows, MovedByUpdateCaveat, flagged: false);
-            var expectedArrived = arrivalAfterUpdate ? 2 : 0;
-            Assert.True(
-                moved == 3 && arrived == expectedArrived,
-                $"Expected 3 units moved by the update and {expectedArrived} arrived after it; got {moved} and " +
-                $"{arrived}: {Describe(rows)}");
+            Assert.Equal(arrivalAfterUpdate ? 7 : 5, rows.Sum(r => r.Quantity));
+            Assert.Empty(RowsAt(db, OtherPlace));
+            Assert.DoesNotContain(rows, r => r.Caveats.Any(c => c.Contains("character reset")));
         });
     }
 
@@ -809,8 +806,6 @@ public class ItemHoldingTests
         ("last picked up in hand to use", "Carried"),
         ("dropped on the floor", "Dropped"),
         ("food, drink and medical items are used up without a log line, and this one has not moved in 31 days", "UsedUp31"),
-        ("moved here by the character reset of 2026-07-16 (game build 200)", "MovedBy200"),
-        ("moved here by the character reset of 2026-07-16 (game build 300)", "MovedBy300"),
         ("placed before the game update to build 200, which came without a character reset — the player spawned somewhere new", "Crossed200Spawned"),
         ("placed before the game update to build 200, which no later move has checked — the player picked up", "Crossed200Resumed"),
         ("last seen 31 days ago", "Age31"),
@@ -1049,41 +1044,31 @@ public class ItemHoldingTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void Units_already_where_the_player_spawned_are_not_said_to_be_moved_by_the_update(bool tenWhereThePlayerSpawns)
+    public void A_reset_gathers_every_group_at_the_home_with_one_clean_record(bool tenWhereThePlayerSpawns)
     {
         // Build 200 at 12:30 comes with a character reset, and the player picks StackStation as
-        // home after logging out at OtherPlace. Before L05 the merged stack took the update's
-        // build for all thirteen. The ten that were already there were not moved by the reset,
-        // but it left them where they were, so nothing about them is in doubt either. In the
-        // control all thirteen moved. Where a reset moved them is known, but not that it kept
-        // them, so the moved units are to confirm and cost half their score.
+        // home after logging out at OtherPlace. Units already at the new home and units brought
+        // there alike are dated by the reset, with nothing left of how they got there.
         WithProvenanceDb(db =>
         {
             AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
             AddSession(db, "provenance-2.log", build: 200, firstTs: "2026-07-16T12:30:00+00:00", location: StackStation, reset: true);
             StoreAroundAnUpdate(db, tenWhereThePlayerSpawns);
 
-            var rows = UnnamedRows(db, Magazine, ProvenanceAsOf, h => h.Root?.Key == StackStation);
-
             Assert.Equal(
-                tenWhereThePlayerSpawns
-                    ? "x3 0.350 Low CharacterReset 2026-07-16 12:30 [MovedBy200, UnnamedStation] | " +
-                      "x10 0.700 High Move 2026-07-16 12:02 [UnnamedStation]"
-                    : "x13 0.350 Low CharacterReset 2026-07-16 12:30 [MovedBy200, UnnamedStation]",
-                Characterise(rows));
-            Assert.All(rows, h => Assert.Equal(h.LastMoveType == HoldingResolver.CharacterResetMove, h.ToConfirm));
+                "x13 0.700 High CharacterReset 2026-07-16 12:30 [UnnamedStation]",
+                Characterise(UnnamedRows(db, Magazine, ProvenanceAsOf, h => h.Root?.Key == StackStation)));
         });
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void Of_two_updates_crossed_alike_each_group_is_described_by_its_own(bool tenWhereThePlayerSpawns)
+    public void A_reset_after_an_update_without_one_settles_every_group_at_the_home(bool tenWhereThePlayerSpawns)
     {
         // Build 200 at 12:30 resumes where the player logged out; build 300 at 12:50 comes with a
-        // character reset and StackStation as the new home. Before L05 the merged stack took build
-        // 300 for all thirteen. The reset settles every group at StackStation, moved there or
-        // found there, so the earlier, unverified update no longer weighs on any of them.
+        // character reset and StackStation as the new home. The reset gathers every group there,
+        // so the earlier, unverified update no longer weighs on any of them.
         WithProvenanceDb(db =>
         {
             AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
@@ -1091,66 +1076,20 @@ public class ItemHoldingTests
             AddSession(db, "provenance-3.log", build: 300, firstTs: "2026-07-16T12:50:00+00:00", location: StackStation, reset: true);
             StoreAroundAnUpdate(db, tenWhereThePlayerSpawns);
 
-            var rows = UnnamedRows(db, Magazine, ProvenanceAsOf, h => h.Root?.Key == StackStation);
-
             Assert.Equal(
-                tenWhereThePlayerSpawns
-                    ? "x3 0.350 Low CharacterReset 2026-07-16 12:50 [MovedBy300, UnnamedStation] | " +
-                      "x10 0.700 High Move 2026-07-16 12:02 [UnnamedStation]"
-                    : "x13 0.350 Low CharacterReset 2026-07-16 12:50 [MovedBy300, UnnamedStation]",
-                Characterise(rows));
-            Assert.All(rows, h => Assert.Equal(h.LastMoveType == HoldingResolver.CharacterResetMove, h.ToConfirm));
-        });
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void An_item_a_reset_moved_is_to_confirm_until_a_move_sees_it(bool movedSince)
-    {
-        // A magazine stored at OtherPlace at 12:01; build 200 at 12:30 comes with a reset to
-        // StackStation. A reset does not keep everything (two drinks it moved on 2026-11-13 were
-        // not there in game), so the item is to confirm at half its score. A move out of the
-        // home location at 12:40 proves it was there: the row then follows that move alone.
-        const string crate = "681562156499";
-        WithProvenanceDb(db =>
-        {
-            AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
-            AddSession(db, "provenance-2.log", build: 200, firstTs: "2026-07-16T12:30:00+00:00", location: StackStation, reset: true);
-            AddArrivalAt(db, 1, "2026-07-16T12:01:00+00:00", Magazine, 1, "Invalid", "", "Location", OtherPlace, geid: "100000000001");
-            if (movedSince)
-            {
-                AddArrivalAt(db, 2, "2026-07-16T12:40:00+00:00", Magazine, 1, "Location", StackStation, "Container", crate,
-                    geid: "100000000001");
-            }
-
-            var row = Assert.Single(HoldingResolver.Load(db, ProvenanceAsOf).ResolveAll(), h => h.ItemClass == Magazine);
-
-            Assert.Equal(!movedSince, row.ToConfirm);
-            Assert.Equal(!movedSince, row.Caveats.Any(c => c.StartsWith(MovedByUpdateCaveat, StringComparison.Ordinal)));
-            if (movedSince)
-            {
-                Assert.Equal(crate, row.Chain[0].Key);
-                Assert.Equal("Move", row.LastMoveType);
-            }
-            else
-            {
-                Assert.Equal(StackStation, row.Root?.Key);
-                Assert.Equal(HoldingResolver.CharacterResetMove, row.LastMoveType);
-                Assert.True(row.Score <= 0.5, $"score {row.Score:F3}");
-            }
+                "x13 0.700 High CharacterReset 2026-07-16 12:50 [UnnamedStation]",
+                Characterise(UnnamedRows(db, Magazine, ProvenanceAsOf, h => h.Root?.Key == StackStation)));
         });
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void A_reset_leaves_nothing_dropped_or_in_a_ship_and_dates_what_it_moved(bool reset)
+    public void A_reset_gathers_what_was_stored_dropped_or_in_a_ship_at_the_home(bool reset)
     {
         // Build 200 at 12:30, with or without a character reset. Before it: one magazine stored at
-        // OtherPlace, one in a Shiv's locker, one dropped. The reset wipes the floor and the
-        // locker, and moves the stored one to StackStation, dated by the reset. Without one,
-        // everything stays where it was, dated by its own move.
+        // OtherPlace, one in a Shiv's locker, one dropped. The reset brings all three to
+        // StackStation, dated by it. Without one, everything stays where it was, dated by its own move.
         const string locker = "876737713105";
         WithProvenanceDb(db =>
         {
@@ -1173,11 +1112,13 @@ public class ItemHoldingTests
 
             if (reset)
             {
-                var moved = Assert.Single(rows);
-                Assert.Equal("100000000001", moved.Geid);
-                Assert.Equal(StackStation, moved.Root?.Key);
-                Assert.Equal(DateTimeOffset.Parse("2026-07-16T12:30:00Z"), moved.LastMove);
-                Assert.Equal(HoldingResolver.CharacterResetMove, moved.LastMoveType);
+                Assert.Equal(3, rows.Count);
+                Assert.All(rows, h =>
+                {
+                    Assert.Equal(StackStation, h.Root?.Key);
+                    Assert.Equal(DateTimeOffset.Parse("2026-07-16T12:30:00Z"), h.LastMove);
+                    Assert.Equal(LedgerReplay.ResetArrival, h.LastMoveType);
+                });
             }
             else
             {

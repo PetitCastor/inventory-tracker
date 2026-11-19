@@ -23,10 +23,6 @@ namespace InventoryTracker.Resolve;
 public sealed class LedgerReplay
 {
     /// <summary>One entity, tracked by geid.</summary>
-    /// <param name="MovedByUpdate">
-    /// The game build whose update the ledger assumed moved this entity here, rather than a
-    /// move line. <see cref="Since"/> stays the last time the log saw it.
-    /// </param>
     public sealed record Instance(
         string Geid,
         string ItemClass,
@@ -34,14 +30,12 @@ public sealed class LedgerReplay
         string ArrivedBy,
         bool Confirmed,
         bool IdentityAmbiguous,
-        bool Inferred,
-        int? MovedByUpdate = null);
+        bool Inferred);
 
     /// <summary>An unnamed quantity of one class, with the newest arrival that contributed to it.</summary>
     /// <remarks>
     /// <see cref="LooseIn"/> gives one of these per provenance group: every unit in it shares
-    /// <see cref="Confirmed"/>, <see cref="Inferred"/>, <see cref="DuplicateRisk"/> and
-    /// <see cref="MovedByUpdate"/>, so each flag holds for the whole quantity. The Loose of
+    /// <see cref="Confirmed"/>, <see cref="Inferred"/> and <see cref="DuplicateRisk"/>, so each flag holds for the whole quantity. The Loose of
     /// <see cref="Contents"/> sums a holding's groups into one stack, and its flags then read
     /// as below: what some of the units are.
     /// </remarks>
@@ -57,9 +51,6 @@ public sealed class LedgerReplay
     /// unit is simply the first time the item was seen: looted, bought, or there before the
     /// logs begin.
     /// </param>
-    /// <param name="MovedByUpdate">
-    /// Some of these units were assumed moved here by this build's update.
-    /// </param>
     public sealed record Anonymous(
         string ItemClass,
         int Quantity,
@@ -67,8 +58,7 @@ public sealed class LedgerReplay
         string ArrivedBy,
         bool Confirmed,
         bool Inferred,
-        bool DuplicateRisk = false,
-        int? MovedByUpdate = null);
+        bool DuplicateRisk = false);
 
     /// <summary>What one holding contains, by item class.</summary>
     private sealed class Slot
@@ -83,11 +73,10 @@ public sealed class LedgerReplay
         public List<Anonymous> Groups { get; } = [];
 
         /// <summary>
-        /// The newest arrival into the stack as a whole, and the update it was last assumed
-        /// moved by: what decides whether a listing contradicts the stack, and whether an update
-        /// takes it along.
+        /// The newest arrival into the stack as a whole: what decides whether a listing
+        /// contradicts the stack.
         /// </summary>
-        public (DateTimeOffset Since, string ArrivedBy, int? MovedByUpdate) Stack { get; set; }
+        public (DateTimeOffset Since, string ArrivedBy) Stack { get; set; }
 
         public int LooseQuantity => Groups.Sum(g => g.Quantity);
 
@@ -98,8 +87,7 @@ public sealed class LedgerReplay
                 Groups[0].ItemClass, LooseQuantity, Stack.Since, Stack.ArrivedBy,
                 Confirmed: Groups.TrueForAll(g => g.Confirmed),
                 Inferred: Groups.Exists(g => g.Inferred),
-                DuplicateRisk: Groups.Exists(g => g.DuplicateRisk),
-                MovedByUpdate: Stack.MovedByUpdate);
+                DuplicateRisk: Groups.Exists(g => g.DuplicateRisk));
     }
 
     /// <summary>
@@ -194,14 +182,16 @@ public sealed class LedgerReplay
         /// </summary>
         public int EvictedThenResighted { get; internal set; }
 
-        /// <summary>Units a character reset moved to the new home location.</summary>
-        public int RelocatedByUpdate { get; internal set; }
+        /// <summary>Units character resets gathered at the new home location.</summary>
+        public int GatheredByReset { get; internal set; }
 
-        /// <summary>Units a character reset wiped: dropped on the floor, or in a ship's lockers.</summary>
+        /// <summary>
+        /// Units character resets wiped because the logs never named the new home location.
+        /// </summary>
         public int WipedByReset { get; internal set; }
 
-        /// <summary>Each relocation applied, with how many units it took out of each holding.</summary>
-        public List<RelocationReport> Relocations { get; } = [];
+        /// <summary>Each character reset applied, with how many units it gathered or wiped.</summary>
+        public List<ResetReport> Resets { get; } = [];
 
         /// <summary>Every class-level move whose source fell short, and why.</summary>
         public List<SourceMiss> Misses { get; } = [];
@@ -244,9 +234,6 @@ public sealed class LedgerReplay
         public DateTimeOffset At { get; init; }
         public Holding Actual { get; init; }
         public string BelievedArrivedBy { get; init; } = "";
-
-        /// <summary>The belief was a game update's relocation, not a move line.</summary>
-        public int? BelievedMovedByUpdate { get; init; }
 
         /// <summary>
         /// Believed and actual resolve to the same place once containers are followed out to
@@ -329,20 +316,21 @@ public sealed class LedgerReplay
     /// Containers that travel with the player: backpacks and worn apparel. A class-level move
     /// whose source falls short draws the rest from these before guessing.
     /// </param>
-    /// <param name="relocations">
-    /// Game updates, and where each moved the player's belongings to.
+    /// <param name="resets">
+    /// Character resets. Each one gathers everything the ledger holds at the new home location;
+    /// see <see cref="ApplyReset"/>.
+    /// </param>
+    /// <param name="shipLockers">
+    /// Geids of ship lockers, whose contents a reset takes out to the home location.
     /// </param>
     /// <param name="enumerations">
     /// Every complete listing of the player's body, each authoritative for what was on the
     /// player at that moment.
     /// </param>
-    /// <param name="shipLockers">
-    /// Geids of ship lockers. A character reset empties them; see <see cref="Relocate"/>.
-    /// </param>
     public static LedgerReplay Run(
         IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn,
         IEnumerable<BodyEnumeration>? enumerations = null,
-        IReadOnlySet<string>? carriedContainers = null, IEnumerable<Relocation>? relocations = null,
+        IReadOnlySet<string>? carriedContainers = null, IEnumerable<Reset>? resets = null,
         IReadOnlySet<string>? shipLockers = null)
     {
         var ledger = new LedgerReplay
@@ -357,9 +345,9 @@ public sealed class LedgerReplay
             .Select(m => new Entry(m.Timestamp, Move: m))
             .Concat(worn.Select(w => new Entry(w.Timestamp, Worn: w)))
             .Concat((enumerations ?? []).Select(e => new Entry(e.At, Body: e)))
-            .Concat((relocations ?? Enumerable.Empty<Relocation>()).Select(r => new Entry(r.At, Update: r)));
+            .Concat((resets ?? Enumerable.Empty<Reset>()).Select(r => new Entry(r.At, Update: r)));
 
-        // An update lands before anything logged in the build it starts. Otherwise ties keep
+        // A reset lands before anything logged in the build it starts. Otherwise ties keep
         // the order above, which the sort preserves: at one instant the moves apply first, then
         // the sightings, then the listing — so a listing sees the items and parts sighted in its
         // own burst already in place.
@@ -368,7 +356,7 @@ public sealed class LedgerReplay
             if (entry.Move is { } move) ledger.Apply(move);
             else if (entry.Worn is { } sighting) ledger.ApplyWorn(sighting);
             else if (entry.Body is { } body) ledger.ApplyEnumeration(body);
-            else if (entry.Update is { } update) ledger.Relocate(update);
+            else if (entry.Update is { } reset) ledger.ApplyReset(reset);
         }
 
         return ledger;
@@ -392,72 +380,114 @@ public sealed class LedgerReplay
 
     private sealed record Entry(
         DateTimeOffset At, MoveRecord? Move = null, WornSighting? Worn = null, BodyEnumeration? Body = null,
-        Relocation? Update = null);
+        Reset? Update = null);
+
+    /// <summary>A character reset that came with a game update.</summary>
+    /// <param name="At">Where the reset falls in the timeline: before anything logged in its build.</param>
+    /// <param name="Home">The new home location, or null when the logs never name it.</param>
+    /// <param name="Dated">What the gathered items are dated by: when the character creator opened.</param>
+    public sealed record Reset(DateTimeOffset At, int Build, Holding? Home, DateTimeOffset Dated);
+
+    /// <summary>How an item a character reset gathered at the home location arrived there.</summary>
+    public const string ResetArrival = "CharacterReset";
 
     /// <summary>
-    /// A character reset that came with a game update, and the home location the player chose:
-    /// where they first spawned in the build it started.
-    /// </summary>
-    public sealed record Relocation(DateTimeOffset At, int Build, Holding Destination);
-
-    /// <summary>
-    /// Moves everything stored at a station or on the player to <paramref name="update"/>'s
-    /// destination.
+    /// Gathers everything the ledger holds at the new home location: station storage, ship lockers,
+    /// what was dropped, equipped or carried alike.
     /// <para>
-    /// A character reset moves belongings server-side and logs none of it. In the local corpus,
-    /// every one of the 13 items checked after the reset of build 12519617 was taken out of the
-    /// station the player first spawned at: armour stored at Lorville, a rifle stored at Levski,
-    /// and weapons and an undersuit last seen equipped. Containers are entities too, so what is
-    /// inside one follows it. Anything carried in hand is left where it was: it is most likely
-    /// used up, and the next body enumeration settles that.
-    /// </para>
-    /// <para>
-    /// What lay on the floor and what was in a ship's lockers is not moved but gone: the reset
-    /// wipes the world the player left, hangar floors and ships included (the player reported
-    /// both empty after the reset of build 13165946, 2026-11-13). Containers among them go with
-    /// what is in them.
+    /// A character reset of the home base wakes the player at the home location they chose, in a
+    /// basic suit, with every item they owned back in that location's inventory. None of it is
+    /// logged. Where an item was before, and how it got there, no longer matters: every item is
+    /// dated by the reset and starts with a clean record. Containers move with what is in them.
+    /// When the logs never name the new home, nothing can be placed, and the ledger is wiped.
     /// </para>
     /// </summary>
-    private void Relocate(Relocation update)
+    private void ApplyReset(Reset reset)
     {
-        var wiped = _contents.Keys
-            .Where(h => h.Kind == InventoryKind.World
-                        || (h.Kind == InventoryKind.Container && _shipLockers.Contains(h.Key)))
-            .ToList();
-        foreach (var where in wiped) Stats.WipedByReset += Wipe(where, depth: 0);
-
-        var equipped = new Holding(InventoryKind.Equipped, "");
-        var from = _contents.Keys
-            .Where(h => h != update.Destination && (h.Kind == InventoryKind.Location || h == equipped))
-            .ToList();
-
-        var taken = new Dictionary<Holding, int>();
-        foreach (var where in from)
+        if (reset.Home is not { } home)
         {
-            var before = Stats.RelocatedByUpdate;
-            foreach (var (itemClass, slot) in _contents[where])
-            {
-                foreach (var instance in slot.Named.Where(i => !_carried.Contains(i.Geid)).ToList())
-                {
-                    slot.Named.Remove(instance);
-                    SlotFor(update.Destination, itemClass, create: true)!.Named.Add(
-                        instance with { MovedByUpdate = update.Build });
-                    _instanceAt[instance.Geid] = update.Destination;
-                    Stats.RelocatedByUpdate++;
-                }
-
-                if (slot.Groups.Count > 0 && slot.Stack.ArrivedBy != CarryArrival)
-                {
-                    var quantity = slot.LooseQuantity;
-                    MergeLoose(update.Destination, itemClass, slot, update.Build);
-                    Stats.RelocatedByUpdate += quantity;
-                }
-            }
-
-            if (Stats.RelocatedByUpdate > before) taken[where] = Stats.RelocatedByUpdate - before;
+            var wiped = 0;
+            foreach (var where in _contents.Keys.ToList()) wiped += Wipe(where, depth: 0);
+            _contents.Clear();
+            _instanceAt.Clear();
+            ForgetTheOldBody();
+            Stats.WipedByReset += wiped;
+            Stats.Resets.Add(new ResetReport(reset.At, reset.Build, Gathered: 0, Wiped: wiped));
+            return;
         }
 
-        Stats.Relocations.Add(new RelocationReport(update.At, update.Build, update.Destination, taken));
+        // Every holding except a container the ledger can follow: that container is itself an
+        // item somewhere, and goes to the home with its contents. A ship's locker is emptied, and
+        // so is a container the ledger never saw placed, which has nowhere else to go.
+        var sources = _contents.Keys
+            .Where(h => h != home
+                        && !(h.Kind == InventoryKind.Container && _instanceAt.ContainsKey(h.Key)
+                             && !_shipLockers.Contains(h.Key)))
+            .ToList();
+
+        foreach (var where in sources)
+        {
+            if (!_contents.Remove(where, out var byClass)) continue;
+
+            foreach (var (itemClass, slot) in byClass)
+            {
+                var target = SlotFor(home, itemClass, create: true)!;
+                foreach (var instance in slot.Named)
+                {
+                    target.Named.Add(instance);
+                    _instanceAt[instance.Geid] = home;
+                }
+
+                target.Groups.AddRange(slot.Groups);
+            }
+        }
+
+        // A clean record for everything, nested contents included: dated by the reset, confirmed,
+        // and no longer a guess or one of several twins.
+        var gathered = 0;
+        foreach (var byClass in _contents.Values)
+        {
+            foreach (var (itemClass, slot) in byClass)
+            {
+                for (var i = 0; i < slot.Named.Count; i++)
+                {
+                    slot.Named[i] = slot.Named[i] with
+                    {
+                        Since = reset.Dated, ArrivedBy = ResetArrival,
+                        Confirmed = true, Inferred = false, IdentityAmbiguous = false,
+                    };
+                }
+
+                gathered += slot.Named.Count;
+
+                var loose = slot.LooseQuantity;
+                slot.Groups.Clear();
+                if (loose > 0)
+                {
+                    slot.Groups.Add(new Anonymous(itemClass, loose, reset.Dated, ResetArrival, Confirmed: true, Inferred: false));
+                    slot.Stack = (reset.Dated, ResetArrival);
+                    gathered += loose;
+                }
+            }
+        }
+
+        ForgetTheOldBody();
+        Stats.GatheredByReset += gathered;
+        Stats.Resets.Add(new ResetReport(reset.At, reset.Build, Gathered: gathered, Wiped: 0));
+    }
+
+    /// <summary>
+    /// The body, the hands and the guesses made about them belong to the character the reset
+    /// replaced: the player starts in a basic suit with nothing in hand.
+    /// </summary>
+    private void ForgetTheOldBody()
+    {
+        _carried.Clear();
+        _reconciled.Clear();
+        _predictedOut.Clear();
+        _predictedIn.Clear();
+        _portOf.Clear();
+        _occupant.Clear();
     }
 
     /// <summary>Containers nested deeper than this are a data error, not a real loadout.</summary>
@@ -492,25 +522,12 @@ public sealed class LedgerReplay
     /// Moves a whole unnamed stack to a holding, merging with what is already there. Its groups
     /// keep their provenance, so the merged stack still knows which of its units were guesses.
     /// </summary>
-    /// <param name="movedByUpdate">The update assumed to have moved the stack, if one did.</param>
-    private void MergeLoose(Holding target, string itemClass, Slot from, int? movedByUpdate = null)
+    private void MergeLoose(Holding target, string itemClass, Slot from)
     {
         var slot = SlotFor(target, itemClass, create: true)!;
-        var moved = from.Stack with { MovedByUpdate = movedByUpdate ?? from.Stack.MovedByUpdate };
-        if (slot.Groups.Count == 0)
-        {
-            slot.Stack = moved;
-        }
-        else
-        {
-            var newer = slot.Stack.Since >= moved.Since ? slot.Stack : moved;
-            slot.Stack = newer with { MovedByUpdate = moved.MovedByUpdate ?? slot.Stack.MovedByUpdate };
-        }
+        slot.Stack = slot.Groups.Count == 0 || from.Stack.Since > slot.Stack.Since ? from.Stack : slot.Stack;
 
-        foreach (var group in from.Groups)
-        {
-            AddGroup(slot, movedByUpdate is { } build ? group with { MovedByUpdate = build } : group);
-        }
+        foreach (var group in from.Groups) AddGroup(slot, group);
 
         from.Groups.Clear();
     }
@@ -537,7 +554,7 @@ public sealed class LedgerReplay
 
     private IReadOnlySet<string> _carriedContainers = new HashSet<string>();
 
-    /// <summary>Ship lockers, which a character reset empties.</summary>
+    /// <summary>Ship lockers, which a character reset empties into the home location.</summary>
     private IReadOnlySet<string> _shipLockers = new HashSet<string>();
 
     /// <summary>
@@ -1031,7 +1048,6 @@ public sealed class LedgerReplay
             At = move.Timestamp,
             Actual = source,
             BelievedArrivedBy = instance.ArrivedBy,
-            BelievedMovedByUpdate = instance.MovedByUpdate,
             SamePlace = PlaceOf(believed) == PlaceOf(source),
         });
     }
@@ -1166,7 +1182,7 @@ public sealed class LedgerReplay
     {
         var same = slot.Groups.FindIndex(g =>
             g.Confirmed == units.Confirmed && g.Inferred == units.Inferred
-            && g.DuplicateRisk == units.DuplicateRisk && g.MovedByUpdate == units.MovedByUpdate);
+            && g.DuplicateRisk == units.DuplicateRisk);
         if (same < 0)
         {
             slot.Groups.Add(units);
@@ -1186,7 +1202,7 @@ public sealed class LedgerReplay
 
         var slot = SlotFor(target, itemClass, create: true)!;
         slot.Stack = slot.Groups.Count == 0
-            ? (at, moveType, null)
+            ? (at, moveType)
             : slot.Stack with { Since = at, ArrivedBy = moveType };
         AddGroup(slot, new Anonymous(itemClass, quantity, at, moveType, confirmed, inferred, duplicateRisk));
     }
