@@ -49,3 +49,9 @@ If tracking stops, check the selected log folder and last-read time in **Setting
 ## Technical documentation
 
 See the [development guide](docs/development.md) for builds, console commands, configuration, architecture and releases.
+
+## License
+
+[MIT](LICENSE)
+
+Inventory Tracker is an unofficial fan project, not affiliated with or endorsed by Cloud Imperium Games. Star Citizen is a trademark of Cloud Imperium Rights LLC.
