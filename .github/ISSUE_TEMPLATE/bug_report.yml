@@ -1,0 +1,61 @@
+name: Bug report
+description: Something does not work, or an item is shown in the wrong place.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please check the [tracking limits](https://github.com/PetitCastor/inventory-tracker#tracking-limits) first: some gaps come from what the game logs.
+        For a security problem, do not use this form; see [SECURITY.md](https://github.com/PetitCastor/inventory-tracker/blob/main/SECURITY.md).
+  - type: input
+    id: app-version
+    attributes:
+      label: Tracker version
+      description: Shown in **Settings**.
+      placeholder: v0.2.30
+    validations:
+      required: true
+  - type: input
+    id: game-version
+    attributes:
+      label: Star Citizen version
+      description: Shown in the tracker's header.
+      placeholder: 4.3.2-LIVE
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Game channel
+      options:
+        - LIVE
+        - PTU
+        - Other
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, and on which page.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you did in the game and in the tracker, in order.
+      placeholder: |
+        1. Stored a helmet in my ship at Area18
+        2. Moved it to the station inventory
+        3. The tracker still shows it in the ship
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpts
+      description: |
+        Relevant lines from `tracker.log` (in `%LOCALAPPDATA%\InventoryTracker`) and from `Game.log` (in your `LIVE` or `PTU` folder).
+        `Game.log` contains your RSI handle and other account details: share only the lines around the problem and remove anything you do not want public.
+      render: text

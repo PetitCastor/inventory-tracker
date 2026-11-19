@@ -46,6 +46,14 @@ The tray app checks for updates at startup, installs a newer release if availabl
 
 If tracking stops, check the selected log folder and last-read time in **Settings**. App logs and configuration are in `%LOCALAPPDATA%\InventoryTracker` (`tracker.log` and `config.json`).
 
+## Support and contact
+
+- **Bug or wrong item location:** [open an issue](https://github.com/PetitCastor/inventory-tracker/issues/new/choose). Log excerpts help a lot.
+- **Question or idea:** start a thread in [Discussions](https://github.com/PetitCastor/inventory-tracker/discussions).
+- **Security problem:** report it privately, as described in [SECURITY.md](SECURITY.md).
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Technical documentation
 
 See the [development guide](docs/development.md) for builds, console commands, configuration, architecture and releases.
