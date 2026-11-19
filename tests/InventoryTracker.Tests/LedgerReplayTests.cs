@@ -694,18 +694,99 @@ public class LedgerReplayTests
     }
 
     [Fact]
-    public void An_update_leaves_dropped_and_hand_carried_items_where_they_were()
+    public void A_reset_leaves_hand_carried_items_where_they_were()
     {
-        // A drop despawns on its own, and a carry is most likely eaten or drunk: the next body
-        // enumeration is what settles it, and it only looks on the player.
-        var world = new Holding(InventoryKind.World, "");
+        // A carry is most likely eaten or drunk: the next body enumeration is what settles it,
+        // and it only looks on the player.
         var ledger = RunAcross(
             Update(OtherStation, minute: 5),
-            Move(Station, world, "rifle_01", geid: "111111111111", minute: 1, moveType: "Drop"),
             Carry(Crate, "drink_01", "222222222222", minute: 2));
 
-        Assert.Equal(world, ledger.InstanceAt["111111111111"]);
         Assert.Equal(OnPlayer, ledger.InstanceAt["222222222222"]);
+    }
+
+    /// <summary>A ship's locker: a container the resolver knows by its PersonalStorage_ class.</summary>
+    private static readonly Holding ShipLocker = new(InventoryKind.Container, "876737713105");
+
+    [Theory]
+    [InlineData(5, false)]
+    [InlineData(0, true)]
+    public void A_reset_wipes_what_was_dropped_with_whatever_was_inside_it(int resetMinute, bool afterTheReset)
+    {
+        // The reset of build 13165946 cleared the floor. A drop after the reset is unaffected.
+        var world = new Holding(InventoryKind.World, Station.Key);
+        var moves = new[]
+        {
+            Move(Nowhere, Station, "backpack_01", geid: Backpack.Key, minute: 1),
+            Move(Nowhere, Backpack, "rifle_01", geid: "111111111111", minute: 2),
+            Move(Nowhere, Backpack, "ammo_box_01", amount: 3, minute: 2),
+            Move(Station, world, "backpack_01", geid: Backpack.Key, minute: 3, moveType: "Drop"),
+            Move(Station, world, "pistol_01", geid: "333333333333", minute: 4, moveType: "Drop"),
+        };
+        var ledger = LedgerReplay.Run(
+            afterTheReset ? moves.Select(m => m with { Timestamp = m.Timestamp.AddMinutes(10) }) : moves, [],
+            relocations: [Update(OtherStation, resetMinute)]);
+
+        if (afterTheReset)
+        {
+            Assert.Equal(world, ledger.InstanceAt[Backpack.Key]);
+            Assert.Equal(world, ledger.InstanceAt["333333333333"]);
+            Assert.Equal(Backpack, ledger.InstanceAt["111111111111"]);
+            Assert.Equal(0, ledger.Stats.WipedByReset);
+        }
+        else
+        {
+            Assert.False(ledger.InstanceAt.ContainsKey(Backpack.Key));
+            Assert.False(ledger.InstanceAt.ContainsKey("333333333333"));
+            Assert.False(ledger.InstanceAt.ContainsKey("111111111111"));
+            Assert.Empty(ledger.Contents(world));
+            Assert.Empty(ledger.Contents(Backpack));
+            Assert.Equal(6, ledger.Stats.WipedByReset);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_reset_empties_ship_lockers_but_no_other_container(bool isShipLocker)
+    {
+        // The locker's class is all that tells it from a crate; the resolver passes the geids.
+        var ledger = LedgerReplay.Run(
+            [
+                Move(Nowhere, ShipLocker, "rifle_01", geid: "111111111111", minute: 1),
+                Move(Nowhere, ShipLocker, "ammo_box_01", amount: 2, minute: 2),
+            ],
+            [],
+            relocations: [Update(OtherStation, minute: 5)],
+            shipLockers: isShipLocker ? new HashSet<string> { ShipLocker.Key } : null);
+
+        if (isShipLocker)
+        {
+            Assert.Empty(ledger.Contents(ShipLocker));
+            Assert.False(ledger.InstanceAt.ContainsKey("111111111111"));
+            Assert.Equal(3, ledger.Stats.WipedByReset);
+        }
+        else
+        {
+            Assert.Equal(ShipLocker, ledger.InstanceAt["111111111111"]);
+            Assert.Equal(2, ledger.Contents(ShipLocker).Single(c => c.ItemClass == "ammo_box_01").Loose!.Quantity);
+        }
+    }
+
+    [Fact]
+    public void A_ship_locker_filled_after_the_reset_keeps_what_was_put_in_it()
+    {
+        var ledger = LedgerReplay.Run(
+            [
+                Move(Nowhere, ShipLocker, "rifle_01", geid: "111111111111", minute: 1),
+                Move(Nowhere, ShipLocker, "pistol_01", geid: "222222222222", minute: 9),
+            ],
+            [],
+            relocations: [Update(OtherStation, minute: 5)],
+            shipLockers: new HashSet<string> { ShipLocker.Key });
+
+        Assert.False(ledger.InstanceAt.ContainsKey("111111111111"));
+        Assert.Equal(ShipLocker, ledger.InstanceAt["222222222222"]);
     }
 
     [Fact]

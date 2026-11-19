@@ -177,14 +177,21 @@ public sealed class HoldingResolver
 
         // A character reset moves the player's belongings to the home location they chose, even
         // one at the station they had logged out at: storage elsewhere is emptied into it all the
-        // same. An update without a reset is only weighed: nothing says it moved anything. In the
+        // same. What was dropped or in a ship's lockers it wipes instead. An update without a
+        // reset is only weighed: nothing says it moved anything. In the
         // local corpus a spawn somewhere new without a reset (12572603, Orison after logging out
         // at ARC-L1) is just where the player was sent, not where their storage went.
         var relocations = updates
             .Where(u => u is { CharacterReset: true, Spawn: not null })
             .Select(u => new LedgerReplay.Relocation(u.At, u.Build, new Holding(InventoryKind.Location, u.Spawn!)));
 
-        _ledger = LedgerReplay.Run(moves, worn, enumerations, carried, relocations);
+        // A reset empties a ship's lockers, which only their class tells apart from any box.
+        var shipLockers = containers
+            .Where(kv => ShipStorage.TryShipClass(kv.Value.ClassName, out _))
+            .Select(kv => kv.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        _ledger = LedgerReplay.Run(moves, worn, enumerations, carried, relocations, shipLockers);
         _survival = MeasureSurvival(_ledger.Stats.PlacementChecks, updates);
     }
 
@@ -410,6 +417,11 @@ public sealed class HoldingResolver
         // the ledger has already moved the item there, so that move is known rather than
         // weighed. Any other update is weighed by how often the ledger's belief across it held;
         // across several, the least trustworthy one decides.
+        // What the row shows as its last move. A reset that carried the item to the home location
+        // moved it then, even though no line says so.
+        var lastMove = since;
+        var lastMoveType = arrivedBy;
+
         var crossed = _updates.Where(u => u.At > since && u.At <= _asOf).ToList();
         if (crossed.Count > 0)
         {
@@ -418,8 +430,8 @@ public sealed class HoldingResolver
             // A reset either took the item to the home location or found it there already; both
             // are known. What happened before that no longer matters: wherever earlier updates
             // left it, the reset gathered it from there.
-            // Not for what lies on the floor or in hand: the reset leaves those behind, and a floor
-            // at the home station is cleared like any other.
+            // Not for what lies in hand: the reset leaves it behind. Nothing dropped before a reset
+            // gets here at all; the ledger wiped it.
             var root = RootOf(where);
             var followsTheReset = arrivedBy is not ("Drop" or "Carry");
             var settledBy = crossed.LastOrDefault(u =>
@@ -428,7 +440,13 @@ public sealed class HoldingResolver
                                          && SamePlace(Places, root.Key, home))));
             if (settledBy.CharacterReset)
             {
-                if (settledBy.Build == movedByUpdate) caveats.Add(MovedCaveat(settledBy));
+                if (settledBy.Build == movedByUpdate)
+                {
+                    caveats.Add(MovedCaveat(settledBy));
+                    lastMove = settledBy.ResetAt ?? settledBy.At;
+                    lastMoveType = CharacterResetMove;
+                }
+
                 crossed.RemoveAll(u => u.At <= settledBy.At);
             }
 
@@ -453,8 +471,11 @@ public sealed class HoldingResolver
         var chain = BuildChain(where, geid, since, caveats, ref score);
 
         return new ItemHolding(
-            geid, itemClass, quantity, chain, since, arrivedBy, score, ambiguous, caveats);
+            geid, itemClass, quantity, chain, lastMove, lastMoveType, score, ambiguous, caveats);
     }
+
+    /// <summary>The move type shown for an item a character reset carried to the home location.</summary>
+    public const string CharacterResetMove = "CharacterReset";
 
     /// <summary>The holding the containers around <paramref name="where"/> sit in, as far as the ledger knows.</summary>
     private Holding RootOf(Holding where)

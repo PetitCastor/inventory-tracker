@@ -1066,9 +1066,9 @@ public class ItemHoldingTests
 
             Assert.Equal(
                 tenWhereThePlayerSpawns
-                    ? "x3 0.700 High Move 2026-07-16 12:03 [MovedBy200, UnnamedStation] | " +
+                    ? "x3 0.700 High CharacterReset 2026-07-16 12:30 [MovedBy200, UnnamedStation] | " +
                       "x10 0.700 High Move 2026-07-16 12:02 [UnnamedStation]"
-                    : "x13 0.700 High Move 2026-07-16 12:03 [MovedBy200, UnnamedStation]",
+                    : "x13 0.700 High CharacterReset 2026-07-16 12:30 [MovedBy200, UnnamedStation]",
                 Characterise(rows));
         });
     }
@@ -1093,10 +1093,59 @@ public class ItemHoldingTests
 
             Assert.Equal(
                 tenWhereThePlayerSpawns
-                    ? "x3 0.700 High Move 2026-07-16 12:03 [MovedBy300, UnnamedStation] | " +
+                    ? "x3 0.700 High CharacterReset 2026-07-16 12:50 [MovedBy300, UnnamedStation] | " +
                       "x10 0.700 High Move 2026-07-16 12:02 [UnnamedStation]"
-                    : "x13 0.700 High Move 2026-07-16 12:03 [MovedBy300, UnnamedStation]",
+                    : "x13 0.700 High CharacterReset 2026-07-16 12:50 [MovedBy300, UnnamedStation]",
                 Characterise(rows));
+        });
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void A_reset_leaves_nothing_dropped_or_in_a_ship_and_dates_what_it_moved(bool reset)
+    {
+        // Build 200 at 12:30, with or without a character reset. Before it: one magazine stored at
+        // OtherPlace, one in a Shiv's locker, one dropped. The reset wipes the floor and the
+        // locker, and moves the stored one to StackStation, dated by the reset. Without one,
+        // everything stays where it was, dated by its own move.
+        const string locker = "876737713105";
+        WithProvenanceDb(db =>
+        {
+            AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
+            AddSession(db, "provenance-2.log", build: 200, firstTs: "2026-07-16T12:30:00+00:00", location: StackStation, reset: reset);
+            using (var connection = db.Open())
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "INSERT INTO container_class(geid, class_name) VALUES($g, 'PersonalStorage_GLSN_Shiv-000')";
+                command.Parameters.AddWithValue("$g", locker);
+                command.ExecuteNonQuery();
+            }
+
+            AddArrivalAt(db, 1, "2026-07-16T12:01:00+00:00", Magazine, 1, "Invalid", "", "Location", OtherPlace, geid: "100000000001");
+            AddArrivalAt(db, 2, "2026-07-16T12:02:00+00:00", Magazine, 1, "Invalid", "", "Container", locker, geid: "100000000002");
+            AddArrivalAt(db, 3, "2026-07-16T12:03:00+00:00", Magazine, 1, "Location", OtherPlace, "World", OtherPlace,
+                moveType: "Drop", geid: "100000000003");
+
+            var rows = HoldingResolver.Load(db, ProvenanceAsOf).ResolveAll().Where(h => h.ItemClass == Magazine).ToList();
+
+            if (reset)
+            {
+                var moved = Assert.Single(rows);
+                Assert.Equal("100000000001", moved.Geid);
+                Assert.Equal(StackStation, moved.Root?.Key);
+                Assert.Equal(DateTimeOffset.Parse("2026-07-16T12:30:00Z"), moved.LastMove);
+                Assert.Equal(HoldingResolver.CharacterResetMove, moved.LastMoveType);
+            }
+            else
+            {
+                Assert.Equal(3, rows.Count);
+                Assert.Single(rows, h => h.IsInShip);
+                Assert.Single(rows, h => h.IsDropped);
+                var stored = Assert.Single(rows, h => h.IsAtStation);
+                Assert.Equal(OtherPlace, stored.Root?.Key);
+                Assert.Equal(DateTimeOffset.Parse("2026-07-16T12:01:00Z"), stored.LastMove);
+            }
         });
     }
 
