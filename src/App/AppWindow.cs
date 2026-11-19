@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Microsoft.Extensions.Logging;
 using Microsoft.Web.WebView2.Core;
@@ -103,9 +104,38 @@ internal sealed class AppWindow : Form
         }
 
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
-        Show();
+        ShowOnScreen();
         Activate();
     }
+
+    /// <summary>
+    /// Shows the window, and makes sure Windows did too.
+    /// <para>
+    /// A process launched with a show state in its startup info (STARTF_USESHOWWINDOW) gets that
+    /// state applied to the first window it shows, whatever the call asks for. Up to 0.2.49 the
+    /// updater launched the new version that way, hidden, and the 0.2.49 updater is still what
+    /// launches the next one. <see cref="Form.Show"/> then leaves <see cref="Control.Visible"/>
+    /// true over a hidden window, so every later Show is a no-op. The second ShowWindow call is
+    /// honoured as asked, which is what brings it back.
+    /// </para>
+    /// </summary>
+    public void ShowOnScreen()
+    {
+        Show();
+        if (!IsWindowVisible(Handle)) ShowWindow(Handle, ShowNormal);
+    }
+
+    private const int ShowNormal = 1;
+
+    // DllImport rather than LibraryImport, as in Program: the source generator would force
+    // AllowUnsafeBlocks on the whole project for two calls.
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
