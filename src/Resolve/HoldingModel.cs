@@ -98,6 +98,14 @@ public sealed record ItemHolding(
     /// <summary>True when the item is in one of a ship's lockers, however deep.</summary>
     public bool IsInShip => Root is { Kind: InventoryKind.Ship };
 
+    /// <summary>
+    /// True when a character reset carried the item here and no line has seen it since. A reset
+    /// moves stored items without logging it, and not all of them: after the one of 2026-11-13
+    /// (build 13165946) two drinks it had carried to the new home were not there in game. Only
+    /// the player can settle it; any later move of the item does.
+    /// </summary>
+    public bool ToConfirm { get; init; }
+
     public Confidence Confidence => Score switch
     {
         >= 0.70 => Confidence.High,

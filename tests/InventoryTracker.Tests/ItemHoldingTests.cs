@@ -1055,7 +1055,8 @@ public class ItemHoldingTests
         // home after logging out at OtherPlace. Before L05 the merged stack took the update's
         // build for all thirteen. The ten that were already there were not moved by the reset,
         // but it left them where they were, so nothing about them is in doubt either. In the
-        // control all thirteen moved. A reset's move is known, so it costs no score.
+        // control all thirteen moved. Where a reset moved them is known, but not that it kept
+        // them, so the moved units are to confirm and cost half their score.
         WithProvenanceDb(db =>
         {
             AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
@@ -1066,10 +1067,11 @@ public class ItemHoldingTests
 
             Assert.Equal(
                 tenWhereThePlayerSpawns
-                    ? "x3 0.700 High CharacterReset 2026-07-16 12:30 [MovedBy200, UnnamedStation] | " +
+                    ? "x3 0.350 Low CharacterReset 2026-07-16 12:30 [MovedBy200, UnnamedStation] | " +
                       "x10 0.700 High Move 2026-07-16 12:02 [UnnamedStation]"
-                    : "x13 0.700 High CharacterReset 2026-07-16 12:30 [MovedBy200, UnnamedStation]",
+                    : "x13 0.350 Low CharacterReset 2026-07-16 12:30 [MovedBy200, UnnamedStation]",
                 Characterise(rows));
+            Assert.All(rows, h => Assert.Equal(h.LastMoveType == HoldingResolver.CharacterResetMove, h.ToConfirm));
         });
     }
 
@@ -1093,10 +1095,50 @@ public class ItemHoldingTests
 
             Assert.Equal(
                 tenWhereThePlayerSpawns
-                    ? "x3 0.700 High CharacterReset 2026-07-16 12:50 [MovedBy300, UnnamedStation] | " +
+                    ? "x3 0.350 Low CharacterReset 2026-07-16 12:50 [MovedBy300, UnnamedStation] | " +
                       "x10 0.700 High Move 2026-07-16 12:02 [UnnamedStation]"
-                    : "x13 0.700 High CharacterReset 2026-07-16 12:50 [MovedBy300, UnnamedStation]",
+                    : "x13 0.350 Low CharacterReset 2026-07-16 12:50 [MovedBy300, UnnamedStation]",
                 Characterise(rows));
+            Assert.All(rows, h => Assert.Equal(h.LastMoveType == HoldingResolver.CharacterResetMove, h.ToConfirm));
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void An_item_a_reset_moved_is_to_confirm_until_a_move_sees_it(bool movedSince)
+    {
+        // A magazine stored at OtherPlace at 12:01; build 200 at 12:30 comes with a reset to
+        // StackStation. A reset does not keep everything (two drinks it moved on 2026-11-13 were
+        // not there in game), so the item is to confirm at half its score. A move out of the
+        // home location at 12:40 proves it was there: the row then follows that move alone.
+        const string crate = "681562156499";
+        WithProvenanceDb(db =>
+        {
+            AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
+            AddSession(db, "provenance-2.log", build: 200, firstTs: "2026-07-16T12:30:00+00:00", location: StackStation, reset: true);
+            AddArrivalAt(db, 1, "2026-07-16T12:01:00+00:00", Magazine, 1, "Invalid", "", "Location", OtherPlace, geid: "100000000001");
+            if (movedSince)
+            {
+                AddArrivalAt(db, 2, "2026-07-16T12:40:00+00:00", Magazine, 1, "Location", StackStation, "Container", crate,
+                    geid: "100000000001");
+            }
+
+            var row = Assert.Single(HoldingResolver.Load(db, ProvenanceAsOf).ResolveAll(), h => h.ItemClass == Magazine);
+
+            Assert.Equal(!movedSince, row.ToConfirm);
+            Assert.Equal(!movedSince, row.Caveats.Any(c => c.StartsWith(MovedByUpdateCaveat, StringComparison.Ordinal)));
+            if (movedSince)
+            {
+                Assert.Equal(crate, row.Chain[0].Key);
+                Assert.Equal("Move", row.LastMoveType);
+            }
+            else
+            {
+                Assert.Equal(StackStation, row.Root?.Key);
+                Assert.Equal(HoldingResolver.CharacterResetMove, row.LastMoveType);
+                Assert.True(row.Score <= 0.5, $"score {row.Score:F3}");
+            }
         });
     }
 

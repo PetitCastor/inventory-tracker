@@ -414,13 +414,14 @@ public sealed class HoldingResolver
 
         // A game update played since this placement is the one thing observed to invalidate
         // one. A character reset moves stored items to the new home location and logs nothing;
-        // the ledger has already moved the item there, so that move is known rather than
-        // weighed. Any other update is weighed by how often the ledger's belief across it held;
+        // the ledger has already moved the item there, and leaves it to the player to confirm,
+        // since a reset does not keep everything. Any other update is weighed by how often the ledger's belief across it held;
         // across several, the least trustworthy one decides.
         // What the row shows as its last move. A reset that carried the item to the home location
         // moved it then, even though no line says so.
         var lastMove = since;
         var lastMoveType = arrivedBy;
+        var toConfirm = false;
 
         var crossed = _updates.Where(u => u.At > since && u.At <= _asOf).ToList();
         if (crossed.Count > 0)
@@ -440,11 +441,17 @@ public sealed class HoldingResolver
                                          && SamePlace(Places, root.Key, home))));
             if (settledBy.CharacterReset)
             {
+                // Where it went is known; whether it went at all is not. The placement checks
+                // cannot measure that: an item the reset did not keep is never moved again, so
+                // it never shows up as a miss. Found already at the home location, it was not
+                // moved and is not in doubt.
                 if (settledBy.Build == movedByUpdate)
                 {
+                    score *= MovedByResetFactor;
                     caveats.Add(MovedCaveat(settledBy));
                     lastMove = settledBy.ResetAt ?? settledBy.At;
                     lastMoveType = CharacterResetMove;
+                    toConfirm = true;
                 }
 
                 crossed.RemoveAll(u => u.At <= settledBy.At);
@@ -471,11 +478,20 @@ public sealed class HoldingResolver
         var chain = BuildChain(where, geid, since, caveats, ref score);
 
         return new ItemHolding(
-            geid, itemClass, quantity, chain, lastMove, lastMoveType, score, ambiguous, caveats);
+            geid, itemClass, quantity, chain, lastMove, lastMoveType, score, ambiguous, caveats)
+        {
+            ToConfirm = toConfirm,
+        };
     }
 
     /// <summary>The move type shown for an item a character reset carried to the home location.</summary>
     public const string CharacterResetMove = "CharacterReset";
+
+    /// <summary>
+    /// What a reset's unlogged move costs an item it carried: as likely left behind as kept,
+    /// until a move line sees it again.
+    /// </summary>
+    private const double MovedByResetFactor = 0.5;
 
     /// <summary>The holding the containers around <paramref name="where"/> sit in, as far as the ledger knows.</summary>
     private Holding RootOf(Holding where)
@@ -508,7 +524,7 @@ public sealed class HoldingResolver
 
     private static string MovedCaveat(GameUpdate reset) =>
         $"moved here by the character reset of {reset.ResetAt:yyyy-MM-dd} (game build {reset.Build}): the game moves " +
-        "every stored item to the new home location, and logs none of it";
+        "stored items to the new home location without logging it, and does not keep them all — check it is there in game";
 
     private static string UpdateCaveat(GameUpdate update, UpdateSurvival record, bool movedThePlayer) =>
         record.Verified

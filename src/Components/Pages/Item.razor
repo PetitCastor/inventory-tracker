@@ -23,6 +23,10 @@ else
         <p>
             <span class="conf conf-@_holding.Confidence.ToString().ToLowerInvariant()">@_holding.Confidence confidence</span>
             &middot; last moved @_holding.LastMove.ToString("yyyy-MM-dd HH:mm") UTC (@_holding.LastMoveType)
+            @if (_holding.ToConfirm)
+            {
+                <span class="badge-unconfirmed badge-confirm">to confirm</span>
+            }
         </p>
 
         @* The logs never enumerate an inventory's contents, so this is always inference. *@
