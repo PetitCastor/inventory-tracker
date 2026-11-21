@@ -180,7 +180,6 @@ public static class ReliabilityStudy
         report.Counts["ledger.worn_evicted"] = s.WornEvicted;
         report.Counts["ledger.units_from_lost_track"] = s.UnitsFromLostTrack;
         report.Metrics["worn.evicted_then_resighted"] = s.EvictedThenResighted;
-        report.Counts["ledger.gathered_by_reset"] = s.GatheredByReset;
         report.Counts["ledger.wiped_by_reset"] = s.WipedByReset;
 
         MeasurePlacements(s, resolver, report);

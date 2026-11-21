@@ -182,15 +182,10 @@ public sealed class LedgerReplay
         /// </summary>
         public int EvictedThenResighted { get; internal set; }
 
-        /// <summary>Units character resets gathered at the new home location.</summary>
-        public int GatheredByReset { get; internal set; }
-
-        /// <summary>
-        /// Units character resets wiped because the logs never named the new home location.
-        /// </summary>
+        /// <summary>Units character resets wiped: everything the ledger held at each one.</summary>
         public int WipedByReset { get; internal set; }
 
-        /// <summary>Each character reset applied, with how many units it gathered or wiped.</summary>
+        /// <summary>Each character reset applied, with how many units it wiped.</summary>
         public List<ResetReport> Resets { get; } = [];
 
         /// <summary>Every class-level move whose source fell short, and why.</summary>
@@ -317,11 +312,7 @@ public sealed class LedgerReplay
     /// whose source falls short draws the rest from these before guessing.
     /// </param>
     /// <param name="resets">
-    /// Character resets. Each one gathers everything the ledger holds at the new home location;
-    /// see <see cref="ApplyReset"/>.
-    /// </param>
-    /// <param name="shipLockers">
-    /// Geids of ship lockers, whose contents a reset takes out to the home location.
+    /// Character resets. Each one wipes everything the ledger holds; see <see cref="ApplyReset"/>.
     /// </param>
     /// <param name="enumerations">
     /// Every complete listing of the player's body, each authoritative for what was on the
@@ -330,13 +321,11 @@ public sealed class LedgerReplay
     public static LedgerReplay Run(
         IEnumerable<MoveRecord> moves, IEnumerable<WornSighting> worn,
         IEnumerable<BodyEnumeration>? enumerations = null,
-        IReadOnlySet<string>? carriedContainers = null, IEnumerable<Reset>? resets = null,
-        IReadOnlySet<string>? shipLockers = null)
+        IReadOnlySet<string>? carriedContainers = null, IEnumerable<Reset>? resets = null)
     {
         var ledger = new LedgerReplay
         {
             _carriedContainers = carriedContainers ?? new HashSet<string>(),
-            _shipLockers = shipLockers ?? new HashSet<string>(),
         };
 
         // Attachment sightings are enumerations of the player's body rather than moves, so
@@ -383,111 +372,37 @@ public sealed class LedgerReplay
         Reset? Update = null);
 
     /// <summary>A character reset that came with a game update.</summary>
-    /// <param name="At">Where the reset falls in the timeline: before anything logged in its build.</param>
-    /// <param name="Home">The new home location, or null when the logs never name it.</param>
-    /// <param name="Dated">What the gathered items are dated by: when the character creator opened.</param>
-    public sealed record Reset(DateTimeOffset At, int Build, Holding? Home, DateTimeOffset Dated);
-
-    /// <summary>How an item a character reset gathered at the home location arrived there.</summary>
-    public const string ResetArrival = "CharacterReset";
+    public sealed record Reset(DateTimeOffset At, int Build);
 
     /// <summary>
-    /// Gathers everything the ledger holds at the new home location: station storage, ship lockers,
-    /// what was dropped, equipped or carried alike.
+    /// Wipes everything the ledger holds: stored, equipped, carried, dropped and in ships alike.
     /// <para>
-    /// A character reset of the home base wakes the player at the home location they chose, in a
-    /// basic suit, with every item they owned back in that location's inventory. None of it is
-    /// logged. Where an item was before, and how it got there, no longer matters: every item is
-    /// dated by the reset and starts with a clean record. Containers move with what is in them.
-    /// When the logs never name the new home, nothing can be placed, and the ledger is wiped.
+    /// A character reset starts the player over at their home location in a basic suit. Ships,
+    /// station storage and anything dropped are gone, and none of it is logged. The ledger starts
+    /// over with it: what the logs show after the reset is all it holds. Gear the player owns
+    /// outright (armour bought with real money, say) comes back fresh in the home location's
+    /// inventory, and shows up the first time a line moves it, as an arrival from somewhere the
+    /// ledger has no record of. Where it was before the reset no longer matters.
     /// </para>
     /// </summary>
     private void ApplyReset(Reset reset)
     {
-        if (reset.Home is not { } home)
-        {
-            var wiped = 0;
-            foreach (var where in _contents.Keys.ToList()) wiped += Wipe(where, depth: 0);
-            _contents.Clear();
-            _instanceAt.Clear();
-            ForgetTheOldBody();
-            Stats.WipedByReset += wiped;
-            Stats.Resets.Add(new ResetReport(reset.At, reset.Build, Gathered: 0, Wiped: wiped));
-            return;
-        }
+        var wiped = 0;
+        foreach (var where in _contents.Keys.ToList()) wiped += Wipe(where, depth: 0);
 
-        // Every holding except a container the ledger can follow: that container is itself an
-        // item somewhere, and goes to the home with its contents. A ship's locker is emptied, and
-        // so is a container the ledger never saw placed, which has nowhere else to go.
-        var sources = _contents.Keys
-            .Where(h => h != home
-                        && !(h.Kind == InventoryKind.Container && _instanceAt.ContainsKey(h.Key)
-                             && !_shipLockers.Contains(h.Key)))
-            .ToList();
-
-        foreach (var where in sources)
-        {
-            if (!_contents.Remove(where, out var byClass)) continue;
-
-            foreach (var (itemClass, slot) in byClass)
-            {
-                var target = SlotFor(home, itemClass, create: true)!;
-                foreach (var instance in slot.Named)
-                {
-                    target.Named.Add(instance);
-                    _instanceAt[instance.Geid] = home;
-                }
-
-                target.Groups.AddRange(slot.Groups);
-            }
-        }
-
-        // A clean record for everything, nested contents included: dated by the reset, confirmed,
-        // and no longer a guess or one of several twins.
-        var gathered = 0;
-        foreach (var byClass in _contents.Values)
-        {
-            foreach (var (itemClass, slot) in byClass)
-            {
-                for (var i = 0; i < slot.Named.Count; i++)
-                {
-                    slot.Named[i] = slot.Named[i] with
-                    {
-                        Since = reset.Dated, ArrivedBy = ResetArrival,
-                        Confirmed = true, Inferred = false, IdentityAmbiguous = false,
-                    };
-                }
-
-                gathered += slot.Named.Count;
-
-                var loose = slot.LooseQuantity;
-                slot.Groups.Clear();
-                if (loose > 0)
-                {
-                    slot.Groups.Add(new Anonymous(itemClass, loose, reset.Dated, ResetArrival, Confirmed: true, Inferred: false));
-                    slot.Stack = (reset.Dated, ResetArrival);
-                    gathered += loose;
-                }
-            }
-        }
-
-        ForgetTheOldBody();
-        Stats.GatheredByReset += gathered;
-        Stats.Resets.Add(new ResetReport(reset.At, reset.Build, Gathered: gathered, Wiped: 0));
-    }
-
-    /// <summary>
-    /// The body, the hands and the guesses made about them belong to the character the reset
-    /// replaced: the player starts in a basic suit with nothing in hand.
-    /// </summary>
-    private void ForgetTheOldBody()
-    {
+        // Whatever the wipe could not reach through a container chain goes too: the body, the
+        // hands and the guesses made about them all belong to the character the reset replaced.
+        _contents.Clear();
+        _instanceAt.Clear();
         _carried.Clear();
         _reconciled.Clear();
         _predictedOut.Clear();
         _predictedIn.Clear();
         _portOf.Clear();
         _occupant.Clear();
+
+        Stats.WipedByReset += wiped;
+        Stats.Resets.Add(new ResetReport(reset.At, reset.Build, wiped));
     }
 
     /// <summary>Containers nested deeper than this are a data error, not a real loadout.</summary>
@@ -553,9 +468,6 @@ public sealed class LedgerReplay
     private const string CarryArrival = "Carry";
 
     private IReadOnlySet<string> _carriedContainers = new HashSet<string>();
-
-    /// <summary>Ship lockers, which a character reset empties into the home location.</summary>
-    private IReadOnlySet<string> _shipLockers = new HashSet<string>();
 
     /// <summary>
     /// Entities last put on the player by being carried in hand, and not moved anywhere since.

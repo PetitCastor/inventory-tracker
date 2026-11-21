@@ -68,7 +68,7 @@ Resetting can recover only events still present in available logs.
 
 The selected game folder must contain `Game.log`. The tracker imports compatible `logbackups\*.log` files and the active log, then follows new events in `Game.log`.
 
-A wipe date excludes earlier events. **Settings → Save and rebuild from logs** clears imported data and reimports with the updated settings. After editing the date in the config file, use `--scan --reset` to apply it to previously imported data.
+A wipe date excludes earlier events. When the tracker detects a character reset later than the wipe date, it moves the date to the reset's UTC day in config.json without re-reading: the replay has already cleared everything at the reset. **Settings → Save and rebuild from logs** clears imported data and reimports with the updated settings. After editing the date in the config file, use `--scan --reset` to apply it to previously imported data.
 
 The game version in the header is read from the RSI Launcher logs (`%APPDATA%\rsilauncher\logs`).
 

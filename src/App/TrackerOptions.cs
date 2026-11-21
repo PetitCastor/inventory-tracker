@@ -93,6 +93,48 @@ public sealed class TrackerOptions
         await SaveConfigAsync(config => config.ResetNoticeDismissed = resetAt, configPath, cancellationToken);
     }
 
+    /// <summary>
+    /// Brings the wipe date forward to the day of a character reset: at once for this run, then
+    /// in config.json. A reset starts the tracker over, so it is a wipe date the tracker can find
+    /// on its own. A date already on or after that day is left as it is.
+    /// <para>
+    /// Nothing is re-read: the replay already cleared everything at the reset, and moving the
+    /// date only makes a later rebuild skip what was cleared. It waits behind any log-source
+    /// change, like <see cref="DismissResetNoticeAsync"/>, and checks the date again once it holds
+    /// the gate.
+    /// </para>
+    /// </summary>
+    /// <returns>True when the wipe date moved.</returns>
+    public async Task<bool> FollowCharacterResetAsync(
+        DateTimeOffset resetAt, string? configPath = null, CancellationToken cancellationToken = default)
+    {
+        var day = WipeDateFor(resetAt);
+        await _applyLogSourceGate.WaitAsync(cancellationToken);
+        try
+        {
+            var (logDir, current) = CaptureLogSource();
+            if (current >= day) return false;
+
+            var config = AppConfig.Load(configPath);
+            config.InceptionDate = day;
+            config.Save(configPath);
+            SetLogSource(logDir, day);
+            return true;
+        }
+        finally
+        {
+            _applyLogSourceGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The wipe date a reset at <paramref name="resetAt"/> calls for: the start of its UTC day,
+    /// as Settings stores a date. Anything logged earlier that day is still read, and the reset
+    /// clears it in the replay.
+    /// </summary>
+    public static DateTimeOffset WipeDateFor(DateTimeOffset resetAt) =>
+        new(resetAt.UtcDateTime.Date, TimeSpan.Zero);
+
     private AppTheme _theme;
 
     /// <summary>See <see cref="AppConfig.Theme"/>.</summary>
