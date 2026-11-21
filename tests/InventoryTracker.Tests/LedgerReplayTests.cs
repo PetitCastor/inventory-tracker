@@ -655,131 +655,109 @@ public class LedgerReplayTests
     private static LedgerReplay.WornSighting Worn(int minute, string geid, string itemClass) =>
         new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), geid, itemClass);
 
-    /// <summary>
-    /// A character reset with <see cref="OtherStation"/> as the new home, dated half a minute after
-    /// it lands in the timeline, as the creator opens after the build's first line.
-    /// </summary>
-    private static LedgerReplay.Reset Reset(int minute, bool homeKnown = true)
-    {
-        var at = new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero);
-        return new(at, 12519617, homeKnown ? OtherStation : null, at.AddSeconds(30));
-    }
+    /// <summary>A character reset the ledger starts over at.</summary>
+    private static LedgerReplay.Reset Reset(int minute) =>
+        new(new DateTimeOffset(2026, 7, 16, 12, minute, 0, TimeSpan.Zero), 12519617);
 
     private static LedgerReplay RunAcross(LedgerReplay.Reset reset, params MoveRecord[] moves) =>
-        LedgerReplay.Run(moves, [], resets: [reset], shipLockers: new HashSet<string> { ShipLocker.Key });
+        LedgerReplay.Run(moves, [], resets: [reset]);
 
     /// <summary>A ship's locker: a container the resolver knows by its PersonalStorage_ class.</summary>
     private static readonly Holding ShipLocker = new(InventoryKind.Container, "876737713105");
 
-    /// <summary>Stored, equipped, carried in hand, dropped, in a backpack and in a ship's locker.</summary>
-    private static MoveRecord[] EverywhereBeforeAReset() =>
-    [
-        Move(Nowhere, Station, "armor_core_01", geid: "111111111111", minute: 1),
-        Move(Station, OnPlayer, "rifle_01", geid: "222222222222", minute: 2),
-        Move(Nowhere, Station, "ammo_box_01", amount: 4, minute: 3),
-        Carry(Crate, "drink_01", "333333333333", minute: 4),
-        Move(Nowhere, Station, "backpack_01", geid: Backpack.Key, minute: 5),
-        Move(Nowhere, Backpack, "pistol_01", geid: "444444444444", minute: 5),
-        Move(Nowhere, OtherStation, "helmet_01", geid: "555555555555", minute: 6),
-        Move(Station, new Holding(InventoryKind.World, Station.Key), "knife_01", geid: "666666666666", minute: 7, moveType: "Drop"),
-        Move(Nowhere, ShipLocker, "medpen_01", amount: 2, minute: 8),
-    ];
-
     [Fact]
-    public void A_reset_gathers_everything_at_the_home_location()
+    public void A_reset_wipes_everything_the_ledger_held()
     {
-        // A home-base reset brings every item the player owns back to the home location they
-        // chose. A container goes with what is in it; a ship's locker is emptied.
-        var ledger = RunAcross(Reset(minute: 9), EverywhereBeforeAReset());
-
-        foreach (var geid in new[] { "111111111111", "222222222222", "333333333333", Backpack.Key, "555555555555", "666666666666" })
-        {
-            Assert.Equal(OtherStation, ledger.InstanceAt[geid]);
-        }
-
-        Assert.Equal(Backpack, ledger.InstanceAt["444444444444"]);
-        Assert.Equal(4, ledger.Contents(OtherStation).Single(c => c.ItemClass == "ammo_box_01").Loose!.Quantity);
-        Assert.Equal(2, ledger.Contents(OtherStation).Single(c => c.ItemClass == "medpen_01").Loose!.Quantity);
-        Assert.Equal(new HashSet<Holding> { OtherStation, Backpack }, ledger.Occupied.ToHashSet());
-        Assert.Equal(13, ledger.Stats.GatheredByReset);
-        Assert.Equal(0, ledger.Stats.WipedByReset);
-        var report = Assert.Single(ledger.Stats.Resets);
-        Assert.Equal((12519617, 13, 0), (report.Build, report.Gathered, report.Wiped));
-    }
-
-    [Fact]
-    public void What_a_reset_gathers_starts_with_a_clean_record_dated_by_it()
-    {
-        // The rifle was a guess (never seen leaving the station), the drink was carried in hand:
-        // neither history matters once the reset has brought them home. Contents re-date too.
-        var reset = Reset(minute: 9);
-        var ledger = RunAcross(reset, EverywhereBeforeAReset());
-
-        foreach (var geid in new[] { "111111111111", "222222222222", "333333333333", "444444444444" })
-        {
-            var instance = ledger.Find(geid)!;
-            Assert.Equal(
-                (reset.Dated, LedgerReplay.ResetArrival, true, false, false),
-                (instance.Since, instance.ArrivedBy, instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous));
-        }
-
-        var ammo = Assert.Single(ledger.LooseIn(OtherStation, "ammo_box_01"));
-        Assert.Equal((4, reset.Dated, LedgerReplay.ResetArrival, true, false), (ammo.Quantity, ammo.Since, ammo.ArrivedBy, ammo.Confirmed, ammo.Inferred));
-    }
-
-    [Fact]
-    public void A_reset_whose_home_the_logs_never_name_wipes_the_ledger()
-    {
-        var ledger = RunAcross(Reset(minute: 9, homeKnown: false), EverywhereBeforeAReset());
+        // Stored, equipped, carried in hand, dropped, in a backpack, in a ship's lockers: a
+        // character reset starts the player over, and the ledger with it.
+        var world = new Holding(InventoryKind.World, Station.Key);
+        var ledger = RunAcross(
+            Reset(minute: 9),
+            Move(Nowhere, Station, "armor_core_01", geid: "111111111111", minute: 1),
+            Move(Station, OnPlayer, "rifle_01", geid: "222222222222", minute: 2),
+            Move(Nowhere, Station, "ammo_box_01", amount: 4, minute: 3),
+            Carry(Crate, "drink_01", "333333333333", minute: 4),
+            Move(Nowhere, Station, "backpack_01", geid: Backpack.Key, minute: 5),
+            Move(Nowhere, Backpack, "pistol_01", geid: "444444444444", minute: 5),
+            Move(Nowhere, OtherStation, "helmet_01", geid: "555555555555", minute: 6),
+            Move(Station, world, "knife_01", geid: "666666666666", minute: 7, moveType: "Drop"),
+            Move(Nowhere, ShipLocker, "medpen_01", amount: 2, minute: 8));
 
         Assert.Empty(ledger.Occupied);
         Assert.Empty(ledger.InstanceAt);
         Assert.Equal(13, ledger.Stats.WipedByReset);
-        Assert.Equal(0, ledger.Stats.GatheredByReset);
+        var report = Assert.Single(ledger.Stats.Resets);
+        Assert.Equal((12519617, 13), (report.Build, report.Wiped));
     }
 
-    [Fact]
-    public void A_reset_leaves_what_the_logs_show_after_it_as_it_is()
+    [Theory]
+    [InlineData(5, false)]
+    [InlineData(0, true)]
+    public void A_reset_keeps_what_the_logs_show_after_it(int resetMinute, bool afterTheReset)
     {
         var world = new Holding(InventoryKind.World, Station.Key);
-        var ledger = RunAcross(
-            Reset(minute: 5),
-            Move(Nowhere, Station, "backpack_01", geid: Backpack.Key, minute: 11),
-            Move(Nowhere, Backpack, "rifle_01", geid: "111111111111", minute: 12),
-            Move(Station, world, "pistol_01", geid: "333333333333", minute: 14, moveType: "Drop"),
-            Move(Nowhere, ShipLocker, "medpen_01", amount: 2, minute: 15));
+        var moves = new[]
+        {
+            Move(Nowhere, Station, "backpack_01", geid: Backpack.Key, minute: 1),
+            Move(Nowhere, Backpack, "rifle_01", geid: "111111111111", minute: 2),
+            Move(Nowhere, Backpack, "ammo_box_01", amount: 3, minute: 2),
+            Move(Station, world, "pistol_01", geid: "333333333333", minute: 4, moveType: "Drop"),
+        };
+        var ledger = LedgerReplay.Run(
+            afterTheReset ? moves.Select(m => m with { Timestamp = m.Timestamp.AddMinutes(10) }) : moves, [],
+            resets: [Reset(resetMinute)]);
 
-        Assert.Equal(Station, ledger.InstanceAt[Backpack.Key]);
-        Assert.Equal(Backpack, ledger.InstanceAt["111111111111"]);
-        Assert.Equal(world, ledger.InstanceAt["333333333333"]);
-        Assert.Equal(2, ledger.Contents(ShipLocker).Single().Loose!.Quantity);
-        Assert.Equal("Drop", ledger.Find("333333333333")!.ArrivedBy);
-        Assert.Equal(0, ledger.Stats.GatheredByReset);
+        if (afterTheReset)
+        {
+            Assert.Equal(Station, ledger.InstanceAt[Backpack.Key]);
+            Assert.Equal(world, ledger.InstanceAt["333333333333"]);
+            Assert.Equal(Backpack, ledger.InstanceAt["111111111111"]);
+            Assert.Equal(0, ledger.Stats.WipedByReset);
+        }
+        else
+        {
+            Assert.Empty(ledger.InstanceAt);
+            Assert.Empty(ledger.Occupied);
+            Assert.Equal(6, ledger.Stats.WipedByReset);
+        }
     }
 
     [Fact]
-    public void A_move_out_of_the_home_after_a_reset_confirms_the_gathering()
+    public void A_ship_locker_filled_after_the_reset_keeps_what_was_put_in_it()
     {
+        var ledger = RunAcross(
+            Reset(minute: 5),
+            Move(Nowhere, ShipLocker, "rifle_01", geid: "111111111111", minute: 1),
+            Move(Nowhere, ShipLocker, "pistol_01", geid: "222222222222", minute: 9));
+
+        Assert.False(ledger.InstanceAt.ContainsKey("111111111111"));
+        Assert.Equal(ShipLocker, ledger.InstanceAt["222222222222"]);
+    }
+
+    [Fact]
+    public void An_item_the_reset_kept_reappears_when_a_line_moves_it()
+    {
+        // The ledger no longer has a belief about it, so the move checks nothing.
         var ledger = RunAcross(
             Reset(minute: 5),
             Move(Nowhere, Station, "armor_core_01", geid: "111111111111", minute: 1),
             Move(OtherStation, OnPlayer, "armor_core_01", geid: "111111111111", minute: 9));
 
-        var check = Assert.Single(ledger.Stats.PlacementChecks);
-        Assert.True(check.SamePlace);
-        Assert.Equal(LedgerReplay.ResetArrival, check.BelievedArrivedBy);
+        Assert.Equal(OnPlayer, ledger.InstanceAt["111111111111"]);
+        Assert.Empty(ledger.Stats.PlacementChecks);
     }
 
     [Fact]
-    public void A_class_level_move_after_a_reset_finds_the_stack_at_the_home_location()
+    public void A_class_level_move_after_a_reset_finds_nothing_held_before_it()
     {
         var ledger = RunAcross(
             Reset(minute: 5),
             Move(Nowhere, Station, "ammo_box_01", amount: 4, minute: 1),
-            Move(OtherStation, Crate, "ammo_box_01", amount: 3, minute: 9));
+            Move(Station, Crate, "ammo_box_01", amount: 3, minute: 9));
 
-        Assert.Equal(3, ledger.Stats.UnitsFromLoose);
-        Assert.DoesNotContain(ledger.Stats.Misses, m => m.Source == OtherStation);
+        Assert.Equal(0, ledger.Stats.UnitsFromLoose);
+        Assert.Contains(ledger.Stats.Misses, m => m.Source == Station);
+        Assert.Equal(3, ledger.Contents(Crate).Single().Loose!.Quantity);
     }
 
     // A04: an unnamed stack keeps how many of its units were inferred, so a named entity turning

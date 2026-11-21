@@ -96,6 +96,32 @@ public sealed class TrackerOptionsTests : IDisposable
         Assert.True(saved.SetupComplete);
     }
 
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("2026-10-10", true)]
+    [InlineData("2026-11-10", false)]
+    [InlineData("2026-11-15", false)]
+    public async Task A_character_reset_moves_an_earlier_wipe_date_to_its_day(string? wipeDate, bool moves)
+    {
+        var configPath = Path.Combine(_dir, "config.json");
+        var before = wipeDate is null
+            ? (DateTimeOffset?)null
+            : new DateTimeOffset(DateTime.Parse(wipeDate, System.Globalization.CultureInfo.InvariantCulture), TimeSpan.Zero);
+        new AppConfig { LogDir = _options.LogDir, InceptionDate = before, SetupComplete = true, Theme = AppTheme.Dark }
+            .Save(configPath);
+        _options.InceptionDate = before;
+        var resetAt = new DateTimeOffset(2026, 11, 10, 18, 45, 0, TimeSpan.Zero);
+        var resetDay = new DateTimeOffset(2026, 11, 10, 0, 0, 0, TimeSpan.Zero);
+
+        var moved = await _options.FollowCharacterResetAsync(resetAt, configPath);
+
+        var expected = moves ? resetDay : before;
+        var saved = AppConfig.Load(configPath);
+        Assert.Equal(
+            (moves, expected, expected, true, (AppTheme?)AppTheme.Dark),
+            (moved, _options.InceptionDate, saved.InceptionDate, saved.SetupComplete, saved.Theme));
+    }
+
     [Fact]
     public async Task Concurrent_source_applications_keep_config_source_parser_and_diagnostics_together()
     {

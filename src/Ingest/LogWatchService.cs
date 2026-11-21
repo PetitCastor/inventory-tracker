@@ -521,6 +521,7 @@ public sealed class LogWatchService(
                 state.Rebuild();
                 _rebuildOwed = false;
                 rebuilt = true;
+                FollowCharacterReset();
             }
 
             if (stats.UnrecognisedMoves > 0)
@@ -591,6 +592,37 @@ public sealed class LogWatchService(
             Incomplete = incomplete,
         };
         lock (_statusGate) _lastPass = pass;
+    }
+
+    /// <summary>
+    /// Moves the wipe date to the newest character reset when it is still earlier, so Settings
+    /// shows where the tracker now starts from.
+    /// <para>
+    /// Not awaited: a Settings save holds the options gate while it waits for the ingest lock this
+    /// pass holds, so waiting for that gate here would deadlock. The next pass sees the new date
+    /// and starts a fresh ingestor, which resumes from the offsets the store keeps.
+    /// </para>
+    /// </summary>
+    private void FollowCharacterReset()
+    {
+        if (state.Current.Resolver?.CharacterResets.FirstOrDefault() is not { } reset) return;
+        if (options.InceptionDate >= TrackerOptions.WipeDateFor(reset.ResetAt)) return;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (await options.FollowCharacterResetAsync(reset.ResetAt))
+                {
+                    log.LogInformation(
+                        "Wipe date moved to {Date:yyyy-MM-dd}, the day of the character reset", reset.ResetAt);
+                }
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex, "Could not move the wipe date to the character reset");
+            }
+        });
     }
 
     /// <summary>

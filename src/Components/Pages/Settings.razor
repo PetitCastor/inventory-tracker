@@ -301,7 +301,7 @@
                     <div class="setting-row">
                         <div class="setting-text">
                             <label class="setting-label" for="inception">Wipe date</label>
-                            <span class="setting-hint">Only after a persistence wipe. Everything logged before it is ignored, even items that have not moved since. Leave empty to read your whole history.</span>
+                            <span class="setting-hint">Everything logged before it is ignored, even items that have not moved since. Moves forward on its own to the day of a character reset. Set it by hand after a persistence wipe; leave it empty to read your whole history.</span>
                         </div>
                         <div class="setting-control">
                             <input id="inception" type="date" class="date-input" @bind="_inceptionDate" />
