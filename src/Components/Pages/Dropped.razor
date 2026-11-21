@@ -5,7 +5,7 @@
 
 <PageTitle>Dropped — Star Citizen inventory</PageTitle>
 
-<h1>Dropped <span class="badge-count">@_groups.Sum(g => g.Items.Sum(i => i.Holding.Quantity))</span></h1>
+<h1>Dropped <span class="badge-count">@_groups.Sum(g => g.Rows.Sum(r => r.Quantity))</span></h1>
 
 @* A drop out of an equipment slot writes no Type[Drop]: on 2026-10-12 one left three
    "Drop From Container" lines naming the wrong item, another only an INVALID-to-INVALID
@@ -24,7 +24,7 @@ else
     @foreach (var group in _groups)
     {
         <section class="place">
-            <h2>@group.Label <span class="badge-count">@group.Items.Sum(i => i.Holding.Quantity)</span></h2>
+            <h2>@group.Label <span class="badge-count">@group.Rows.Sum(r => r.Quantity)</span></h2>
             <table>
                 <thead>
                     <tr>
@@ -35,25 +35,25 @@ else
                     </tr>
                 </thead>
                 <tbody>
-                @foreach (var item in group.Items)
+                @foreach (var row in group.Rows)
                 {
                     <tr>
                         <td>
-                            @if (item.Holding.Geid is { } geid)
+                            @if (row.Geid is { } geid)
                             {
-                                <a href="item/@geid">@item.Display</a>
+                                <a href="item/@geid">@row.Display</a>
                             }
                             else
                             {
-                                @item.Display
+                                @row.Display
                             }
                         </td>
-                        <td class="qty">@item.Holding.Quantity&times;</td>
-                        <td class="when">@item.Holding.LastMove.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td class="qty">@row.Quantity&times;</td>
+                        <td class="when">@row.Newest.ToString("yyyy-MM-dd HH:mm")</td>
                         <td>
-                            <span class="conf conf-@item.Holding.Confidence.ToString().ToLowerInvariant()"
-                                  title="@string.Join("; ", item.Holding.Caveats)">
-                                @item.Holding.Confidence
+                            <span class="conf conf-@row.Confidence.ToString().ToLowerInvariant()"
+                                  title="@string.Join("; ", row.Caveats)">
+                                @row.Confidence
                             </span>
                         </td>
                     </tr>
@@ -66,7 +66,38 @@ else
 
 @code {
     /// <summary>The items dropped in one place, newest first.</summary>
-    private sealed record Group(string Label, DateTimeOffset Newest, IReadOnlyList<NamedHolding> Items);
+    private sealed record Group(string Label, DateTimeOffset Newest, IReadOnlyList<Row> Rows);
+
+    /// <summary>
+    /// Every unit of one item class dropped in one place: five magazines are one line of 5, as
+    /// in a station's table, dated by the newest drop. Only a line that is a single named item
+    /// links to it.
+    /// </summary>
+    private sealed record Row(
+        string Display, string? Geid, int Quantity, DateTimeOffset Newest, Confidence Confidence,
+        IReadOnlyList<string> Caveats);
+
+    /// <summary>
+    /// Pools identical items, newest drop first. Confidence is the least confident unit's: a
+    /// line is only as trustworthy as its weakest member.
+    /// </summary>
+    private static List<Row> Pool(IEnumerable<NamedHolding> holdings) =>
+        holdings
+            .GroupBy(h => h.ClassName, StringComparer.Ordinal)
+            .Select(g =>
+            {
+                var items = g.ToList();
+                var quantity = items.Sum(h => h.Holding.Quantity);
+                return new Row(
+                    items[0].Display,
+                    quantity == 1 ? items[0].Holding.Geid : null,
+                    quantity,
+                    items.Max(h => h.Holding.LastMove),
+                    items.Min(h => h.Holding.Confidence),
+                    items.SelectMany(h => h.Holding.Caveats).Distinct().ToList());
+            })
+            .OrderByDescending(r => r.Newest)
+            .ToList();
 
     private List<Group> _groups = [];
 
@@ -93,7 +124,7 @@ else
             .Select(g => new Group(
                 g.Key.Length == 0 || resolver is null ? "Unknown place" : resolver.PlaceLabel(g.Key),
                 g.Max(h => h.Holding.LastMove),
-                g.OrderByDescending(h => h.Holding.LastMove).ToList()))
+                Pool(g)))
             .OrderByDescending(g => g.Newest)
             .ToList();
     }
