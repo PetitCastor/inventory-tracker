@@ -52,7 +52,22 @@ public readonly record struct Holding(InventoryKind Kind, string Key)
 }
 
 /// <summary>One link in the "item -> backpack -> station" chain shown to the user.</summary>
-public sealed record HoldingLink(InventoryKind Kind, string Key, string Label);
+public sealed record HoldingLink(InventoryKind Kind, string Key, string Label)
+{
+    /// <summary>
+    /// The game class this link names, when <see cref="Label"/> is built from one (a box, or the
+    /// rifle a scope is mounted on). The resolver has no item catalogue, so it labels these with
+    /// the raw class; <see cref="Named"/> lets the UI swap in the name the item column shows.
+    /// </summary>
+    public string? ItemClass { get; init; }
+
+    /// <summary>Text before the class in <see cref="Label"/>, such as "on ".</summary>
+    public string LabelPrefix { get; init; } = "";
+
+    /// <summary>The label with <see cref="ItemClass"/> replaced by <paramref name="displayName"/>'s name for it.</summary>
+    public string Named(Func<string, string> displayName) =>
+        ItemClass is { } itemClass ? LabelPrefix + displayName(itemClass) : Label;
+}
 
 public enum Confidence { Low, Medium, High }
 
@@ -109,4 +124,9 @@ public sealed record ItemHolding(
     public string Where => Chain.Count == 0
         ? "unknown"
         : string.Join(" → ", Chain.Select(c => c.Label));
+
+    /// <summary><see cref="Where"/> with item classes replaced by player-facing names.</summary>
+    public string WhereNamed(Func<string, string> displayName) => Chain.Count == 0
+        ? "unknown"
+        : string.Join(" → ", Chain.Select(c => c.Named(displayName)));
 }

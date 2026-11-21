@@ -540,7 +540,11 @@ public sealed class HoldingResolver
                     // A part on the item it belongs to. The attachment line that put it there is
                     // proof, so the hop costs nothing; it is shown so a visor reads as on its
                     // helmet rather than loose on the character.
-                    chain.Add(new HoldingLink(kind, key, $"on {parent.ItemClass}"));
+                    chain.Add(new HoldingLink(kind, key, $"on {parent.ItemClass}")
+                    {
+                        ItemClass = parent.ItemClass,
+                        LabelPrefix = "on ",
+                    });
                     if (!seen.Add(key))
                     {
                         caveats.Add("container nesting loops back on itself");
@@ -579,7 +583,7 @@ public sealed class HoldingResolver
                     // the reliable signal, since apparel is used for nested storage far more
                     // often than it is seen worn — with an attachment sighting as a backstop.
                     var worn = IsApparel(info?.ClassName) || _wornContainers.Contains(key);
-                    if (!worn) chain.Add(new HoldingLink(kind, key, label));
+                    if (!worn) chain.Add(new HoldingLink(kind, key, label) { ItemClass = info?.ClassName });
                     else passedWorn = true;
 
                     // A container that contains itself would loop forever.
