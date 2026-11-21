@@ -521,6 +521,21 @@ public sealed class HoldingResolver
                         : $"dropped at {PlaceLabel(key)}"));
                     return chain;
 
+                // The key says when the player died and where they were tracked at the time.
+                // The game listed the item, or the backpack or armour it is in, on the body, so
+                // where it is costs nothing; how long the body stays is never logged.
+                case InventoryKind.Corpse:
+                {
+                    var label = CorpseKey.TryParse(key, out var died, out var locationId) && locationId.Length > 0
+                        ? $"on your body at {PlaceLabel(locationId)}"
+                        : "on your body";
+                    caveats.Add(
+                        $"left on your body when you died{(died == default ? "" : $" on {died:yyyy-MM-dd HH:mm} UTC")}; " +
+                        "lost unless you loot it back, and the game removes a body after a while without logging it");
+                    chain.Add(new HoldingLink(kind, key, label));
+                    return chain;
+                }
+
                 // A later login no longer listed it on the player, and no line said where it
                 // went. The last time it was seen on the player is the only lead there is: the
                 // item's own arrival, or, inside a backpack, the backpack's.

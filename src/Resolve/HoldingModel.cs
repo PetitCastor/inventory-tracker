@@ -48,7 +48,7 @@ public sealed record MoveRecord(
 public readonly record struct Holding(InventoryKind Kind, string Key)
 {
     public bool IsReal => Kind is InventoryKind.Location or InventoryKind.Container
-                              or InventoryKind.Equipped or InventoryKind.World;
+                              or InventoryKind.Equipped or InventoryKind.World or InventoryKind.Corpse;
 }
 
 /// <summary>One link in the "item -> backpack -> station" chain shown to the user.</summary>
@@ -109,6 +109,12 @@ public sealed record ItemHolding(
     /// what is left lying anywhere but a hangar.
     /// </summary>
     public bool IsDropped => Root is { Kind: InventoryKind.World };
+
+    /// <summary>
+    /// True when the item was on the player when they died and is still on the body, loose or
+    /// inside a backpack or armour. Lost unless the player goes back and loots it.
+    /// </summary>
+    public bool IsLostAtDeath => Root is { Kind: InventoryKind.Corpse };
 
     /// <summary>True when the item is in one of a ship's lockers, however deep.</summary>
     public bool IsInShip => Root is { Kind: InventoryKind.Ship };

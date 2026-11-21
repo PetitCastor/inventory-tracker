@@ -44,6 +44,14 @@ public enum InventoryKind
     /// </summary>
     Ship,
 
+    /// <summary>
+    /// Synthetic: the item was on the player when they died, and stayed on the body the game
+    /// left behind. The key is a <see cref="CorpseKey"/>: when and where the death happened.
+    /// What was inside a backpack or armour went with it. It stays here until a move takes it
+    /// back off the body; the game removes a corpse after a while and logs nothing when it does.
+    /// </summary>
+    Corpse,
+
     /// <summary>Anything we do not recognise. Kept so diagnostics can surface new formats.</summary>
     Unknown,
 }
@@ -67,18 +75,25 @@ public readonly record struct InventoryRef(InventoryKind Kind, string OwnerId, s
     public static InventoryRef WorldAt(string? locationId) =>
         locationId is null ? World : new(InventoryKind.World, "", locationId, "WORLD");
 
+    /// <summary>
+    /// The body the player left behind when they died at <paramref name="at"/>, in the location
+    /// they were last tracked in, or in an unknown place when the logs never said.
+    /// </summary>
+    public static InventoryRef CorpseAt(DateTimeOffset at, string? locationId) =>
+        new(InventoryKind.Corpse, "", CorpseKey.Format(at, locationId), "CORPSE");
+
     /// <summary>True when this handle can actually hold an item over time.</summary>
     public bool IsHolding =>
         Kind is InventoryKind.Location or InventoryKind.Container
-             or InventoryKind.Equipped or InventoryKind.World;
+             or InventoryKind.Equipped or InventoryKind.World or InventoryKind.Corpse;
 
     /// <summary>
     /// Location id for Location refs and for World refs (where the item was dropped), container
-    /// geid for Container refs, else empty.
+    /// geid for Container refs, the <see cref="CorpseKey"/> for Corpse refs, else empty.
     /// </summary>
     public string HoldingKey => Kind switch
     {
-        InventoryKind.Location or InventoryKind.World => SubId,
+        InventoryKind.Location or InventoryKind.World or InventoryKind.Corpse => SubId,
         InventoryKind.Container => OwnerId,
         _ => "",
     };

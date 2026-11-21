@@ -1,0 +1,98 @@
+@page "/lost"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject TrackerState State
+
+<PageTitle>Lost at death — Star Citizen inventory</PageTitle>
+
+<h1>Lost at death <span class="badge-count">@_groups.Sum(g => g.Items.Sum(i => i.Holding.Quantity))</span></h1>
+
+@* The game lists what hung on the body when the player died, never what was inside a backpack
+   or armour. Those contents are what the tracker last saw go in, so they are as good as the
+   moves that put them there. *@
+<p class="subtle">What you had on you when you died, including what was in your backpack and armour. Items stay here until you loot them back. The game removes your body after a while and does not log when.</p>
+
+@if (_groups.Count == 0)
+{
+    <p class="empty">Nothing lost. When you die and leave a body, what was on it is listed here.</p>
+}
+else
+{
+    @foreach (var group in _groups)
+    {
+        <section class="place">
+            <h2>@group.Label <span class="badge-count">@group.Items.Sum(i => i.Holding.Quantity)</span></h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Qty</th>
+                        <th>Confidence</th>
+                    </tr>
+                </thead>
+                <tbody>
+                @foreach (var item in group.Items)
+                {
+                    <tr>
+                        <td>
+                            @if (item.Holding.Geid is { } geid)
+                            {
+                                <a href="item/@geid">@item.Display</a>
+                            }
+                            else
+                            {
+                                @item.Display
+                            }
+                        </td>
+                        <td class="qty">@item.Holding.Quantity&times;</td>
+                        <td>
+                            <span class="conf conf-@item.Holding.Confidence.ToString().ToLowerInvariant()"
+                                  title="@string.Join("; ", item.Holding.Caveats)">
+                                @item.Holding.Confidence
+                            </span>
+                        </td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </section>
+    }
+}
+
+@code {
+    /// <summary>What one death left on the body.</summary>
+    private sealed record Group(string Label, DateTimeOffset Died, IReadOnlyList<NamedHolding> Items);
+
+    private List<Group> _groups = [];
+
+    protected override void OnInitialized()
+    {
+        State.Changed += OnChanged;
+        Load();
+    }
+
+    /// <summary>One section per death, newest first, items in name order.</summary>
+    private void Load()
+    {
+        var resolver = State.Current.Resolver;
+
+        _groups = State.Current.Holdings
+            .Where(h => h.Holding.IsLostAtDeath)
+            .GroupBy(h => h.Holding.Root!.Key)
+            .Select(g =>
+            {
+                CorpseKey.TryParse(g.Key, out var died, out var locationId);
+                var where = locationId.Length == 0 || resolver is null ? "an unknown place" : resolver.PlaceLabel(locationId);
+                return new Group(
+                    $"Died at {where} · {died:yyyy-MM-dd HH:mm} UTC",
+                    died,
+                    g.OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase).ToList());
+            })
+            .OrderByDescending(g => g.Died)
+            .ToList();
+    }
+
+    private void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });
+
+    public void Dispose() => State.Changed -= OnChanged;
+}

@@ -751,9 +751,9 @@ else
     </table>;
 
     /// <summary>
-    /// Every holding stored at a station, in a ship's locker or dropped in the world, at any
+    /// Every holding stored at a station, in a ship's locker, dropped in the world or left on a corpse, at any
     /// depth, whose display name or item class contains the query and whose category passes the
-    /// filter. It covers what the station view, the Ships page and the Dropped page cover and
+    /// filter. It covers what the station view, the Ships, Dropped and Lost at death pages cover and
     /// nothing more: what is on the character is never listed. Unpooled — search exists precisely to
     /// find one named instance out of a pool, so collapsing rows here would defeat the point
     /// (unlike the station tables, which pool because the game itself never distinguishes the
@@ -769,7 +769,7 @@ else
     /// <summary>What the query matches, before the category filter.</summary>
     private IEnumerable<NamedHolding> SearchMatches() =>
         State.Current.Holdings
-            .Where(h => h.Holding.IsAtStation || h.Holding.IsInShip || h.Holding.IsDropped)
+            .Where(h => h.Holding.IsAtStation || h.Holding.IsInShip || h.Holding.IsDropped || h.Holding.IsLostAtDeath)
             .Where(h => h.Display.Contains(_query, StringComparison.OrdinalIgnoreCase)
                      || h.ClassName.Contains(_query, StringComparison.OrdinalIgnoreCase));
 
