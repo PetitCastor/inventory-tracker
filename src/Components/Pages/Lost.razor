@@ -5,7 +5,7 @@
 
 <PageTitle>Lost at death — Star Citizen inventory</PageTitle>
 
-<h1>Lost at death <span class="badge-count">@_groups.Sum(g => g.Items.Sum(i => i.Holding.Quantity))</span></h1>
+<h1>Lost at death <span class="badge-count">@_groups.Sum(g => g.Rows.Sum(r => r.Quantity))</span></h1>
 
 @* The game lists what hung on the body when the player died, never what was inside a backpack
    or armour. Those contents are what the tracker last saw go in, so they are as good as the
@@ -21,7 +21,7 @@ else
     @foreach (var group in _groups)
     {
         <section class="place">
-            <h2>@group.Label <span class="badge-count">@group.Items.Sum(i => i.Holding.Quantity)</span></h2>
+            <h2>@group.Label <span class="badge-count">@group.Rows.Sum(r => r.Quantity)</span></h2>
             <table>
                 <thead>
                     <tr>
@@ -31,24 +31,24 @@ else
                     </tr>
                 </thead>
                 <tbody>
-                @foreach (var item in group.Items)
+                @foreach (var row in group.Rows)
                 {
                     <tr>
                         <td>
-                            @if (item.Holding.Geid is { } geid)
+                            @if (row.Geid is { } geid)
                             {
-                                <a href="item/@geid">@item.Display</a>
+                                <a href="item/@geid">@row.Display</a>
                             }
                             else
                             {
-                                @item.Display
+                                @row.Display
                             }
                         </td>
-                        <td class="qty">@item.Holding.Quantity&times;</td>
+                        <td class="qty">@row.Quantity&times;</td>
                         <td>
-                            <span class="conf conf-@item.Holding.Confidence.ToString().ToLowerInvariant()"
-                                  title="@string.Join("; ", item.Holding.Caveats)">
-                                @item.Holding.Confidence
+                            <span class="conf conf-@row.Confidence.ToString().ToLowerInvariant()"
+                                  title="@string.Join("; ", row.Caveats)">
+                                @row.Confidence
                             </span>
                         </td>
                     </tr>
@@ -61,7 +61,34 @@ else
 
 @code {
     /// <summary>What one death left on the body.</summary>
-    private sealed record Group(string Label, DateTimeOffset Died, IReadOnlyList<NamedHolding> Items);
+    private sealed record Group(string Label, DateTimeOffset Died, IReadOnlyList<Row> Rows);
+
+    /// <summary>
+    /// Every unit of one item class left on one body: eight magazines are one line of 8, as in
+    /// a station's table. Only a line that is a single named item links to it.
+    /// </summary>
+    private sealed record Row(string Display, string? Geid, int Quantity, Confidence Confidence, IReadOnlyList<string> Caveats);
+
+    /// <summary>
+    /// Pools identical items. Confidence is the least confident unit's: a line is only as
+    /// trustworthy as its weakest member.
+    /// </summary>
+    private static List<Row> Pool(IEnumerable<NamedHolding> holdings) =>
+        holdings
+            .GroupBy(h => h.ClassName, StringComparer.Ordinal)
+            .Select(g =>
+            {
+                var items = g.ToList();
+                var quantity = items.Sum(h => h.Holding.Quantity);
+                return new Row(
+                    items[0].Display,
+                    quantity == 1 ? items[0].Holding.Geid : null,
+                    quantity,
+                    items.Min(h => h.Holding.Confidence),
+                    items.SelectMany(h => h.Holding.Caveats).Distinct().ToList());
+            })
+            .OrderBy(r => r.Display, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private List<Group> _groups = [];
 
@@ -71,7 +98,7 @@ else
         Load();
     }
 
-    /// <summary>One section per death, newest first, items in name order.</summary>
+    /// <summary>One section per death, newest first, identical items pooled, in name order.</summary>
     private void Load()
     {
         var resolver = State.Current.Resolver;
@@ -86,7 +113,7 @@ else
                 return new Group(
                     $"Died at {where} · {died:yyyy-MM-dd HH:mm} UTC",
                     died,
-                    g.OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase).ToList());
+                    Pool(g));
             })
             .OrderByDescending(g => g.Died)
             .ToList();
