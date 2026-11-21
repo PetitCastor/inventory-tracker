@@ -11,6 +11,12 @@ namespace InventoryTracker.App;
 public sealed record NamedHolding(ItemHolding Holding, ResolvedName Name)
 {
     public string Display => Name.Display;
+
+    /// <summary>
+    /// Where the item is, with any box or item on the way named as the item column names it.
+    /// Defaults to the resolver's raw-class text for holdings built without a catalogue.
+    /// </summary>
+    public string Where { get; init; } = Holding.Where;
     public string ClassName => Holding.ItemClass;
     public ItemCategory Category => ItemCategories.Of(Name.Item?.TypeLabel);
 }
@@ -77,7 +83,10 @@ public sealed class TrackerState(
                 readAdditionalSnapshot: cn => health = LoadHealthSnapshot(cn, logDir, inceptionDate));
             afterResolverLoaded?.Invoke();
             var holdings = resolver.ResolveAll()
-                .Select(h => new NamedHolding(h, names.Resolve(h.ItemClass)))
+                .Select(h => new NamedHolding(h, names.Resolve(h.ItemClass))
+                {
+                    Where = h.WhereNamed(c => names.Resolve(c).Display),
+                })
                 .ToList();
 
             var snapshot = new Snapshot(holdings, resolver, DateTimeOffset.UtcNow, health!);

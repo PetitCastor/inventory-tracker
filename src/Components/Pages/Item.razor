@@ -19,7 +19,7 @@ else
 
     <section class="verdict">
         <h2>Believed to be</h2>
-        <p class="chain-big">@_holding.Where</p>
+        <p class="chain-big">@_holding.WhereNamed(c => State.Names.Resolve(c).Display)</p>
         <p>
             <span class="conf conf-@_holding.Confidence.ToString().ToLowerInvariant()">@_holding.Confidence confidence</span>
             &middot; last moved @_holding.LastMove.ToString("yyyy-MM-dd HH:mm") UTC (@_holding.LastMoveType)

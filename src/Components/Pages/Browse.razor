@@ -221,7 +221,7 @@ else if (health.Moves == 0)
                             }
                         </td>
                         <td class="qty">@h.Holding.Quantity&times;</td>
-                        <td class="chain">@h.Holding.Where</td>
+                        <td class="chain">@h.Where</td>
                         <td class="when" title="@h.Holding.LastMove.ToString("u")">@TimeAgo.Format(h.Holding.LastMove)</td>
                         <td>
                             <span class="conf conf-@h.Holding.Confidence.ToString().ToLowerInvariant()"
@@ -557,7 +557,7 @@ else
             var outer = _path.Take(i).ToList();
             var own = here.FirstOrDefault(h => h.Inside.Count == i && h.Holding.Holding.Geid == key && IsWithin(h.Inside, outer));
             var label = own.Holding?.Display
-                        ?? here.First(h => h.Inside.Count > i && h.Inside[i].Key == key && IsWithin(h.Inside, outer)).Inside[i].Label;
+                        ?? here.First(h => h.Inside.Count > i && h.Inside[i].Key == key && IsWithin(h.Inside, outer)).Inside[i].Named(ItemName);
             _path[i] = _path[i] with { Label = label };
         }
 
@@ -593,7 +593,7 @@ else
                 var inside = g.Select(h => h.Holding).ToList();
                 var opens = new ContainerRow(
                     g.Key,
-                    byGeid.GetValueOrDefault(g.Key)?.Display ?? g.First().Inside[depth].Label,
+                    byGeid.GetValueOrDefault(g.Key)?.Display ?? g.First().Inside[depth].Named(ItemName),
                     inside.Sum(h => h.Holding.Quantity));
 
                 // A filter keeps it when it, or anything stored in it, is of the chosen category:
@@ -630,6 +630,9 @@ else
             .OrderBy(r => r.Display, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
+
+    /// <summary>A box or item met on the way, named as the item column would name it.</summary>
+    private string ItemName(string className) => State.Names.Resolve(className).Display;
 
     /// <summary>True when every container of <paramref name="path"/> is opened, in order, on the
     /// way to the item.</summary>

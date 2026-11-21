@@ -27,6 +27,43 @@ public class ItemHoldingTests
         Assert.True(holding.IsAtStation);
     }
 
+    [Fact]
+    public void Where_named_shows_the_item_a_part_is_on_by_its_name()
+    {
+        // A magazine in a rifle: the resolver only knows the rifle's class.
+        var holding = At(
+            new HoldingLink(InventoryKind.Container, "rifle1", "on behr_rifle_ballistic_03_tint03")
+            {
+                ItemClass = "behr_rifle_ballistic_03_tint03",
+                LabelPrefix = "on ",
+            },
+            new HoldingLink(InventoryKind.Container, "box1", "cds_storage_box_2scu") { ItemClass = "cds_storage_box_2scu" },
+            new HoldingLink(InventoryKind.Location, "loc1", "Area18 — ArcCorp (Stanton)"));
+
+        var names = new Dictionary<string, string>
+        {
+            ["behr_rifle_ballistic_03_tint03"] = "CQ7 \"Infantry\" Rifle",
+            ["cds_storage_box_2scu"] = "2 SCU Storage Box",
+        };
+
+        Assert.Equal(
+            "on CQ7 \"Infantry\" Rifle → 2 SCU Storage Box → Area18 — ArcCorp (Stanton)",
+            holding.WhereNamed(c => names[c]));
+        Assert.Equal(
+            "on behr_rifle_ballistic_03_tint03 → cds_storage_box_2scu → Area18 — ArcCorp (Stanton)",
+            holding.Where);
+    }
+
+    [Fact]
+    public void Where_named_leaves_a_link_without_an_item_class_as_it_is()
+    {
+        var holding = At(
+            new HoldingLink(InventoryKind.Container, "box1", "2 SCU box"),
+            new HoldingLink(InventoryKind.Location, "loc1", "Area18"));
+
+        Assert.Equal("2 SCU box → Area18", holding.WhereNamed(_ => throw new InvalidOperationException()));
+    }
+
     [Theory]
     [InlineData(InventoryKind.Equipped)]
     [InlineData(InventoryKind.Container)]
