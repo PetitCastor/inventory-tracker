@@ -182,6 +182,9 @@ public sealed class LedgerReplay
         /// </summary>
         public int EvictedThenResighted { get; internal set; }
 
+        /// <summary>Items the game listed on the player's corpse when they died.</summary>
+        public int LeftOnCorpse { get; internal set; }
+
         /// <summary>Units character resets wiped: everything the ledger held at each one.</summary>
         public int WipedByReset { get; internal set; }
 
@@ -546,6 +549,12 @@ public sealed class LedgerReplay
 
     private void Apply(MoveRecord move)
     {
+        if (move.TargetKind == InventoryKind.Corpse)
+        {
+            ApplyDeath(move);
+            return;
+        }
+
         if (move.Lost)
         {
             Stats.LostSkipped++;
@@ -591,6 +600,64 @@ public sealed class LedgerReplay
         }
 
         MoveAnonymous(move, source, target);
+    }
+
+    private static readonly Holding Body = new(InventoryKind.Equipped, "");
+
+    /// <summary>
+    /// One item the game listed on the player's corpse. It goes onto the corpse, and whatever
+    /// the ledger holds inside it — a backpack's contents, the magazines in armour — goes with
+    /// it without a line of its own: the game lists what hangs on the body, never what is in a
+    /// container.
+    /// <para>
+    /// The listing names entities only, so what the ledger holds on the body as a bare count
+    /// (an item equipped by class) is moved over as well: the whole body went. An entity the
+    /// ledger never placed is likely one of those counts, or of a count inside a backpack or
+    /// armour that is going over with it, so one such unit is spent for it rather than having
+    /// the item twice.
+    /// </para>
+    /// <para>
+    /// Looting the body back is an ordinary move: one that names the item, or one out of the
+    /// backpack still on the body, finds it on the corpse and takes it off.
+    /// </para>
+    /// </summary>
+    private void ApplyDeath(MoveRecord move)
+    {
+        var corpse = new Holding(InventoryKind.Corpse, move.TargetKey);
+
+        if (_contents.TryGetValue(Body, out var onBody))
+        {
+            foreach (var (itemClass, slot) in onBody)
+            {
+                if (slot.Groups.Count > 0) MergeLoose(corpse, itemClass, slot);
+            }
+        }
+
+        if (move.ItemGeid is not { } geid) return;
+
+        // PlaceInstance spends a count already on the corpse by itself; one still inside a
+        // backpack or armour is spent here.
+        if (!_instanceAt.ContainsKey(geid) && SlotFor(corpse, move.ItemClass, create: false) is not { Groups.Count: > 0 })
+        {
+            SpendInCarried(move.ItemClass, corpse);
+        }
+
+        _carried.Remove(geid);
+        PlaceInstance(geid, move.ItemClass, corpse, move.Timestamp, move.MoveType, confirmed: true, inferred: false);
+        Stats.LeftOnCorpse++;
+    }
+
+    /// <summary>
+    /// Spends one unnamed unit of a class from a backpack or worn apparel that is on the player
+    /// or already on <paramref name="corpse"/>.
+    /// </summary>
+    private void SpendInCarried(string itemClass, Holding corpse)
+    {
+        foreach (var key in _carriedContainers)
+        {
+            if (!IsOnThePlayer(key) && !EndsAt(key, corpse)) continue;
+            if (SpendAnonymous(new Holding(InventoryKind.Container, key), itemClass)) return;
+        }
     }
 
     /// <summary>
@@ -925,15 +992,22 @@ public sealed class LedgerReplay
     /// it holds, but one stored in a locker is not where a shortfall elsewhere was drawn from.
     /// With no move history it has never been seen to leave the player, so it counts.
     /// </summary>
-    private bool IsOnThePlayer(string container)
+    private bool IsOnThePlayer(string container) => EndsAt(container, Body, unplacedCounts: true);
+
+    /// <summary>
+    /// Whether a carried-kind container sits in <paramref name="end"/>, directly or nested in
+    /// other carried containers. <paramref name="unplacedCounts"/> answers for one the ledger
+    /// has never placed.
+    /// </summary>
+    private bool EndsAt(string container, Holding end, bool unplacedCounts = false)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var key = container;
         while (_instanceAt.TryGetValue(key, out var at))
         {
-            if (at.Kind == InventoryKind.Equipped) return true;
+            if (at == end) return true;
 
-            // Nested in another carried container: on the player only if that one is.
+            // Nested in another carried container: there only if that one is.
             if (at.Kind != InventoryKind.Container || !_carriedContainers.Contains(at.Key) || !seen.Add(at.Key))
             {
                 return false;
@@ -942,7 +1016,7 @@ public sealed class LedgerReplay
             key = at.Key;
         }
 
-        return true;
+        return unplacedCounts;
     }
 
     private void CheckPlacement(string geid, MoveRecord move, Holding source)

@@ -48,15 +48,17 @@ public sealed class WornEnumerationTests
     }
 
     [Fact]
-    public void A_backpack_no_longer_worn_is_not_carried_and_says_its_whereabouts_are_unknown()
+    public void A_backpack_left_on_the_body_in_space_is_lost_at_death_not_carried()
     {
+        // The 24 corpse lines at 10:54:23 name it: the backpack stayed on the body. Before
+        // those lines were read it was only known to be gone, whereabouts unknown.
         using var replay = PlaytestReplay.Until("10:56:00");
 
         var backpack = replay.Named("784862306922");
         Assert.NotNull(backpack);
-        Assert.Equal(InventoryKind.LostTrack, backpack.Root?.Kind);
-        Assert.Equal(Confidence.Low, backpack.Confidence);
-        Assert.Contains(backpack.Caveats, c => c.StartsWith("last seen on your character 2026-09-25", StringComparison.Ordinal));
+        Assert.Equal(InventoryKind.Corpse, backpack.Root?.Kind);
+        Assert.True(backpack.IsLostAtDeath);
+        Assert.Contains(backpack.Caveats, c => c.StartsWith("left on your body when you died on 2026-09-25 10:54 UTC", StringComparison.Ordinal));
     }
 
     [Fact]

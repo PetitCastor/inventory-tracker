@@ -48,6 +48,9 @@ public sealed record IngestStats
     /// <summary>Ships flown or retrieved: each says which ship a locker belongs to, or where it is.</summary>
     public int VehiclesSeen { get; set; }
 
+    /// <summary>Items recorded as left on the player's corpse when they died.</summary>
+    public int DeathItemsRecorded { get; set; }
+
     /// <summary>Files this pass could not read; their stored offsets remain due for retry.</summary>
     public List<string> FileErrors { get; } = [];
 
@@ -63,7 +66,7 @@ public sealed record IngestStats
         MovesInserted > 0 || StoresRecorded > 0 || CompletionsApplied > 0 || ContainersIdentified > 0 ||
         CapacitiesSeen > 0 || LocationsNamed > 0 || LocationConflicts > 0 || GeidsRecovered > 0 ||
         AttachmentsSeen > 0 || RequestsLost > 0 || UnrecognisedMoves > 0 || MovesCutShort > 0 ||
-        VehiclesSeen > 0;
+        VehiclesSeen > 0 || DeathItemsRecorded > 0;
 }
 
 /// <summary>
@@ -412,6 +415,26 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 }
 
                 TouchContainer(cn, tx, stored.Target, stored.Timestamp, state.CurrentLocation);
+                break;
+            }
+
+            // The player died and left a body. Each item it lists is recorded as a move onto
+            // that body, so it leaves the player like any other move, and whatever sits inside
+            // it — the backpack's contents — goes with it. The character itself (body, head,
+            // mobiGlas) is not an item, and a part stays on the item it belongs to.
+            case CorpseItemListed corpse:
+            {
+                if (AttachmentSeen.IsCharacterPort(corpse.Port) || AttachmentSeen.IsPartPort(corpse.Port)) break;
+
+                var died = new ItemMoved(
+                    corpse.Timestamp, RequestNo: 0, Player: "", PlayerId: "", MoveType: DeathMove,
+                    InventoryRef.Equipped, InventoryRef.CorpseAt(corpse.Timestamp, state.CurrentLocation?.LocationId),
+                    corpse.ClassName, corpse.Geid, Amount: 1);
+
+                if (InsertMove(cn, tx, sessionId, lineOffset, died, caller: null, itemIx: 0) is not null)
+                {
+                    stats.DeathItemsRecorded++;
+                }
                 break;
             }
 
@@ -1387,6 +1410,12 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
 
     /// <summary>What a request the server never processed is recorded as.</summary>
     public const string LostResult = "lost";
+
+    /// <summary>
+    /// The move type of an item left on the player's corpse. No request carries it: the game
+    /// moved the item itself, so nothing ever confirms or fails it.
+    /// </summary>
+    public const string DeathMove = "Death";
 
     /// <summary>
     /// Marks every request of the session still without a result as lost, up to

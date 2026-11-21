@@ -32,8 +32,9 @@ public static partial class InventoryEventParser
     /// <para>6 -> 7: ship lockers are named, and ships flown and retrieved are recorded.</para>
     /// <para>7 -> 8: a multi-select drag whose line the game cut short is still read.</para>
     /// <para>8 -> 9: the character creator opening before the first spawn marks a character reset.</para>
+    /// <para>9 -> 10: what was on the player when they died is left on their corpse.</para>
     /// </summary>
-    public const int Version = 9;
+    public const int Version = 10;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -194,10 +195,24 @@ public static partial class InventoryEventParser
     [GeneratedRegex(@"^cause=(?<cause>\d+) reason=""(?<reason>[^""]*)""", RegexOptions.CultureInvariant)]
     private static partial Regex Disconnect();
 
+    // <Adding non kept item [CSCActorCorpseUtils::PopulateItemPortForItemRecoveryEntitlement]>
+    //   Item 'cls_geid - Class(cls) - Context(...) - Socpak()', Recorded data is: Port Name 'backpack', ...
+    [GeneratedRegex(
+        @"^Item '(?<entity>[^ ']+) - Class\((?<cls>[^)]*)\).*?Port Name '(?<port>[^']*)'",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex CorpseItem();
+
+    /// <summary>
+    /// The function that writes a corpse line. The tag around it reads "Adding non kept item";
+    /// only the function name is matched, so a "kept" sibling would be read the same way.
+    /// </summary>
+    private const string CorpseUtils = "CSCActorCorpseUtils::PopulateItemPortForItemRecoveryEntitlement";
+
     public static InventoryEvent? Parse(LogLine line)
     {
         var ev = line.EventName switch
         {
+            _ when line.EventName.Contains(CorpseUtils, StringComparison.Ordinal) => ParseCorpseItem(line),
             "InventoryManagementRequest" or "Inventory Mgmt Request Queued" => ParseQueued(line),
             "Add Inventory Management Move" => ParseAddMove(line),
             "Player Inventory Request Complete" => ParseComplete(line, PlayerRequestComplete()),
@@ -477,6 +492,18 @@ public static partial class InventoryEventParser
         return new AttachmentSeen(
             line.Timestamp, m.Groups["geid"].Value, m.Groups["cls"].Value, m.Groups["port"].Value,
             m.Groups["status"].Value);
+    }
+
+    private static InventoryEvent? ParseCorpseItem(LogLine line)
+    {
+        var m = CorpseItem().Match(line.Rest);
+        if (!m.Success) return null;
+
+        // The entity is "<class>_<geid>"; its class must be the one the line names.
+        var cls = m.Groups["cls"].Value;
+        if (!EntityId.TrySplit(m.Groups["entity"].Value, out var entityClass, out var geid) || entityClass != cls) return null;
+
+        return new CorpseItemListed(line.Timestamp, geid, cls, m.Groups["port"].Value);
     }
 
     private static InventoryEvent? ParseRouteStart(LogLine line)
