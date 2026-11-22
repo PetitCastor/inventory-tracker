@@ -55,6 +55,24 @@ public class ItemCategoriesTests
         Assert.Equal(ItemCategory.Armor, ItemCategories.Of("Legs (Armor)"));
     }
 
+    [Theory]
+    [InlineData("crlf_medgun_vial_01")]
+    [InlineData("grin_multitool_resource_healing_01")]
+    public void A_healing_refill_is_a_consumable_though_the_wiki_calls_it_a_weapon_attachment(string itemClass)
+    {
+        Assert.Equal(ItemCategory.Consumables, ItemCategories.Of("Weapon Attachment", itemClass));
+    }
+
+    [Theory]
+    [InlineData("behr_rifle_ballistic_03_mag")]
+    [InlineData("crlf_medgun_01")]
+    [InlineData(null)]
+    public void Other_items_still_go_by_their_wiki_label(string? itemClass)
+    {
+        Assert.Equal(ItemCategory.Weapons, ItemCategories.Of("Weapon Attachment", itemClass));
+        Assert.Equal(ItemCategory.Weapons, ItemCategories.Of("FPS Weapon", itemClass));
+    }
+
     [Fact]
     public void Every_category_has_a_label()
     {
