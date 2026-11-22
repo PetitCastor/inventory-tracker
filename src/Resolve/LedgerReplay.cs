@@ -30,7 +30,8 @@ public sealed class LedgerReplay
         string ArrivedBy,
         bool Confirmed,
         bool IdentityAmbiguous,
-        bool Inferred);
+        bool Inferred,
+        ItemOrigin Origin = ItemOrigin.Unknown);
 
     /// <summary>An unnamed quantity of one class, with the newest arrival that contributed to it.</summary>
     /// <remarks>
@@ -51,6 +52,8 @@ public sealed class LedgerReplay
     /// unit is simply the first time the item was seen: looted, bought, or there before the
     /// logs begin.
     /// </param>
+    /// <param name="Origin">How these units came to the player. Part of the provenance, so a
+    /// bought unit and one of unknown origin never share a group.</param>
     public sealed record Anonymous(
         string ItemClass,
         int Quantity,
@@ -58,7 +61,8 @@ public sealed class LedgerReplay
         string ArrivedBy,
         bool Confirmed,
         bool Inferred,
-        bool DuplicateRisk = false);
+        bool DuplicateRisk = false,
+        ItemOrigin Origin = ItemOrigin.Unknown);
 
     /// <summary>What one holding contains, by item class.</summary>
     private sealed class Slot
@@ -87,7 +91,8 @@ public sealed class LedgerReplay
                 Groups[0].ItemClass, LooseQuantity, Stack.Since, Stack.ArrivedBy,
                 Confirmed: Groups.TrueForAll(g => g.Confirmed),
                 Inferred: Groups.Exists(g => g.Inferred),
-                DuplicateRisk: Groups.Exists(g => g.DuplicateRisk));
+                DuplicateRisk: Groups.Exists(g => g.DuplicateRisk),
+                Origin: Groups.TrueForAll(g => g.Origin == ItemOrigin.Bought) ? ItemOrigin.Bought : ItemOrigin.Unknown);
     }
 
     /// <summary>
@@ -97,6 +102,9 @@ public sealed class LedgerReplay
     /// </summary>
     public sealed class ReplayStats
     {
+        /// <summary>Units bought at a shop kiosk, placed where the player stood.</summary>
+        public int UnitsBought { get; internal set; }
+
         /// <summary>Moves the game said failed, never applied.</summary>
         public int FailedSkipped { get; internal set; }
 
@@ -562,6 +570,15 @@ public sealed class LedgerReplay
             return;
         }
 
+        // A purchase is where its units begin: nothing is taken from anywhere, and nothing about
+        // them is a guess. What the shop sold stays marked as bought wherever it goes next. Its
+        // answer comes from the shop, not the inventory server, so it settles no prediction.
+        if (move.MoveType == Ingest.LogIngestor.BuyMove)
+        {
+            ApplyPurchase(move);
+            return;
+        }
+
         // The server is answering requests again: whatever the client predicted while it was
         // stalled has been settled one way or the other.
         if (move.Succeeded || move.Failed)
@@ -602,6 +619,27 @@ public sealed class LedgerReplay
         MoveAnonymous(move, source, target);
     }
 
+    private void ApplyPurchase(MoveRecord move)
+    {
+        if (move.Failed)
+        {
+            Stats.FailedSkipped++;
+            return;
+        }
+
+        var target = new Holding(move.TargetKind, move.TargetKey);
+        if (!target.IsReal)
+        {
+            Stats.UnrealTargetSkipped++;
+            return;
+        }
+
+        Stats.UnitsBought += move.Units;
+        AddAnonymous(
+            target, move.ItemClass, move.Units, move.Timestamp, move.MoveType, move.Succeeded, inferred: false,
+            origin: ItemOrigin.Bought);
+    }
+
     private static readonly Holding Body = new(InventoryKind.Equipped, "");
 
     /// <summary>
@@ -637,13 +675,16 @@ public sealed class LedgerReplay
 
         // PlaceInstance spends a count already on the corpse by itself; one still inside a
         // backpack or armour is spent here.
+        // The unit spent is this entity, so it keeps how that unit was come by.
+        var origin = ItemOrigin.Unknown;
         if (!_instanceAt.ContainsKey(geid) && SlotFor(corpse, move.ItemClass, create: false) is not { Groups.Count: > 0 })
         {
-            SpendInCarried(move.ItemClass, corpse);
+            origin = SpendInCarried(move.ItemClass, corpse);
         }
 
         _carried.Remove(geid);
-        PlaceInstance(geid, move.ItemClass, corpse, move.Timestamp, move.MoveType, confirmed: true, inferred: false);
+        PlaceInstance(
+            geid, move.ItemClass, corpse, move.Timestamp, move.MoveType, confirmed: true, inferred: false, origin: origin);
         Stats.LeftOnCorpse++;
     }
 
@@ -651,13 +692,16 @@ public sealed class LedgerReplay
     /// Spends one unnamed unit of a class from a backpack or worn apparel that is on the player
     /// or already on <paramref name="corpse"/>.
     /// </summary>
-    private void SpendInCarried(string itemClass, Holding corpse)
+    /// <returns>How the unit spent was come by, or Unknown when none was.</returns>
+    private ItemOrigin SpendInCarried(string itemClass, Holding corpse)
     {
         foreach (var key in _carriedContainers)
         {
             if (!IsOnThePlayer(key) && !EndsAt(key, corpse)) continue;
-            if (SpendAnonymous(new Holding(InventoryKind.Container, key), itemClass)) return;
+            if (SpendAnonymous(new Holding(InventoryKind.Container, key), itemClass, out var origin)) return origin;
         }
+
+        return ItemOrigin.Unknown;
     }
 
     /// <summary>
@@ -852,16 +896,19 @@ public sealed class LedgerReplay
                 NoteCarry(pick.Geid, move.ArrivedBy);
                 PlaceInstance(
                     pick.Geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy,
-                    move.Succeeded, inferred: false, ambiguous: candidates > 1 || pick.IdentityAmbiguous);
+                    move.Succeeded, inferred: false, ambiguous: candidates > 1 || pick.IdentityAmbiguous,
+                    origin: pick.Origin);
                 taken++;
                 Stats.UnitsFromNamed++;
             }
 
-            while (taken < wanted && TakeOne(from, inferredOnly: false))
+            while (taken < wanted && TakeOne(from, inferredOnly: false, out var origin))
             {
                 taken++;
                 Stats.UnitsFromLoose++;
-                AddAnonymous(target, move.ItemClass, 1, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false);
+                AddAnonymous(
+                    target, move.ItemClass, 1, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false,
+                    origin: origin);
             }
         }
         else if (source.IsReal)
@@ -924,13 +971,15 @@ public sealed class LedgerReplay
                 NoteCarry(pick.Geid, move.ArrivedBy);
                 PlaceInstance(
                     pick.Geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy,
-                    move.Succeeded, inferred: false, ambiguous: true);
+                    move.Succeeded, inferred: false, ambiguous: true, origin: pick.Origin);
                 taken++;
             }
 
-            while (taken < wanted && TakeOne(slot, inferredOnly: false))
+            while (taken < wanted && TakeOne(slot, inferredOnly: false, out var origin))
             {
-                AddAnonymous(target, move.ItemClass, 1, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false);
+                AddAnonymous(
+                    target, move.ItemClass, 1, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false,
+                    origin: origin);
                 taken++;
             }
         }
@@ -957,7 +1006,7 @@ public sealed class LedgerReplay
             NoteCarry(pick.Geid, move.ArrivedBy);
             PlaceInstance(
                 pick.Geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy,
-                move.Succeeded, inferred: false, ambiguous: true);
+                move.Succeeded, inferred: false, ambiguous: true, origin: pick.Origin);
             taken++;
         }
 
@@ -1073,7 +1122,8 @@ public sealed class LedgerReplay
 
     private void PlaceInstance(
         string geid, string itemClass, Holding target, DateTimeOffset at, string moveType,
-        bool confirmed, bool inferred, bool ambiguous = false, Holding? source = null)
+        bool confirmed, bool inferred, bool ambiguous = false, Holding? source = null,
+        ItemOrigin origin = ItemOrigin.Unknown)
     {
         // Class-level and carried moves may remove the old slot before this method runs;
         // InstanceAt still identifies the entity and prevents spending an unrelated loose unit.
@@ -1083,13 +1133,17 @@ public sealed class LedgerReplay
         {
             foreach (var old in oldClasses.Values)
             {
-                if (old.Named.RemoveAll(i => i.Geid == geid) == 0) continue;
+                if (old.Named.Find(i => i.Geid == geid) is not { } previous) continue;
+                origin = Known(origin, previous.Origin);
+                old.Named.Remove(previous);
                 break;
             }
         }
 
-        if (!existed && source is { IsReal: true } from && SpendAnonymous(from, itemClass))
+        ItemOrigin spent;
+        if (!existed && source is { IsReal: true } from && SpendAnonymous(from, itemClass, out spent))
         {
+            origin = Known(origin, spent);
             // First sighting, on its way out of somewhere that held an unnamed unit of its
             // class: that unit is this entity, now named. Leaving it behind would count the
             // item twice — a drink carried out of a crate would still be in the crate too.
@@ -1100,7 +1154,11 @@ public sealed class LedgerReplay
             // First sighting of this entity. If an unnamed unit of the same class is already
             // sitting where this one is arriving, the two are almost certainly the same
             // thing being described twice — an item dragged in by class and stored by name.
-            if (SpendAnonymous(target, itemClass)) _reconciled.Add(geid);
+            if (SpendAnonymous(target, itemClass, out spent))
+            {
+                origin = Known(origin, spent);
+                _reconciled.Add(geid);
+            }
         }
 
         // A named entity coming to rest where we had earlier only *guessed* an anonymous
@@ -1112,15 +1170,23 @@ public sealed class LedgerReplay
         // counted stacks (ammo, drinks) are never touched. This catches the case the target
         // dedupe above misses: the entity was first seen somewhere else and only later
         // passed through the holding holding the guess.
-        if (!_reconciled.Contains(geid) && SpendAnonymous(target, itemClass, inferredOnly: true))
+        if (!_reconciled.Contains(geid) && SpendAnonymous(target, itemClass, out spent, inferredOnly: true))
         {
+            origin = Known(origin, spent);
             _reconciled.Add(geid);
         }
 
         SlotFor(target, itemClass, create: true)!.Named.Add(
-            new Instance(geid, itemClass, at, moveType, confirmed, ambiguous, inferred));
+            new Instance(geid, itemClass, at, moveType, confirmed, ambiguous, inferred, origin));
         _instanceAt[geid] = target;
     }
+
+    /// <summary>
+    /// The origin to keep when an entity turns out to be a unit already known some other way:
+    /// whichever of the two says something. A unit bought at a kiosk stays bought once the
+    /// game names it.
+    /// </summary>
+    private static ItemOrigin Known(ItemOrigin a, ItemOrigin b) => a != ItemOrigin.Unknown ? a : b;
 
     /// <summary>
     /// Consumes one anonymous unit of a class from a holding, used when an entity turns out
@@ -1131,10 +1197,11 @@ public sealed class LedgerReplay
     /// Only a unit that was itself inferred may be spent: never more than the stack's inferred
     /// units, however many named entities turn up.
     /// </param>
-    private bool SpendAnonymous(Holding where, string itemClass, bool inferredOnly = false)
+    private bool SpendAnonymous(Holding where, string itemClass, out ItemOrigin origin, bool inferredOnly = false)
     {
+        origin = ItemOrigin.Unknown;
         if (SlotFor(where, itemClass, create: false) is not { } slot) return false;
-        if (!TakeOne(slot, inferredOnly)) return false;
+        if (!TakeOne(slot, inferredOnly, out origin)) return false;
 
         Stats.AnonymousReconciled++;
         return true;
@@ -1144,8 +1211,9 @@ public sealed class LedgerReplay
     /// Takes one unnamed unit out of a slot. The logs never say which of several identical
     /// units left, so it comes from the newest group, as a named pick takes the newest instance.
     /// </summary>
-    private static bool TakeOne(Slot slot, bool inferredOnly)
+    private static bool TakeOne(Slot slot, bool inferredOnly, out ItemOrigin origin)
     {
+        origin = ItemOrigin.Unknown;
         var pick = -1;
         for (var i = 0; i < slot.Groups.Count; i++)
         {
@@ -1156,6 +1224,7 @@ public sealed class LedgerReplay
         if (pick < 0) return false;
 
         var group = slot.Groups[pick];
+        origin = group.Origin;
         if (group.Quantity > 1) slot.Groups[pick] = group with { Quantity = group.Quantity - 1 };
         else slot.Groups.RemoveAt(pick);
         return true;
@@ -1168,7 +1237,7 @@ public sealed class LedgerReplay
     {
         var same = slot.Groups.FindIndex(g =>
             g.Confirmed == units.Confirmed && g.Inferred == units.Inferred
-            && g.DuplicateRisk == units.DuplicateRisk);
+            && g.DuplicateRisk == units.DuplicateRisk && g.Origin == units.Origin);
         if (same < 0)
         {
             slot.Groups.Add(units);
@@ -1182,7 +1251,7 @@ public sealed class LedgerReplay
 
     private void AddAnonymous(
         Holding target, string itemClass, int quantity, DateTimeOffset at, string moveType,
-        bool confirmed, bool inferred, bool duplicateRisk = false)
+        bool confirmed, bool inferred, bool duplicateRisk = false, ItemOrigin origin = ItemOrigin.Unknown)
     {
         if (quantity <= 0) return;
 
@@ -1190,7 +1259,7 @@ public sealed class LedgerReplay
         slot.Stack = slot.Groups.Count == 0
             ? (at, moveType)
             : slot.Stack with { Since = at, ArrivedBy = moveType };
-        AddGroup(slot, new Anonymous(itemClass, quantity, at, moveType, confirmed, inferred, duplicateRisk));
+        AddGroup(slot, new Anonymous(itemClass, quantity, at, moveType, confirmed, inferred, duplicateRisk, origin));
     }
 
     private Slot? SlotFor(Holding where, string itemClass, bool create)

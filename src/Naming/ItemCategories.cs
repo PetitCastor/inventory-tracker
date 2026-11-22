@@ -41,6 +41,13 @@ public static class ItemCategories
         "Salvage Head", "Salvage Modifier",
     };
 
+    /// <summary>
+    /// Healing refills, by class: the ParaMed's vial and the multitool's LifeGuard canister. The
+    /// wiki labels them "Weapon Attachment" like every magazine, but they are used up healing,
+    /// as a MedPen is, so they sort with the consumables.
+    /// </summary>
+    private static readonly string[] MedicalRefills = ["crlf_medgun_vial_", "grin_multitool_resource_healing_"];
+
     /// <summary>Every category, in the order the filters list them.</summary>
     public static IReadOnlyList<ItemCategory> All { get; } = Enum.GetValues<ItemCategory>();
 
@@ -58,6 +65,22 @@ public static class ItemCategories
         if (Consumables.Contains(label)) return ItemCategory.Consumables;
         if (ShipParts.Contains(label)) return ItemCategory.ShipParts;
         return ItemCategory.Other;
+    }
+
+    /// <summary>
+    /// The category of item class <paramref name="itemClass"/>, whose wiki type label is
+    /// <paramref name="typeLabel"/>: by the label, except for the few classes the label sorts
+    /// wrongly (see <see cref="MedicalRefills"/>).
+    /// </summary>
+    public static ItemCategory Of(string? typeLabel, string? itemClass)
+    {
+        if (itemClass is not null
+            && Array.Exists(MedicalRefills, prefix => itemClass.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+        {
+            return ItemCategory.Consumables;
+        }
+
+        return Of(typeLabel);
     }
 
     /// <summary>The name a filter shows for <paramref name="category"/>.</summary>

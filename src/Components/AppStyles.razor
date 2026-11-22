@@ -452,6 +452,20 @@
     .when { color: var(--muted); white-space: nowrap; }
     .unnamed { color: var(--medium); margin-left: 0.3rem; cursor: help; }
 
+    /* How an item came to the player (bought, ...), beside its name. A tag, not a category. */
+    .tag {
+        font-size: 0.7rem;
+        margin-left: 0.4rem;
+        padding: 0.05rem 0.45rem;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        white-space: nowrap;
+        cursor: help;
+    }
+
+    .tag-bought { color: var(--accent); border-color: rgba(77, 171, 247, 0.4); }
+
     /* A station whose name is not confirmed yet: what is known, and how to settle it. */
     .place-status {
         display: flex;

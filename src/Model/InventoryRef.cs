@@ -52,6 +52,13 @@ public enum InventoryKind
     /// </summary>
     Corpse,
 
+    /// <summary>
+    /// Synthetic, and only ever the source of a move: the shop kiosk an item was bought from.
+    /// The key is the shop's name (<c>SCShop_LiveFire_Truckstop02-001</c>). Never a holding:
+    /// nothing is ever taken back out of a shop.
+    /// </summary>
+    Shop,
+
     /// <summary>Anything we do not recognise. Kept so diagnostics can surface new formats.</summary>
     Unknown,
 }
@@ -82,6 +89,19 @@ public readonly record struct InventoryRef(InventoryKind Kind, string OwnerId, s
     public static InventoryRef CorpseAt(DateTimeOffset at, string? locationId) =>
         new(InventoryKind.Corpse, "", CorpseKey.Format(at, locationId), "CORPSE");
 
+    /// <summary>
+    /// The kiosk of shop <paramref name="shopId"/>. The raw form keeps the id, which is what
+    /// pairs the purchase with the shop's answer; the key is the name, which is what is shown.
+    /// </summary>
+    public static InventoryRef ShopAt(string shopId, string shopName) =>
+        new(InventoryKind.Shop, shopId, shopName, $"{shopId}:Shop:{shopName}");
+
+    /// <summary>
+    /// A station's own inventory, as the game writes it: <c>&lt;playerId&gt;:Location:&lt;locationId&gt;</c>.
+    /// </summary>
+    public static InventoryRef LocationOf(string playerId, string locationId) =>
+        new(InventoryKind.Location, playerId, locationId, $"{playerId}:Location:{locationId}");
+
     /// <summary>True when this handle can actually hold an item over time.</summary>
     public bool IsHolding =>
         Kind is InventoryKind.Location or InventoryKind.Container
@@ -89,11 +109,12 @@ public readonly record struct InventoryRef(InventoryKind Kind, string OwnerId, s
 
     /// <summary>
     /// Location id for Location refs and for World refs (where the item was dropped), container
-    /// geid for Container refs, the <see cref="CorpseKey"/> for Corpse refs, else empty.
+    /// geid for Container refs, the <see cref="CorpseKey"/> for Corpse refs, the shop's name for
+    /// Shop refs, else empty.
     /// </summary>
     public string HoldingKey => Kind switch
     {
-        InventoryKind.Location or InventoryKind.World or InventoryKind.Corpse => SubId,
+        InventoryKind.Location or InventoryKind.World or InventoryKind.Corpse or InventoryKind.Shop => SubId,
         InventoryKind.Container => OwnerId,
         _ => "",
     };

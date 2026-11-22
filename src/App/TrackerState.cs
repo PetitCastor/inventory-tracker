@@ -18,7 +18,7 @@ public sealed record NamedHolding(ItemHolding Holding, ResolvedName Name)
     /// </summary>
     public string Where { get; init; } = Holding.Where;
     public string ClassName => Holding.ItemClass;
-    public ItemCategory Category => ItemCategories.Of(Name.Item?.TypeLabel);
+    public ItemCategory Category => ItemCategories.Of(Name.Item?.TypeLabel, Holding.ItemClass);
 }
 
 /// <summary>

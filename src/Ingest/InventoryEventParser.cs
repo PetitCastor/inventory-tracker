@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using InventoryTracker.Model;
 using InventoryTracker.Naming;
@@ -33,8 +34,9 @@ public static partial class InventoryEventParser
     /// <para>7 -> 8: a multi-select drag whose line the game cut short is still read.</para>
     /// <para>8 -> 9: the character creator opening before the first spawn marks a character reset.</para>
     /// <para>9 -> 10: what was on the player when they died is left on their corpse.</para>
+    /// <para>10 -> 11: a purchase at a shop kiosk puts the item in the station the player is at.</para>
     /// </summary>
-    public const int Version = 10;
+    public const int Version = 11;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -208,6 +210,25 @@ public static partial class InventoryEventParser
     /// </summary>
     private const string CorpseUtils = "CSCActorCorpseUtils::PopulateItemPortForItemRecoveryEntitlement";
 
+    // Sending SShopBuyRequest - playerId[..] shopId[..] shopName[..] kioskId[..] client_price[9083.000000]
+    //   itemClassGUID[..] itemName[behr_rifle_ballistic_03_mag] quantity[31]
+    [GeneratedRegex(
+        @"^Sending SShopBuyRequest - playerId\[(?<pid>\d+)\] shopId\[(?<shop>\d+)\] shopName\[(?<name>[^\]]*)\] " +
+        @"kioskId\[\d+\] client_price\[(?<price>[0-9.]+)\] itemClassGUID\[[^\]]*\] itemName\[(?<item>[^\]]+)\] " +
+        @"quantity\[(?<qty>\d+)\]",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex ShopBuy();
+
+    // Received ShopFlowResponse - playerId[..] shopId[..] shopName[..] kioskId[..] kioskState[..] result[Success] type[Buying]
+    [GeneratedRegex(
+        @"^Received ShopFlowResponse - playerId\[\d+\] shopId\[(?<shop>\d+)\] .*?result\[(?<result>[^\]]*)\] type\[Buying\]",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex ShopAnswer();
+
+    /// <summary>The kiosk's two lines. A bar or vending machine writes from another component.</summary>
+    private const string KioskBuy = "CEntityComponentShopUIProvider::SendShopBuyRequest";
+    private const string KioskAnswer = "CEntityComponentShopUIProvider::RmShopFlowResponse";
+
     public static InventoryEvent? Parse(LogLine line)
     {
         var ev = line.EventName switch
@@ -231,6 +252,8 @@ public static partial class InventoryEventParser
             "Vehicle Control Flow" => ParseVehicleFlown(line),
             "CEntityComponentShipListProvider::SetVehicleSpawningInformations" => ParseVehicleRetrieved(line),
             "CreateChannel" or "ReuseChannel" => ParseChannel(line),
+            KioskBuy => ParseShopBuy(line),
+            KioskAnswer => ParseShopAnswer(line),
 
             // An event tag we have never seen dispatch to a move parser at all — most likely
             // the queued-tag rename happening again under a name this build doesn't know
@@ -504,6 +527,30 @@ public static partial class InventoryEventParser
         if (!EntityId.TrySplit(m.Groups["entity"].Value, out var entityClass, out var geid) || entityClass != cls) return null;
 
         return new CorpseItemListed(line.Timestamp, geid, cls, m.Groups["port"].Value);
+    }
+
+    private static InventoryEvent? ParseShopBuy(LogLine line)
+    {
+        var m = ShopBuy().Match(line.Rest);
+        if (!m.Success) return null;
+
+        var quantity = int.Parse(m.Groups["qty"].Value, CultureInfo.InvariantCulture);
+        if (quantity <= 0) return null;
+
+        var price = decimal.TryParse(
+            m.Groups["price"].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var p) ? p : 0m;
+
+        return new ShopItemBought(
+            line.Timestamp, m.Groups["pid"].Value, m.Groups["shop"].Value, m.Groups["name"].Value,
+            m.Groups["item"].Value, quantity, price);
+    }
+
+    private static InventoryEvent? ParseShopAnswer(LogLine line)
+    {
+        var m = ShopAnswer().Match(line.Rest);
+        return m.Success
+            ? new ShopBuyAnswered(line.Timestamp, m.Groups["shop"].Value, m.Groups["result"].Value)
+            : null;
     }
 
     private static InventoryEvent? ParseRouteStart(LogLine line)
