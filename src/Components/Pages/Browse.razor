@@ -78,6 +78,16 @@
 @* These are mutually exclusive and each one fully explains why the page below has
    nothing in it, so at most one is shown and it replaces the generic "no locations" message
    further down (see EmptiesExplained). *@
+@* A failed read comes first: it leaves the store empty, and every banner below would then
+   blame the logs. A store left with an old shape read as "No Star Citizen logs found" next to
+   a folder that held them. *@
+else if (Watcher.LastPass is { Error: { } readError } && EmptinessExplained(State.Current))
+{
+    <p class="banner banner-warn">
+        Reading your logs failed: <code>@readError</code>
+        <a href="settings?tab=diagnostics">See Diagnostics in Settings</a>.
+    </p>
+}
 else if (health.LogFiles == 0)
 {
     <p class="banner banner-info">
@@ -475,6 +485,8 @@ else
     protected override void OnInitialized()
     {
         State.Changed += OnChanged;
+        Watcher.PassCompleted += OnPassCompleted;
+        _readError = Watcher.LastPass?.Error;
         RefreshOptions();
     }
 
@@ -942,5 +954,21 @@ else
 
     private void OnChanged() => InvokeAsync(() => { RefreshOptions(); StateHasChanged(); });
 
-    public void Dispose() => State.Changed -= OnChanged;
+    /// <summary>The read error last drawn. A failed pass publishes no snapshot, so State.Changed
+    /// never shows it; passes run on every write to Game.log, so only a change of error redraws.</summary>
+    private string? _readError;
+
+    private void OnPassCompleted()
+    {
+        var error = Watcher.LastPass?.Error;
+        if (error == _readError) return;
+        _readError = error;
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        State.Changed -= OnChanged;
+        Watcher.PassCompleted -= OnPassCompleted;
+    }
 }

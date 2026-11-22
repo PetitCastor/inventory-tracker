@@ -78,9 +78,13 @@ public sealed class TrackerDb
     /// <c>wiki_location</c> and <c>place_name</c>; 15 -> 16 adds <c>vehicle</c> and <c>wiki_vehicle</c>.</para>
     /// <para>16 -> 17 adds bounded, watermark-bound ingest correlation snapshots.</para>
     /// <para>17 -> 18 adds <c>session.char_reset_at</c>.</para>
-    /// <para>18 -> 19 adds <c>move.price</c> and <c>session.cur_landing_id</c>.</para>
+    /// <para>18 -> 19 adds <c>move.price</c>.</para>
+    /// <para>19 -> 20 adds <c>session.cur_landing_id</c>. It first shipped under 19, after a
+    /// build had already stamped stores 19 without it; those stores kept the old shape and
+    /// every ingest pass failed on the missing column. Any change of shape needs its own bump,
+    /// even on a version not yet released.</para>
     /// </summary>
-    private const int SchemaVersion = 19;
+    private const int SchemaVersion = 20;
 
     public void Initialize()
     {
