@@ -219,7 +219,29 @@ public sealed class TrackerDbTests : IDisposable
         Assert.Equal("0", Scalar("SELECT COUNT(*) FROM ingest_correlation"));
         Assert.Equal("confirmed place", Scalar("SELECT name FROM place_name WHERE place_key = 'place:1'"));
         Assert.Equal("item", Scalar("SELECT display_name FROM wiki_item WHERE class_name = 'item_class'"));
-        Assert.Equal("19", Scalar("SELECT value FROM meta WHERE key = 'schema_version'"));
+        Assert.Equal("20", Scalar("SELECT value FROM meta WHERE key = 'schema_version'"));
+    }
+
+    [Fact]
+    public void Initialize_rebuilds_a_version_19_store_that_lacks_cur_landing_id()
+    {
+        // A pre-release build stamped stores 19 before session.cur_landing_id existed; the
+        // release kept 19, so those stores were never rebuilt and every pass failed on it.
+        using (var cn = _db.Open())
+        using (var cmd = cn.CreateCommand())
+        {
+            cmd.CommandText = """
+                ALTER TABLE session DROP COLUMN cur_landing_id;
+                UPDATE meta SET value = '19' WHERE key = 'schema_version';
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        _db.Initialize();
+
+        Assert.Equal("1", Scalar("SELECT COUNT(*) FROM pragma_table_info('session') WHERE name = 'cur_landing_id'"));
+        Assert.Equal("0", Scalar("SELECT COUNT(*) FROM session"));
+        Assert.Equal("20", Scalar("SELECT value FROM meta WHERE key = 'schema_version'"));
     }
 
     private void SeedDerivedData()
