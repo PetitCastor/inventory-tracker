@@ -34,6 +34,41 @@ else
         </ul>
     </section>
 
+    @* The lists of what is somewhere show the item alone; its parts are listed here. *@
+    @if (_parts.Count > 0)
+    {
+        <h2>Parts</h2>
+        <table>
+            <thead>
+                <tr><th>Item</th><th>Qty</th><th>Confidence</th></tr>
+            </thead>
+            <tbody>
+            @foreach (var part in _parts)
+            {
+                <tr>
+                    <td>
+                        @if (part.Holding.Geid is { } geid)
+                        {
+                            <a href="item/@geid">@part.Display</a>
+                        }
+                        else
+                        {
+                            @part.Display
+                        }
+                    </td>
+                    <td class="qty">@part.Holding.Quantity&times;</td>
+                    <td>
+                        <span class="conf conf-@part.Holding.Confidence.ToString().ToLowerInvariant()"
+                              title="@string.Join("; ", part.Holding.Caveats)">
+                            @part.Holding.Confidence
+                        </span>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+    }
+
     <h2>Movement history</h2>
     <table>
         <thead>
@@ -58,6 +93,7 @@ else
 
     private ItemHolding? _holding;
     private IReadOnlyList<MoveRecord> _history = [];
+    private IReadOnlyList<NamedHolding> _parts = [];
     private string _name = "Item";
 
     protected override void OnInitialized() => State.Changed += OnChanged;
@@ -76,6 +112,14 @@ else
         _holding = snapshot.Resolver?.Resolve(Geid);
         _history = snapshot.Resolver?.History(Geid) ?? [];
         _name = _holding is null ? "Unknown item" : State.Names.Resolve(_holding.ItemClass).Display;
+
+        // What hangs directly off this item: its scope, magazine, barrel, visor.
+        _parts = snapshot.Resolver?.HasParts(Geid) == true
+            ? snapshot.Holdings
+                .Where(h => h.Holding.Chain is [{ Kind: InventoryKind.Container } on, ..] && on.Key == Geid)
+                .OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase)
+                .ToList()
+            : [];
     }
 
     private void OnChanged() => InvokeAsync(() => { Load(); StateHasChanged(); });

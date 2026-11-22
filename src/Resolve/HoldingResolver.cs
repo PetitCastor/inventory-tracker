@@ -132,6 +132,17 @@ public sealed class HoldingResolver
     /// sits on it is a part of it rather than something stored in it.</summary>
     public bool HasParts(string geid) => _ledger.IsPartParent(geid);
 
+    /// <summary>
+    /// Whether this holding is a part of another item — a rifle's scope or magazine, a helmet's
+    /// visor — rather than something of its own. A list of what is somewhere shows the item and
+    /// leaves its parts to the item's own page, as a station's table does.
+    /// </summary>
+    public bool IsPart(ItemHolding holding) =>
+        holding.Chain.Take(holding.Chain.Count - 1).Any(link => link.Kind == InventoryKind.Container && HasParts(link.Key));
+
+    /// <summary>Whether this holding is an item that has parts hanging off it.</summary>
+    public bool HasParts(ItemHolding holding) => holding.Geid is { } geid && HasParts(geid);
+
     /// <summary>Systems and place names as a player would recognise them.</summary>
     public PlaceCatalog Places { get; }
 

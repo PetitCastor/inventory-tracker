@@ -71,11 +71,12 @@ else
 
     /// <summary>
     /// Pools identical items. Confidence is the least confident unit's: a line is only as
-    /// trustworthy as its weakest member.
+    /// trustworthy as its weakest member. An item with parts is a line of its own, linking to
+    /// the page that lists them: pooling two rifles would leave no link to either's attachments.
     /// </summary>
-    private static List<Row> Pool(IEnumerable<NamedHolding> holdings) =>
+    private static List<Row> Pool(IEnumerable<NamedHolding> holdings, HoldingResolver? resolver) =>
         holdings
-            .GroupBy(h => h.ClassName, StringComparer.Ordinal)
+            .GroupBy(h => resolver?.HasParts(h.Holding) == true ? h.Holding.Geid! : h.ClassName, StringComparer.Ordinal)
             .Select(g =>
             {
                 var items = g.ToList();
@@ -98,13 +99,16 @@ else
         Load();
     }
 
-    /// <summary>One section per death, newest first, identical items pooled, in name order.</summary>
+    /// <summary>
+    /// One section per death, newest first, identical items pooled, in name order. A scope or
+    /// a magazine on a rifle is listed on the rifle's page, not here.
+    /// </summary>
     private void Load()
     {
         var resolver = State.Current.Resolver;
 
         _groups = State.Current.Holdings
-            .Where(h => h.Holding.IsLostAtDeath)
+            .Where(h => h.Holding.IsLostAtDeath && resolver?.IsPart(h.Holding) != true)
             .GroupBy(h => h.Holding.Root!.Key)
             .Select(g =>
             {
@@ -113,7 +117,7 @@ else
                 return new Group(
                     $"Died at {where} · {died:yyyy-MM-dd HH:mm} UTC",
                     died,
-                    Pool(g));
+                    Pool(g, resolver));
             })
             .OrderByDescending(g => g.Died)
             .ToList();

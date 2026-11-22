@@ -79,11 +79,13 @@ else
 
     /// <summary>
     /// Pools identical items, newest drop first. Confidence is the least confident unit's: a
-    /// line is only as trustworthy as its weakest member.
+    /// line is only as trustworthy as its weakest member. An item with parts is a line of its
+    /// own, linking to the page that lists them: pooling two rifles would leave no link to
+    /// either's attachments.
     /// </summary>
-    private static List<Row> Pool(IEnumerable<NamedHolding> holdings) =>
+    private static List<Row> Pool(IEnumerable<NamedHolding> holdings, HoldingResolver? resolver) =>
         holdings
-            .GroupBy(h => h.ClassName, StringComparer.Ordinal)
+            .GroupBy(h => resolver?.HasParts(h.Holding) == true ? h.Holding.Geid! : h.ClassName, StringComparer.Ordinal)
             .Select(g =>
             {
                 var items = g.ToList();
@@ -111,7 +113,8 @@ else
     /// Groups by the place the item fell in, newest drop first, so what was just dropped by
     /// mistake is at the top. A station can go by several ids — a drop out of its inventory
     /// names one, a drop out of a backpack the one the player last arrived under — so ids are
-    /// folded to the place's canonical one first.
+    /// folded to the place's canonical one first. A scope or a magazine on a rifle is listed on
+    /// the rifle's page, not here.
     /// </summary>
     private void Load()
     {
@@ -119,12 +122,12 @@ else
         var resolver = snapshot.Resolver;
 
         _groups = snapshot.Holdings
-            .Where(h => h.Holding.IsDropped)
+            .Where(h => h.Holding.IsDropped && resolver?.IsPart(h.Holding) != true)
             .GroupBy(h => resolver?.Places.ByLocationId(h.Holding.Root!.Key)?.Id ?? h.Holding.Root!.Key)
             .Select(g => new Group(
                 g.Key.Length == 0 || resolver is null ? "Unknown place" : resolver.PlaceLabel(g.Key),
                 g.Max(h => h.Holding.LastMove),
-                Pool(g)))
+                Pool(g, resolver)))
             .OrderByDescending(g => g.Newest)
             .ToList();
     }

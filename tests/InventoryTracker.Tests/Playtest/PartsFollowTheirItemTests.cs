@@ -49,6 +49,21 @@ public sealed class PartsFollowTheirItemTests
     }
 
     [Fact]
+    public void A_stored_rifles_attachments_are_parts_and_the_rifle_is_not()
+    {
+        using var replay = PlaytestReplay.Until("20:03:00");
+
+        var part = replay.Named("845736965838");
+        Assert.NotNull(part);
+        Assert.True(replay.Resolver.IsPart(part));
+
+        var rifle = replay.Resolver.Resolve(part.Chain[0].Key);
+        Assert.NotNull(rifle);
+        Assert.False(replay.Resolver.IsPart(rifle));
+        Assert.True(replay.Resolver.HasParts(rifle));
+    }
+
+    [Fact]
     public void Nothing_is_orphaned_on_the_character_at_the_end_of_the_day()
     {
         // The player's own account at 20:10: armour, undersuit and backpack on, the qrt helmet
