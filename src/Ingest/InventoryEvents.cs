@@ -250,7 +250,21 @@ public sealed record ContainerCapacitySeen(
 /// event in its own right — the ingestor carries it so that opening a container can be
 /// pinned to a place.
 /// </summary>
-public sealed record PlayerLocation(string LocationId, DateTimeOffset Since);
+/// <param name="LandingId">
+/// The landing zone the location sits in, when the game gave one: the station or city as a
+/// whole. Inside a shop the location is the shop's own zone (392070389, a pharmacy in Area18),
+/// while the landing zone stays the city's (2273540638), whose station inventory is where a
+/// purchase is delivered.
+/// </param>
+public sealed record PlayerLocation(string LocationId, DateTimeOffset Since, string? LandingId = null)
+{
+    /// <summary>
+    /// The station inventory a kiosk purchase is delivered to: the landing zone's. Both purchases
+    /// in the logs made while the two differed (2026-08-14 at a rest stop, 2026-11-21 in Area18)
+    /// were next taken out of the landing zone's inventory.
+    /// </summary>
+    public string DeliveryId => LandingId ?? LocationId;
+}
 
 /// <summary>
 /// <c>&lt;Update Inventory Location&gt;</c>. The ids here are numeric only; the human

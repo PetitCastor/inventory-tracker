@@ -185,6 +185,58 @@ public sealed class ShopPurchaseTests : IDisposable
     }
 
     [Fact]
+    public void A_purchase_inside_a_shop_zone_is_delivered_to_the_landing_zone_inventory()
+    {
+        // Area18, 2026-11-21: in the pharmacy the location is the shop's own zone (392070389),
+        // inside the city's landing zone (2273540638). The refill bought there was taken out of
+        // the landing zone's inventory a minute later.
+        string[] log =
+        [
+            "<2026-11-21T19:55:28.455Z> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
+            "Landing [2273540638] -> [2273540638]. Location [2273540638] -> [392070389]. Pending [0] [Team_CoreGameplayFeatures][Inventory]",
+            "<2026-11-21T19:56:02.813Z> [Notice] <CEntityComponentShopUIProvider::SendShopBuyRequest> Sending SShopBuyRequest - " +
+            "playerId[204821708183] shopId[926496387500] shopName[SCShop_H_Pharmacy_A18] kioskId[926496387502] client_price[250.000000] " +
+            "itemClassGUID[f10cba0e-bb94-4438-a628-5128913bb995] itemName[crlf_medgun_vial_01] quantity[1]  [Team_CoreGameplayFeatures][Shops][UI]",
+            "<2026-11-21T19:56:07.325Z> [Notice] <CEntityComponentShopUIProvider::RmShopFlowResponse> Received ShopFlowResponse - " +
+            "playerId[204821708183] shopId[926496387500] shopName[SCShop_H_Pharmacy_A18] kioskId[926496387502] " +
+            "kioskState[BuyRequestProcessing] result[Success] type[Buying] [Team_CoreGameplayFeatures][Shops][UI]",
+            "<2026-11-21T19:56:20.633Z> [Notice] <Update Inventory Location> Player [Pilot] is changing location. " +
+            "Landing [2273540638] -> [2273540638]. Location [392070389] -> [2273540638]. Pending [0] [Team_CoreGameplayFeatures][Inventory]",
+        ];
+        Ingest(log);
+
+        var bought = HoldingResolver.Load(_db, AsOf).ResolveAll();
+        var refill = Assert.Single(bought, h => h.ItemClass == "crlf_medgun_vial_01");
+        Assert.Equal("2273540638", refill.Root!.Key);
+
+        // Taken out of that inventory, it is the bought one: nothing is left behind, and the
+        // refill in hand is still tagged as bought.
+        string[] takenOut =
+        [
+            .. log,
+            "<2026-11-21T19:57:19.466Z> [Notice] <Add Inventory Management Move> New Request[149] Player[Pilot] Type[Interaction] " +
+            "SourceInventory[204821708183:Location:2273540638] TargetInventory[INVALID] ItemClass[crlf_medgun_vial_01] StoredEntity[NULL] " +
+            "LocallyDetached[No] LocalAttached[NULL, Body_ItemPort:inventory_pocket] PendingMoves[1, ] " +
+            "Caller[CSCLocalPlayerPersonalThoughtComponent::AttachItem] [Team_CoreGameplayFeatures][Inventory]",
+            "<2026-11-21T19:57:19.467Z> [Notice] <Inventory Mgmt Request Queued> Queued Request[149] Type[Interaction] for 'Pilot' [204821708183] " +
+            "Source Inventory[204821708183:Location:2273540638] Target Inventory[INVALID]. Source[crlf_medgun_vial_01] amount[1] " +
+            "rank[amsrapexajqnn]. Target[NULL] amount[0] rank[]. Item[NONE] action[Carry]. RequestInProgress[0] CurrentProcess[] " +
+            "[Team_CoreGameplayFeatures][Inventory]",
+            "<2026-11-21T19:57:19.968Z> [Notice] <Inventory Request Completed> Request[149] Player[Pilot] Result[succeed] " +
+            "Elapsed[0.503304] PendingMoves[1] [Team_CoreGameplayFeatures][Inventory]",
+            "<2026-11-21T19:57:22.517Z> [Notice] <UnstowPendingEntities> Unstow Request[149] for 'Pilot' [204821708183] finalized spawn of " +
+            "'crlf_medgun_vial_01_946056427210' [946056427210], 0 remaining [Team_CoreGameplayFeatures][Inventory]",
+        ];
+        _db.ResetIngest();
+        Ingest(takenOut);
+
+        var resolver = HoldingResolver.Load(_db, AsOf);
+        Assert.DoesNotContain(resolver.ResolveAll(), h => h.ItemClass == "crlf_medgun_vial_01" && h.IsAtStation);
+        Assert.Equal(ItemOrigin.Bought, resolver.Resolve("946056427210")!.Origin);
+        Assert.Equal(0, resolver.ReplayStats.UnitsInferred);
+    }
+
+    [Fact]
     public void The_purchase_is_listed_with_its_shop_price_and_place()
     {
         Ingest(Arrived, Bought, Answered);

@@ -78,7 +78,7 @@ public sealed class TrackerDb
     /// <c>wiki_location</c> and <c>place_name</c>; 15 -> 16 adds <c>vehicle</c> and <c>wiki_vehicle</c>.</para>
     /// <para>16 -> 17 adds bounded, watermark-bound ingest correlation snapshots.</para>
     /// <para>17 -> 18 adds <c>session.char_reset_at</c>.</para>
-    /// <para>18 -> 19 adds <c>move.price</c>.</para>
+    /// <para>18 -> 19 adds <c>move.price</c> and <c>session.cur_landing_id</c>.</para>
     /// </summary>
     private const int SchemaVersion = 19;
 
@@ -197,6 +197,8 @@ public sealed class TrackerDb
             -- it every container opened afterwards goes unplaced.
             cur_loc_id    TEXT,
             cur_loc_since TEXT,
+            -- The landing zone cur_loc_id sits in, where a purchase is delivered.
+            cur_landing_id TEXT,
             -- The game build that wrote the file. A change of build is a game update.
             build         INTEGER,
             -- Where the player first stood in this file: the spawn. After a character reset

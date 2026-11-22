@@ -442,14 +442,15 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 break;
             }
 
-            // A purchase lands in the station inventory of the place the player is standing in:
+            // A purchase lands in the station inventory of the landing zone the player is in:
             // no line says so, but every bought item in the logs is next moved out of exactly
-            // that inventory (see ShopItemBought). Recorded unconfirmed until the shop answers.
-            // With no tracked place the purchase is still recorded, with nowhere to put it.
+            // that inventory (see ShopItemBought and PlayerLocation.DeliveryId). Recorded
+            // unconfirmed until the shop answers. With no tracked place the purchase is still
+            // recorded, with nowhere to put it.
             case ShopItemBought bought:
             {
                 var target = state.CurrentLocation is { } standing
-                    ? InventoryRef.LocationOf(bought.PlayerId, standing.LocationId)
+                    ? InventoryRef.LocationOf(bought.PlayerId, standing.DeliveryId)
                     : InventoryRef.Invalid;
 
                 var buy = new ItemMoved(
@@ -567,7 +568,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                          : null;
                 if (here is not null)
                 {
-                    state.CurrentLocation = new PlayerLocation(here, change.Timestamp);
+                    state.CurrentLocation = new PlayerLocation(
+                        here, change.Timestamp, change.NewLandingId != "0" ? change.NewLandingId : null);
                     state.FirstLocation ??= state.CurrentLocation;
                     RecordArrival(cn, tx, here, change.Timestamp, state, stats);
                 }
@@ -912,7 +914,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         using (var sel = cn.CreateCommand())
         {
             sel.CommandText = """
-                SELECT id, byte_offset, complete, first_ts, cur_loc_id, cur_loc_since, build
+                SELECT id, byte_offset, complete, first_ts, cur_loc_id, cur_loc_since, build, cur_landing_id
                 FROM session WHERE path = $p
                 """;
             sel.Parameters.AddWithValue("$p", path);
@@ -926,7 +928,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                     r.IsDBNull(3) ? null : ParseIso(r.GetString(3)),
                     r.IsDBNull(4) || r.IsDBNull(5)
                         ? null
-                        : new PlayerLocation(r.GetString(4), ParseIso(r.GetString(5))),
+                        : new PlayerLocation(
+                            r.GetString(4), ParseIso(r.GetString(5)), r.IsDBNull(7) ? null : r.GetString(7)),
                     r.IsDBNull(6) ? null : r.GetInt32(6));
             }
         }
@@ -1313,7 +1316,8 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 unrecognised  = unrecognised + $u,
                 cur_loc_id    = $loc,
                 cur_loc_since = $locs,
-                build         = COALESCE(build, $b),
+                cur_landing_id = $land,
+                build        = COALESCE(build, $b),
                 first_loc_since = CASE WHEN first_loc_id IS NULL THEN $fls ELSE first_loc_since END,
                 first_loc_id    = COALESCE(first_loc_id, $fl)
             WHERE id = $i
@@ -1326,6 +1330,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.Parameters.AddWithValue("$u", unrecognisedDelta);
         cmd.Parameters.AddWithValue("$loc", (object?)currentLocation?.LocationId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$locs", Iso(currentLocation?.Since));
+        cmd.Parameters.AddWithValue("$land", (object?)currentLocation?.LandingId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$b", (object?)build ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$fl", (object?)firstLocation?.LocationId ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$fls", Iso(firstLocation?.Since));
