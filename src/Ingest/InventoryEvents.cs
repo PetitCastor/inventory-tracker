@@ -35,7 +35,8 @@ public sealed record ItemMoved(
     string ItemClass,
     string? ItemGeid,
     int Amount,
-    string? Action = null) : InventoryEvent(Timestamp);
+    string? Action = null,
+    decimal? Price = null) : InventoryEvent(Timestamp);
 
 /// <summary>
 /// <c>&lt;Add Inventory Management Move&gt; New request[N] ...</c>.

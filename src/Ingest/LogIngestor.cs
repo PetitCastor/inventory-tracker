@@ -51,6 +51,10 @@ public sealed record IngestStats
     /// <summary>Items recorded as left on the player's corpse when they died.</summary>
     public int DeathItemsRecorded { get; set; }
 
+    /// <summary>Purchases at a shop kiosk recorded, and kiosk answers matched to one.</summary>
+    public int PurchasesRecorded { get; set; }
+    public int PurchasesAnswered { get; set; }
+
     /// <summary>Files this pass could not read; their stored offsets remain due for retry.</summary>
     public List<string> FileErrors { get; } = [];
 
@@ -66,7 +70,7 @@ public sealed record IngestStats
         MovesInserted > 0 || StoresRecorded > 0 || CompletionsApplied > 0 || ContainersIdentified > 0 ||
         CapacitiesSeen > 0 || LocationsNamed > 0 || LocationConflicts > 0 || GeidsRecovered > 0 ||
         AttachmentsSeen > 0 || RequestsLost > 0 || UnrecognisedMoves > 0 || MovesCutShort > 0 ||
-        VehiclesSeen > 0 || DeathItemsRecorded > 0;
+        VehiclesSeen > 0 || DeathItemsRecorded > 0 || PurchasesRecorded > 0 || PurchasesAnswered > 0;
 }
 
 /// <summary>
@@ -437,6 +441,32 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 }
                 break;
             }
+
+            // A purchase lands in the station inventory of the place the player is standing in:
+            // no line says so, but every bought item in the logs is next moved out of exactly
+            // that inventory (see ShopItemBought). Recorded unconfirmed until the shop answers.
+            // With no tracked place the purchase is still recorded, with nowhere to put it.
+            case ShopItemBought bought:
+            {
+                var target = state.CurrentLocation is { } standing
+                    ? InventoryRef.LocationOf(bought.PlayerId, standing.LocationId)
+                    : InventoryRef.Invalid;
+
+                var buy = new ItemMoved(
+                    bought.Timestamp, RequestNo: 0, Player: "", PlayerId: bought.PlayerId, MoveType: BuyMove,
+                    InventoryRef.ShopAt(bought.ShopId, bought.ShopName), target, bought.ItemClass, ItemGeid: null,
+                    Amount: bought.Quantity, Price: bought.Price);
+
+                if (InsertMove(cn, tx, sessionId, lineOffset, buy, caller: null, itemIx: 0) is not null)
+                {
+                    stats.PurchasesRecorded++;
+                }
+                break;
+            }
+
+            case ShopBuyAnswered answer:
+                if (AnswerPurchase(cn, tx, sessionId, lineOffset, answer)) stats.PurchasesAnswered++;
+                break;
 
             case AttachmentSeen worn:
                 // A local line is the client predicting an equip still in flight; the
@@ -1319,9 +1349,9 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             INSERT OR IGNORE INTO move(
                 session_id, line_offset, item_ix, request_no, ts, player, player_id, move_type,
                 item_class, item_geid, amount,
-                src_raw, src_kind, src_key, tgt_raw, tgt_kind, tgt_key, caller, action)
+                src_raw, src_kind, src_key, tgt_raw, tgt_kind, tgt_key, caller, action, price)
             VALUES($s, $o, $ix, $r, $ts, $p, $pid, $mt, $ic, $ig, $amt,
-                   $sr, $sk, $skey, $tr, $tk, $tkey, $c, $act);
+                   $sr, $sk, $skey, $tr, $tk, $tkey, $c, $act, $price);
             SELECT CASE WHEN changes() = 0 THEN NULL ELSE last_insert_rowid() END;
             """;
         cmd.Parameters.AddWithValue("$s", sessionId);
@@ -1343,6 +1373,7 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
         cmd.Parameters.AddWithValue("$tkey", move.Target.HoldingKey);
         cmd.Parameters.AddWithValue("$c", (object?)caller ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$act", (object?)move.Action ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$price", move.Price is { } price ? (double)price : DBNull.Value);
 
         var result = cmd.ExecuteScalar();
         return result is null or DBNull ? null : Convert.ToInt64(result);
@@ -1416,6 +1447,44 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     /// moved the item itself, so nothing ever confirms or fails it.
     /// </summary>
     public const string DeathMove = "Death";
+
+    /// <summary>
+    /// The move type of an item bought at a shop kiosk. No inventory request carries it: the
+    /// shop's own answer confirms or fails it.
+    /// </summary>
+    public const string BuyMove = "Buy";
+
+    /// <summary>How long after a purchase the shop's answer may come and still be its answer.</summary>
+    private static readonly TimeSpan ShopAnswerWindow = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Settles the newest unanswered purchase from the same shop, written before this line and
+    /// within <see cref="ShopAnswerWindow"/>. Read from the store rather than carried in the
+    /// session state, so a pass that resumes between the two lines still pairs them.
+    /// </summary>
+    private static bool AnswerPurchase(
+        SqliteConnection cn, SqliteTransaction tx, long sessionId, long lineOffset, ShopBuyAnswered answer)
+    {
+        using var cmd = cn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            UPDATE move SET result = $r
+            WHERE id = (
+                SELECT id FROM move
+                WHERE session_id = $s AND move_type = $buy AND result IS NULL
+                  AND line_offset < $o AND src_raw LIKE $shop AND ts >= $from AND ts <= $to
+                ORDER BY line_offset DESC
+                LIMIT 1)
+            """;
+        cmd.Parameters.AddWithValue("$r", answer.Succeeded ? "succeed" : "failed");
+        cmd.Parameters.AddWithValue("$s", sessionId);
+        cmd.Parameters.AddWithValue("$buy", BuyMove);
+        cmd.Parameters.AddWithValue("$o", lineOffset);
+        cmd.Parameters.AddWithValue("$shop", answer.ShopId + ":Shop:%");
+        cmd.Parameters.AddWithValue("$from", Iso(answer.Timestamp - ShopAnswerWindow));
+        cmd.Parameters.AddWithValue("$to", Iso(answer.Timestamp));
+        return cmd.ExecuteNonQuery() > 0;
+    }
 
     /// <summary>
     /// Marks every request of the session still without a result as lost, up to

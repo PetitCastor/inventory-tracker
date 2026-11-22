@@ -342,7 +342,7 @@ public sealed class HoldingResolver
                 {
                     rows.Add(Build(
                         where, itemClass, instance.Geid, quantity: 1, instance.Since, instance.ArrivedBy,
-                        instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous));
+                        instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous, origin: instance.Origin));
                 }
 
                 // One row per group, so a row's caveats and score hold for every unit it counts:
@@ -351,7 +351,7 @@ public sealed class HoldingResolver
                 {
                     rows.Add(Build(
                         where, itemClass, geid: null, group.Quantity, group.Since, group.ArrivedBy,
-                        group.Confirmed, group.Inferred, ambiguous: true, group.DuplicateRisk));
+                        group.Confirmed, group.Inferred, ambiguous: true, group.DuplicateRisk, group.Origin));
                 }
             }
         }
@@ -369,7 +369,24 @@ public sealed class HoldingResolver
 
         return Build(
             where, instance.ItemClass, geid, quantity: 1, instance.Since, instance.ArrivedBy,
-            instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous);
+            instance.Confirmed, instance.Inferred, instance.IdentityAmbiguous, origin: instance.Origin);
+    }
+
+    /// <summary>
+    /// Every purchase of an item class at a shop kiosk, newest first, leaving out the ones the
+    /// shop refused and the ones made before a character reset started the tracker over.
+    /// </summary>
+    public IReadOnlyList<Purchase> Purchases(string itemClass)
+    {
+        var startedOver = _updates.LastOrDefault(u => u.CharacterReset).At;
+        return _moves
+            .Where(m => m.MoveType == Ingest.LogIngestor.BuyMove && m.ItemClass == itemClass
+                        && !m.Failed && m.Timestamp >= startedOver)
+            .OrderByDescending(m => m.Timestamp)
+            .Select(m => new Purchase(
+                m.Timestamp, m.SourceKey, m.Units, m.Price,
+                m.TargetKind == InventoryKind.Location ? PlaceLabel(m.TargetKey) : null))
+            .ToList();
     }
 
     private string ClassOf(string geid) =>
@@ -381,7 +398,8 @@ public sealed class HoldingResolver
 
     private ItemHolding Build(
         Holding where, string itemClass, string? geid, int quantity, DateTimeOffset since,
-        string arrivedBy, bool confirmed, bool inferred, bool ambiguous, bool duplicateRisk = false)
+        string arrivedBy, bool confirmed, bool inferred, bool ambiguous, bool duplicateRisk = false,
+        ItemOrigin origin = ItemOrigin.Unknown)
     {
         var caveats = new List<string>();
         var score = 1.0;
@@ -469,6 +487,7 @@ public sealed class HoldingResolver
             geid, itemClass, quantity, chain, since, arrivedBy, score, ambiguous, caveats)
         {
             Holder = where,
+            Origin = origin,
         };
     }
 
@@ -745,7 +764,7 @@ public sealed class HoldingResolver
         using var cmd = cn.CreateCommand();
         cmd.CommandText = """
             SELECT id, ts, move_type, item_class, item_geid, amount,
-                   src_kind, src_key, tgt_kind, tgt_key, tgt_raw, result, action
+                   src_kind, src_key, tgt_kind, tgt_key, tgt_raw, result, action, price
             FROM move
             ORDER BY ts, id
             """;
@@ -767,7 +786,8 @@ public sealed class HoldingResolver
                 r.GetString(9),
                 r.GetString(10),
                 r.IsDBNull(11) ? null : r.GetString(11),
-                r.IsDBNull(12) ? null : r.GetString(12)));
+                r.IsDBNull(12) ? null : r.GetString(12),
+                r.IsDBNull(13) ? null : (decimal)r.GetDouble(13)));
         }
         return rows;
     }

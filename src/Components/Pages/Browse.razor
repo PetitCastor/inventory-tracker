@@ -4,6 +4,7 @@
 @using InventoryTracker.Model
 @using InventoryTracker.Ingest
 @using InventoryTracker.Naming
+@using InventoryTracker.Resolve
 @inject TrackerState State
 @inject TrackerOptions Options
 @inject PlaceNameService Places
@@ -185,6 +186,24 @@ else if (health.Moves == 0)
     </div>
 }
 
+@* Tags say how an item came to the player, across categories: a bought magazine is still a
+   weapon. Offered only once something carries one, and combined with the category chosen. *@
+@{ var tagCounts = TagCounts(); }
+@if (tagCounts.Count > 0 || _tag is not null)
+{
+    <div class="chips" role="group" aria-label="Filter by tag">
+        @foreach (var tag in Tags)
+        {
+            var count = tagCounts.GetValueOrDefault(tag);
+            if (count == 0 && _tag != tag) continue;
+            <button type="button" class="chip @(_tag == tag ? "active" : "")" aria-pressed="@(_tag == tag)"
+                    @onclick="() => _tag = _tag == tag ? null : tag">
+                @TagLabel(tag) <span class="chip-count">@count</span>
+            </button>
+        }
+    </div>
+}
+
 @if (!string.IsNullOrWhiteSpace(_query))
 {
     <section class="place">
@@ -192,7 +211,7 @@ else if (health.Moves == 0)
         <h2>Search results <span class="badge-count">@results.Count</span></h2>
         @if (results.Count == 0)
         {
-            <p class="empty">None of your items matches "@_query"@(_category is { } c ? $" in {ItemCategories.Label(c)}" : "").</p>
+            <p class="empty">None of your@TagWord() items matches "@_query"@CategoryText().</p>
         }
         else
         {
@@ -219,6 +238,7 @@ else if (health.Moves == 0)
                             {
                                 @h.Display
                             }
+                            @TagBadge(h.ClassName, TagsOf([h]))
                         </td>
                         <td class="qty">@h.Holding.Quantity&times;</td>
                         <td class="chain">@h.Where</td>
@@ -317,7 +337,10 @@ else
                 </div>
             }
 
-            var shown = _direct.Where(r => _category is not { } c || r.Categories.Contains(c)).ToList();
+            var shown = _direct
+                .Where(r => _category is not { } c || r.Categories.Contains(c))
+                .Where(r => _tag is not { } t || r.Tags.Contains(t))
+                .ToList();
             <section class="place">
                 <h2>Local Inventory <span class="badge-count">@shown.Sum(r => r.Quantity)</span></h2>
                 @if (_direct.Count == 0)
@@ -326,7 +349,7 @@ else
                 }
                 else if (shown.Count == 0)
                 {
-                    <p class="empty">Nothing in @ItemCategories.Label(_category!.Value) here.</p>
+                    <p class="empty">Nothing@TagWord()@CategoryText() here.</p>
                 }
                 else
                 {
@@ -369,7 +392,17 @@ else
         bool Unnamed,
         IReadOnlyList<string> Caveats,
         IReadOnlySet<ItemCategory> Categories,
-        ContainerRow? Opens = null);
+        ContainerRow? Opens = null)
+    {
+        /// <summary>How any of these units came to the player: bought, for one.</summary>
+        public IReadOnlySet<ItemOrigin> Tags { get; init; } = new HashSet<ItemOrigin>();
+
+        /// <summary>
+        /// The tags of the row's own item, shown as badges. A box holding bought magazines is
+        /// found by the Bought filter, but was not bought itself.
+        /// </summary>
+        public IReadOnlySet<ItemOrigin> OwnTags { get; init; } = new HashSet<ItemOrigin>();
+    }
 
     /// <summary>
     /// Something at the level being browsed that can be opened: a container, or an item with
@@ -393,6 +426,21 @@ else
 
     /// <summary>The quick filter chosen, or null for everything. Kept when the station changes.</summary>
     private ItemCategory? _category;
+
+    /// <summary>Units carrying each tag at the level being browsed, at any depth below it.</summary>
+    private Dictionary<ItemOrigin, int> _levelTagCounts = [];
+
+    /// <summary>The tag filter chosen, or null for everything. Kept when the station changes.</summary>
+    private ItemOrigin? _tag;
+
+    /// <summary>The tags offered, in the order shown. Unknown is the absence of a tag.</summary>
+    private static readonly ItemOrigin[] Tags = [ItemOrigin.Bought];
+
+    private static string TagLabel(ItemOrigin tag) => tag switch
+    {
+        ItemOrigin.Bought => "Bought",
+        _ => tag.ToString(),
+    };
 
     /// <summary>The containers entered at the selected station, outermost first.</summary>
     private List<ContainerRow> _path = [];
@@ -529,6 +577,7 @@ else
         {
             _direct = [];
             _levelCounts = [];
+            _levelTagCounts = [];
             return;
         }
 
@@ -576,6 +625,11 @@ else
             .GroupBy(h => h.Holding.Category)
             .ToDictionary(g => g.Key, g => g.Sum(h => h.Holding.Holding.Quantity));
 
+        _levelTagCounts = level
+            .Where(h => !IsPartBelow(h) && h.Holding.Holding.Origin != ItemOrigin.Unknown)
+            .GroupBy(h => h.Holding.Holding.Origin)
+            .ToDictionary(g => g.Key, g => g.Sum(h => h.Holding.Holding.Quantity));
+
         var atLevel = level.Where(h => h.Inside.Count == depth).Select(h => h.Holding).ToList();
         var byGeid = atLevel
             .Where(h => h.Holding.Geid is not null)
@@ -607,8 +661,13 @@ else
 
                 // An item known only through its parts has nothing else to go by.
                 if (categories.Count == 0) categories = inside.Select(h => h.Category).ToHashSet();
+
+                // Tagged when it, or anything stored in it, is: the bought items are found by opening it.
+                var tagged = g.Where(h => !IsPartBelow(h)).Select(h => h.Holding).ToList();
+                if (own is not null) tagged.Add(own);
+                var tags = TagsOf(tagged);
                 return own is not null
-                    ? Pool([own])[0] with { Opens = opens, Categories = categories }
+                    ? Pool([own])[0] with { Opens = opens, Categories = categories, Tags = tags }
                     : new Row(
                         opens.Label,
                         opens.Label,
@@ -618,7 +677,7 @@ else
                         false,
                         inside.SelectMany(h => h.Holding.Caveats).Distinct().ToList(),
                         categories,
-                        opens);
+                        opens) { Tags = tags };
             })
             .ToList();
 
@@ -703,9 +762,44 @@ else
                 g.Min(h => h.Holding.Confidence),
                 g.First().Name.Match == NameMatch.None,
                 g.SelectMany(h => h.Holding.Caveats).Distinct().ToList(),
-                new HashSet<ItemCategory> { g.First().Category }))
+                new HashSet<ItemCategory> { g.First().Category }) { Tags = TagsOf(g), OwnTags = TagsOf(g) })
             .OrderBy(r => r.Display, StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    /// <summary>Every tag any of these holdings carries.</summary>
+    private static HashSet<ItemOrigin> TagsOf(IEnumerable<NamedHolding> holdings) =>
+        holdings.Select(h => h.Holding.Origin).Where(o => o != ItemOrigin.Unknown).ToHashSet();
+
+    /// <summary>The tag chosen, as a word before "items": " bought", or nothing.</summary>
+    private string TagWord() => _tag is { } t ? " " + TagLabel(t).ToLowerInvariant() : "";
+
+    /// <summary>The category chosen, for an empty table's message: " in Weapons", or nothing.</summary>
+    private string CategoryText() => _category is { } c ? $" in {ItemCategories.Label(c)}" : "";
+
+    /// <summary>
+    /// A row's tags, each titled with what the logs say about it: for a bought item, the newest
+    /// purchase of its class, with where, when, how many and for how much.
+    /// </summary>
+    private RenderFragment TagBadge(string itemClass, IReadOnlyCollection<ItemOrigin> tags) => @<text>
+        @foreach (var tag in tags)
+        {
+            <span class="tag tag-@tag.ToString().ToLowerInvariant()" title="@TagTitle(itemClass, tag)">@TagLabel(tag).ToLowerInvariant()</span>
+        }
+    </text>;
+
+    private string TagTitle(string itemClass, ItemOrigin tag)
+    {
+        if (tag != ItemOrigin.Bought || State.Current.Resolver?.Purchases(itemClass) is not { Count: > 0 } bought)
+        {
+            return TagLabel(tag);
+        }
+
+        var last = bought[0];
+        var price = last.Price is { } p ? $" for {p:N0} aUEC" : "";
+        var place = last.PlaceLabel is { } at ? $", delivered to {at}" : "";
+        var more = bought.Count > 1 ? $" ({bought.Count} purchases in all)" : "";
+        return $"Bought {last.Quantity}× at {last.Shop} on {last.At.ToLocalTime():yyyy-MM-dd HH:mm}{price}{place}{more}";
+    }
 
     private RenderFragment ItemTable(IReadOnlyList<Row> rows) => @<table>
         <thead>
@@ -736,6 +830,7 @@ else
                     {
                         <span class="unnamed" title="Not found in the wiki catalogue">?</span>
                     }
+                    @TagBadge(row.ItemClass, row.OwnTags)
                 </td>
                 <td class="qty">@row.Quantity&times;</td>
                 <td class="when" title="@row.LastMove.ToString("u")">@TimeAgo.Format(row.LastMove)</td>
@@ -762,6 +857,7 @@ else
     private List<NamedHolding> SearchResults() =>
         SearchMatches()
             .Where(h => _category is not { } c || h.Category == c)
+            .Where(h => _tag is not { } t || h.Holding.Origin == t)
             .OrderBy(h => h.Display, StringComparer.OrdinalIgnoreCase)
             .ThenByDescending(h => h.Holding.LastMove)
             .ToList();
@@ -785,6 +881,15 @@ else
         string.IsNullOrWhiteSpace(_query)
             ? _levelCounts
             : SearchMatches().GroupBy(h => h.Category).ToDictionary(g => g.Key, g => g.Count());
+
+    /// <summary>How much carries each tag: rows while searching, units at the level otherwise.</summary>
+    private Dictionary<ItemOrigin, int> TagCounts() =>
+        string.IsNullOrWhiteSpace(_query)
+            ? _levelTagCounts
+            : SearchMatches()
+                .Where(h => h.Holding.Origin != ItemOrigin.Unknown)
+                .GroupBy(h => h.Holding.Origin)
+                .ToDictionary(g => g.Key, g => g.Count());
 
     /// <summary>True when the not-yet-built banner or one of the three IngestHealth banners
     /// above already accounts for an empty page — used to suppress the generic "no locations

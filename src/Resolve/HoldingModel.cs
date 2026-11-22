@@ -16,7 +16,8 @@ public sealed record MoveRecord(
     string TargetKey,
     string TargetRaw,
     string? Result,
-    string? Action = null)
+    string? Action = null,
+    decimal? Price = null)
 {
     /// <summary>False only when the game explicitly said the move failed.</summary>
     public bool Failed =>
@@ -98,6 +99,9 @@ public sealed record ItemHolding(
     /// apparel without a link, this tells an item in a backpack from the backpack itself.
     /// </summary>
     public Holding Holder { get; init; }
+
+    /// <summary>How the item came to the player, as far as the logs say. Shown as a tag.</summary>
+    public ItemOrigin Origin { get; init; }
 
     /// <summary>The end of the chain — the station, or the container we lost track of.</summary>
     public HoldingLink? Root => Chain.Count > 0 ? Chain[^1] : null;

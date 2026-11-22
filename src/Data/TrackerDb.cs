@@ -78,8 +78,9 @@ public sealed class TrackerDb
     /// <c>wiki_location</c> and <c>place_name</c>; 15 -> 16 adds <c>vehicle</c> and <c>wiki_vehicle</c>.</para>
     /// <para>16 -> 17 adds bounded, watermark-bound ingest correlation snapshots.</para>
     /// <para>17 -> 18 adds <c>session.char_reset_at</c>.</para>
+    /// <para>18 -> 19 adds <c>move.price</c>.</para>
     /// </summary>
-    private const int SchemaVersion = 18;
+    private const int SchemaVersion = 19;
 
     public void Initialize()
     {
@@ -251,6 +252,8 @@ public sealed class TrackerDb
             -- an item picked into the player's hand, which the ledger treats as on the player.
             action      TEXT,
             result      TEXT,
+            -- What a Buy cost, in aUEC, for the whole amount. NULL for every other move.
+            price       REAL,
             UNIQUE(session_id, line_offset, item_ix)
         );
 
