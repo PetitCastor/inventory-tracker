@@ -8,13 +8,13 @@
 <h1>Lost at death <span class="badge-count">@_groups.Sum(g => g.Rows.Sum(r => r.Quantity))</span></h1>
 
 @* The game lists what hung on the body when the player died, never what was inside a backpack
-   or armour. Those contents are what the tracker last saw go in, so they are as good as the
-   moves that put them there. *@
-<p class="subtle">What you had on you when you died, including what was in your backpack and armour. Items stay here until you loot them back. The game removes your body after a while and does not log when.</p>
+   or armour, and the respawn gives the listed gear back. What was inside is what the tracker
+   last saw go in, so it is as good as the moves that put it there. *@
+<p class="subtle">What was in your backpack and armour when you died. The gear you wore comes back when you respawn, so it is not listed, and a death in a station or landing zone leaves no body: the game gives everything back. Items stay here until you loot them back. The game removes your body after a while and does not log when.</p>
 
 @if (_groups.Count == 0)
 {
-    <p class="empty">Nothing lost. When you die and leave a body, what was on it is listed here.</p>
+    <p class="empty">Nothing lost. When you die and leave a body, what was in your backpack and armour is listed here.</p>
 }
 else
 {
@@ -100,15 +100,16 @@ else
     }
 
     /// <summary>
-    /// One section per death, newest first, identical items pooled, in name order. A scope or
-    /// a magazine on a rifle is listed on the rifle's page, not here.
+    /// One section per death, newest first, identical items pooled, in name order. Only what
+    /// was stored in the gear is lost (see HoldingResolver.IsLostAtDeath); a scope or a
+    /// magazine on a rifle is listed on the rifle's page, not here.
     /// </summary>
     private void Load()
     {
         var resolver = State.Current.Resolver;
 
         _groups = State.Current.Holdings
-            .Where(h => h.Holding.IsLostAtDeath && resolver?.IsPart(h.Holding) != true)
+            .Where(h => resolver?.IsLostAtDeath(h.Holding) == true)
             .GroupBy(h => h.Holding.Root!.Key)
             .Select(g =>
             {

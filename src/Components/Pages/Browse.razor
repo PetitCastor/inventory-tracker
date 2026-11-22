@@ -767,9 +767,12 @@ else
             .ToList();
 
     /// <summary>What the query matches, before the category filter.</summary>
+    // Of what is on a body, only what is really lost: the gear worn when dying came back at
+    // the respawn and is found on the player.
     private IEnumerable<NamedHolding> SearchMatches() =>
         State.Current.Holdings
-            .Where(h => h.Holding.IsAtStation || h.Holding.IsInShip || h.Holding.IsDropped || h.Holding.IsLostAtDeath)
+            .Where(h => h.Holding.IsAtStation || h.Holding.IsInShip || h.Holding.IsDropped
+                        || State.Current.Resolver?.IsLostAtDeath(h.Holding) == true)
             .Where(h => h.Display.Contains(_query, StringComparison.OrdinalIgnoreCase)
                      || h.ClassName.Contains(_query, StringComparison.OrdinalIgnoreCase));
 
