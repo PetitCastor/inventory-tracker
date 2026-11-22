@@ -351,6 +351,20 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
                 break;
             }
 
+            // A move-all names nothing, so it is stored as one row with no class; the replay
+            // moves whatever the source holds at that point. Its completion line settles it
+            // like any other request.
+            case MoveAllRequested all:
+            {
+                ObserveRequest(all.RequestNo, state, lineOffset);
+                state.MoveByRequest.Remove(all.RequestNo);
+                var everything = new ItemMoved(
+                    all.Timestamp, all.RequestNo, Player: "", PlayerId: "", MoveAllMove,
+                    all.Source, all.Target, ItemClass: "", ItemGeid: null, Amount: 1);
+                Record(cn, tx, sessionId, lineOffset, everything, all.Caller, state, stats);
+                break;
+            }
+
             case ItemMoved move:
             {
                 if (!state.IssuedRequests.Remove(move.RequestNo)) ObserveRequest(move.RequestNo, state, lineOffset);
@@ -1458,6 +1472,12 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
     /// shop's own answer confirms or fails it.
     /// </summary>
     public const string BuyMove = "Buy";
+
+    /// <summary>
+    /// The move type of a move-all (<see cref="MoveAllRequested"/>): everything in the source
+    /// went to the target. Its row has an empty item class, since the log names no item.
+    /// </summary>
+    public const string MoveAllMove = "MoveAll";
 
     /// <summary>How long after a purchase the shop's answer may come and still be its answer.</summary>
     private static readonly TimeSpan ShopAnswerWindow = TimeSpan.FromSeconds(30);

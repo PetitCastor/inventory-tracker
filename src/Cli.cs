@@ -139,7 +139,7 @@ internal static class Cli
         var names = new WikiNameService(db, http);
 
         using var cn = db.Open();
-        var classes = Rows(cn, "SELECT DISTINCT item_class, '' FROM move ORDER BY item_class")
+        var classes = Rows(cn, "SELECT DISTINCT item_class, '' FROM move WHERE item_class <> '' ORDER BY item_class")
             .Select(r => r.Item1)
             .ToList();
 
@@ -261,7 +261,7 @@ internal static class Cli
 
         // COUNT(DISTINCT ...) already ignores NULLs, so this is every named instance.
         Console.WriteLine($"Distinct items    : {Scalar(cn, "SELECT COUNT(DISTINCT item_geid) FROM move"):N0}");
-        Console.WriteLine($"Distinct classes  : {Scalar(cn, "SELECT COUNT(DISTINCT item_class) FROM move"):N0}");
+        Console.WriteLine($"Distinct classes  : {Scalar(cn, "SELECT COUNT(DISTINCT item_class) FROM move WHERE item_class <> ''"):N0}");
         Console.WriteLine($"Location names    : {Scalar(cn, "SELECT COUNT(*) FROM location_name"):N0}");
         Console.WriteLine($"Known containers  : {Scalar(cn, "SELECT COUNT(*) FROM container_class"):N0}");
 
