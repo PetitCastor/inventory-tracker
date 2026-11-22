@@ -22,6 +22,10 @@
                     @InventoryTracker.Ingest.GameVersionCatalog.Describe(build)
                 </span>
             }
+            @* The tracker's own version beside the game's, so a bug report or screenshot carries both. *@
+            <span class="status-item app-version" title="Inventory Tracker version">
+                Inventory Tracker v@(AppVersion)
+            </span>
             <ThemeToggle />
         </footer>
     </div>
@@ -34,6 +38,8 @@
 }
 
 @code {
+    private static readonly string AppVersion = InventoryTracker.App.UpdateService.CurrentVersion.ToString(3);
+
     protected override void OnInitialized()
     {
         // First-run gate: until setup is done, every page bounces to the wizard. The path

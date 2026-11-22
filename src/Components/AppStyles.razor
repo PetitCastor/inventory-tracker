@@ -149,8 +149,11 @@
     .status-ok { background: var(--high); }
     .status-warn { background: var(--medium); }
     .status-error { background: var(--low); }
-    .status-bar .game-version { margin-left: auto; }
-    .status-bar .game-version + .theme-toggle { margin-left: 0; }
+    /* The two versions sit together at the right end, before the theme toggle; the first one
+       present takes the auto margin that pushes the group right. */
+    .status-bar .game-version, .status-bar .app-version { margin-left: auto; }
+    .status-bar .game-version + .app-version { margin-left: 0; }
+    .status-bar .app-version + .theme-toggle { margin-left: 0; }
 
     .theme-toggle {
         margin-left: auto;
