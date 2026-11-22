@@ -95,20 +95,21 @@
 
     /// <summary>
     /// Each count is what its page lists: stations in the Locations picker, ship sections on
-    /// Ships, and the units in the Dropped and Lost at death totals.
+    /// Ships (not its history), and the units in the Dropped and Lost at death totals.
     /// </summary>
     private void Count()
     {
         var snapshot = State.Current;
         _stations = StationList.Holding(snapshot).Count;
+        var resolver = snapshot.Resolver;
+
+        // A replaced ship sits in the page's history, not among the ships the player has.
         _ships = snapshot.Holdings
             .Where(h => h.Holding.IsInShip)
             .Select(h => h.Holding.Root!.Key)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Count();
-
+            .Count(key => resolver?.IsShipReplaced(key) != true);
         // Those pages leave a rifle's scope and magazine to the rifle's own page.
-        var resolver = snapshot.Resolver;
         bool Listed(NamedHolding h) => resolver?.IsPart(h.Holding) != true;
         _dropped = snapshot.Holdings.Where(h => h.Holding.IsDropped && Listed(h)).Sum(h => h.Holding.Quantity);
         _lost = snapshot.Holdings.Where(h => resolver?.IsLostAtDeath(h.Holding) == true).Sum(h => h.Holding.Quantity);

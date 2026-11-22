@@ -292,7 +292,7 @@ public sealed class TrackerDb
 
         -- Ships, by geid. class_name comes from the line written when the player leaves a pilot
         -- seat; retrieved_* from the one written when the ship is called out of storage, which
-        -- happens where the player stands. A ship's lockers are linked to it by class only.
+        -- happens where the player stands. A ship's lockers are tied to it by geid (see ShipFleet).
         CREATE TABLE IF NOT EXISTS vehicle (
             geid             TEXT PRIMARY KEY,
             class_name       TEXT,

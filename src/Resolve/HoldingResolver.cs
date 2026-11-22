@@ -122,6 +122,13 @@ public sealed class HoldingResolver
     /// <summary>The newest retrieval of a ship of each class.</summary>
     private readonly Dictionary<string, (DateTimeOffset At, string? LocationId)> _retrievals;
 
+    /// <summary>The player's ships by geid, which a locker is tied to by its own geid.</summary>
+    private readonly ShipFleet _fleet;
+
+    /// <summary>The class each ship's lockers name, by ship geid, for a ship never piloted
+    /// (so the vehicle table lacks its class). Generic "Template" lockers are left out.</summary>
+    private readonly Dictionary<string, string> _lockerClasses = new(StringComparer.Ordinal);
+
     /// <summary>The moment ages are measured against: now, unless a replay study pins it.</summary>
     private readonly DateTimeOffset _asOf;
 
@@ -185,10 +192,12 @@ public sealed class HoldingResolver
         DateTimeOffset asOf,
         List<GameUpdate> updates,
         Dictionary<string, string> shipNames,
-        Dictionary<string, (DateTimeOffset At, string? LocationId)> retrievals)
+        Dictionary<string, (DateTimeOffset At, string? LocationId)> retrievals,
+        ShipFleet fleet)
     {
         _shipNames = shipNames;
         _retrievals = retrievals;
+        _fleet = fleet;
         _asOf = asOf;
         _updates = updates;
         _moves = moves;
@@ -196,6 +205,14 @@ public sealed class HoldingResolver
         _containers = containers;
         _wornContainers = wornContainers;
         Places = places;
+
+        foreach (var (geid, info) in containers)
+        {
+            if (ShipStorage.TryShipClass(info.ClassName, out var lockerClass)
+                && !ShipFleet.IsGeneric(lockerClass)
+                && _fleet.OwnerOf(geid, lockerClass) is { } owner)
+                _lockerClasses.TryAdd(owner.Geid.ToString(CultureInfo.InvariantCulture), lockerClass);
+        }
 
         // A character reset starts the tracker over, history included: an item the reset kept
         // shows only the moves made since, the same as if the wipe date had been the reset.
@@ -284,6 +301,7 @@ public sealed class HoldingResolver
         int? latestBuild;
         Dictionary<string, string> shipNames;
         Dictionary<string, (DateTimeOffset At, string? LocationId)> retrievals;
+        ShipFleet fleet;
 
         // Deferred keeps this a reader until SQLite actually serves the first SELECT.
         // Materialize every table-backed input under that one generation, then dispose the
@@ -300,6 +318,7 @@ public sealed class HoldingResolver
             (updates, latestBuild) = LoadUpdates(cn);
             shipNames = WikiVehicleCatalog.Load(cn);
             retrievals = LoadRetrievals(cn);
+            fleet = ShipFleet.Load(cn);
             readAdditionalSnapshot?.Invoke(cn);
             transaction.Commit();
         }
@@ -307,24 +326,59 @@ public sealed class HoldingResolver
         beforeReplay?.Invoke(cn);
         return new HoldingResolver(
             moves, worn, enumerations, locationNames, containers, wornContainers, places,
-            replayAsOf, updates, shipNames, retrievals) { LatestBuild = latestBuild };
+            replayAsOf, updates, shipNames, retrievals, fleet) { LatestBuild = latestBuild };
     }
 
     /// <summary>The build of the newest session in the logs: the game as it is installed now.</summary>
     public int? LatestBuild { get; private init; }
 
-    /// <summary>What to call a ship class: its in-game name when the wiki knows it, else the class.</summary>
-    public string ShipLabel(string shipClass) => _shipNames.GetValueOrDefault(shipClass) ?? shipClass;
+    /// <summary>
+    /// What to call a ship: its class's in-game name when the wiki knows it, else the class. A
+    /// key is a ship geid when its lockers could be tied to the ship, else the class the lockers
+    /// name (see <see cref="ShipFleet"/>).
+    /// </summary>
+    public string ShipLabel(string shipKey)
+    {
+        if (_fleet.Find(shipKey) is { } ship)
+        {
+            return ShipClassOf(shipKey, ship) is { } cls
+                ? _shipNames.GetValueOrDefault(cls) ?? cls
+                : "Unknown ship";
+        }
+        return _shipNames.GetValueOrDefault(shipKey) ?? shipKey;
+    }
 
     /// <summary>
-    /// Where and when a ship of this class last came out of storage, or null when the logs never
-    /// saw one retrieved. Several ships of one class cannot be told apart by their lockers, so
-    /// the newest retrieval of any of them stands for all.
+    /// Where and when this ship last came out of storage, or null when the logs never saw it
+    /// retrieved. A ship known only by class stands for every ship of that class, so the newest
+    /// retrieval of any of them is given.
     /// </summary>
-    public ShipRetrieval? LastRetrieved(string shipClass) =>
-        _retrievals.TryGetValue(shipClass, out var r)
+    public ShipRetrieval? LastRetrieved(string shipKey)
+    {
+        if (_fleet.Find(shipKey) is { } ship)
+        {
+            return ship.RetrievedAt is { } at
+                ? new ShipRetrieval(at, ship.RetrievedLocationId, ship.RetrievedLocationId is { } loc ? PlaceLabel(loc) : null)
+                : null;
+        }
+        return _retrievals.TryGetValue(shipKey, out var r)
             ? new ShipRetrieval(r.At, r.LocationId, r.LocationId is { } id ? PlaceLabel(id) : null)
             : null;
+    }
+
+    /// <summary>
+    /// Whether a newer ship of this one's class has since been called out, which means this one
+    /// was claimed or destroyed and its lockers' contents went with it. The Ships page keeps such
+    /// a ship as history rather than dropping what was last seen in it.
+    /// </summary>
+    public bool IsShipReplaced(string shipKey) =>
+        _fleet.Find(shipKey) is { } ship && _fleet.ReplacementOf(ship, ShipClassOf(shipKey, ship)) is not null;
+
+    /// <summary>When this ship was last seen, flown or called out; null for a ship known only by class.</summary>
+    public DateTimeOffset? ShipLastSeen(string shipKey) => _fleet.Find(shipKey)?.LastSeen;
+
+    private string? ShipClassOf(string shipKey, ShipRecord ship) =>
+        ship.ClassName ?? _lockerClasses.GetValueOrDefault(shipKey);
 
     /// <summary>
     /// Everything the ledger believes is currently held, by (place, item class): named entities
@@ -640,10 +694,15 @@ public sealed class HoldingResolver
                     // A ship's locker goes wherever the ship is flown, so it ends the chain on the
                     // ship rather than on the station it was last opened at. Its contents are as
                     // certain as any container's: the locker kept its geid and what was in it
-                    // through a store and a retrieve of the ship.
+                    // through a store and a retrieve of the ship. The link is keyed by the ship's
+                    // geid when the locker's own geid ties it to one, so a claimed ship's old
+                    // lockers stay apart from the new ship's; else by the class the locker names.
                     if (ShipStorage.TryShipClass(info?.ClassName, out var shipClass))
                     {
-                        chain.Add(new HoldingLink(InventoryKind.Ship, shipClass, $"in your {ShipLabel(shipClass)}"));
+                        var shipKey = _fleet.OwnerOf(key, shipClass)?.Geid.ToString(CultureInfo.InvariantCulture) ?? shipClass;
+                        // A claimed ship's lockers are kept as history; say so wherever it shows.
+                        var shipLabel = IsShipReplaced(shipKey) ? $"{ShipLabel(shipKey)}, since replaced" : ShipLabel(shipKey);
+                        chain.Add(new HoldingLink(InventoryKind.Ship, shipKey, $"in your {shipLabel}"));
                         return chain;
                     }
 

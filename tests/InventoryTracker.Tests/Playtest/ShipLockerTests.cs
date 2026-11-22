@@ -11,7 +11,8 @@ public sealed class ShipLockerTests
 {
     private const string Day = "2026-10-12";
     private const string Keeger = "3058615591";
-    private const string Shiv = "GLSN_Shiv";
+    /// <summary>The Shiv itself; its lockers -000 and -001 are 876737713105 and -106, 173 above it.</summary>
+    private const string Shiv = "876737712932";
 
     private const string Arclight = "862186749926";
     private const string ParaMed = "735739878137";
@@ -28,6 +29,7 @@ public sealed class ShipLockerTests
         Assert.True(arclight.IsInShip);
         Assert.False(arclight.IsAtStation);
         Assert.Equal(Shiv, arclight.Root!.Key);
+        Assert.Equal("GLSN_Shiv", replay.Resolver.ShipLabel(Shiv));
         Assert.Equal(Confidence.High, arclight.Confidence);
     }
 
@@ -59,6 +61,7 @@ public sealed class ShipLockerTests
         using var replay = PlaytestReplay.On(Day, "19:04:30");
 
         Assert.True(replay.Named(Arclight)?.IsInShip);
+        Assert.False(replay.Resolver.IsShipReplaced(Shiv));
 
         var retrieved = replay.Resolver.LastRetrieved(Shiv);
         Assert.NotNull(retrieved);
