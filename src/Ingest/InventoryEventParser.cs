@@ -347,6 +347,10 @@ public static partial class InventoryEventParser
             m.Groups["action"].Value is "" or "None" ? null : m.Groups["action"].Value);
     }
 
+    /// <summary>A station's inventory or a container: the two ends a move-all is seen between.</summary>
+    private static bool IsGrid(InventoryRef inventory) =>
+        inventory.Kind is InventoryKind.Location or InventoryKind.Container;
+
     private static bool IsBlank(string value) =>
         value is "" or "NULL" or "NONE" or "null" or "none";
 
@@ -392,12 +396,14 @@ public static partial class InventoryEventParser
         var requestNo = int.Parse(m.Groups["req"].Value);
         var source = InventoryRef.Parse(m.Groups["srcinv"].Value);
 
-        // A move with no class at all is the move-all button: everything in the source went
-        // to the target, and neither this line nor its Queued counterpart says what that was.
-        if (moveType == "Move" && IsBlank(itemClass))
+        // A move with no class and no entity at all is the move-all button: everything in the
+        // source went to the target, and neither this line nor its Queued counterpart says
+        // what that was. Only seen between a station and a container; a body or corpse end
+        // would be something else, and is left to the paths that already handle those.
+        if (moveType == "Move" && IsBlank(itemClass) && line.Rest.Contains("StoredEntity[NULL]", StringComparison.Ordinal))
         {
             var target = InventoryRef.Parse(m.Groups["tgtinv"].Value);
-            if (source.IsHolding && target.IsHolding && source.Raw != target.Raw)
+            if (IsGrid(source) && IsGrid(target) && source.Raw != target.Raw)
                 return new MoveAllRequested(line.Timestamp, requestNo, source, target, caller);
         }
 

@@ -112,6 +112,43 @@ public sealed class MoveAllTests : IDisposable
     }
 
     [Fact]
+    public void A_classless_move_onto_the_body_is_not_a_move_all()
+    {
+        var onBody = StoreAll.Replace("TargetInventory[204821708183:Location:888812681]", "TargetInventory[INVALID]");
+
+        Assert.IsNotType<MoveAllRequested>(Event(onBody));
+    }
+
+    [Fact]
+    public void A_classless_move_that_names_an_entity_is_not_a_move_all()
+    {
+        var named = StoreAll.Replace("StoredEntity[NULL]", "StoredEntity[Drink_can_fizzz_01_muscat_a_949098877355]");
+
+        Assert.IsNotType<MoveAllRequested>(Event(named));
+    }
+
+    [Fact]
+    public void A_move_all_never_puts_the_target_inside_itself()
+    {
+        // An out-of-date ledger can hold the backpack in the very station being emptied into it.
+        var station = new Holding(InventoryKind.Location, Station);
+        var backpack = new Holding(InventoryKind.Container, Backpack);
+        var at = DateTimeOffset.Parse("2026-11-22T14:00:00Z");
+        MoveRecord Row(long id, string type, string cls, string? geid, Holding from, Holding to, int minute) =>
+            new(id, at.AddMinutes(minute), type, cls, geid, 1, from.Kind, from.Key, to.Kind, to.Key, to.Key, "succeed");
+
+        var ledger = LedgerReplay.Run(
+        [
+            Row(1, "Store", "qrt_utility_heavy_backpack_01_01_03", Backpack, new Holding(InventoryKind.Invalid, ""), station, 0),
+            Row(2, "Move", Can, null, new Holding(InventoryKind.Container, "947542443304"), station, 1),
+            Row(3, LogIngestor.MoveAllMove, "", null, station, backpack, 2),
+        ], []);
+
+        Assert.Equal(station, ledger.InstanceAt[Backpack]);
+        Assert.Equal(1, ledger.LooseIn(backpack, Can).Sum(g => g.Quantity));
+    }
+
+    [Fact]
     public void A_move_all_carries_what_the_source_was_known_to_hold()
     {
         var resolver = Resolve([.. Looted, .. StoredAll]);

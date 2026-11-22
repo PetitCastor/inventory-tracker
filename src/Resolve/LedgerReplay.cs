@@ -646,6 +646,10 @@ public sealed class LedgerReplay
         {
             foreach (var instance in slot.Named.ToList())
             {
+                // The target itself, or a box it sits in, cannot go into the target. The game
+                // would not have it in the source; the ledger only does when it is out of date.
+                if (Contains(instance.Geid, target)) continue;
+
                 NoteCarry(instance.Geid, move.ArrivedBy);
                 PlaceInstance(
                     instance.Geid, itemClass, target, move.Timestamp, move.ArrivedBy, move.Succeeded,
@@ -663,6 +667,23 @@ public sealed class LedgerReplay
 
             slot.Groups.Clear();
         }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="where"/> is the container <paramref name="geid"/>, or sits inside
+    /// it at any depth.
+    /// </summary>
+    private bool Contains(string geid, Holding where)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        while (where.Kind == InventoryKind.Container && seen.Add(where.Key))
+        {
+            if (where.Key == geid) return true;
+            if (!_instanceAt.TryGetValue(where.Key, out var outer)) return false;
+            where = outer;
+        }
+
+        return false;
     }
 
     private void ApplyPurchase(MoveRecord move)
