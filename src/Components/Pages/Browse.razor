@@ -130,7 +130,11 @@ else if (health.Moves == 0)
 @* The station picker and search share one row, the picker first. Search covers every station,
    ship and drop, so the dropdowns do not narrow it; picking a station while searching leaves
    the search to show it. The picker reads as a path, system then station, each part a
-   dropdown; Ctrl+K reaches any station in any system in one step. *@
+   dropdown; Ctrl+K reaches any station in any system in one step. The row is held back until
+   the first ingest pass publishes a snapshot: searching an empty Snapshot.Empty would only ever
+   say "nothing found" under the "Reading your logs" banner. *@
+@if (State.Current.BuiltAt != DateTimeOffset.MinValue)
+{
 <div class="toolbar">
     @if (_systems.Count > 0)
     {
@@ -164,6 +168,7 @@ else if (health.Moves == 0)
                @bind="_query" @bind:event="oninput" />
     </div>
 </div>
+}
 
 @* Quick filters for whatever the page is showing: search results, or the level of the station
    being browsed. A category with nothing in it is not offered, except the one already chosen,
