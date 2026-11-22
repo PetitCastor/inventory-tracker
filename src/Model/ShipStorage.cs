@@ -10,7 +10,8 @@ namespace InventoryTracker.Model;
 /// in the hangar, in flight, and across a store and a retrieve of the ship, and what was in
 /// them stayed. So a locker is followed like any container, but it belongs to the ship, not
 /// to the station it was last opened at. No line ties a locker to the ship's own geid; the
-/// class in its name is the link.
+/// locker's geid sitting just above the ship's does (see <c>ShipFleet</c>), and the class in its
+/// name is the fallback. Some lockers name no class: <c>PersonalStorage_Template-001</c>.
 /// </para>
 /// </summary>
 public static partial class ShipStorage

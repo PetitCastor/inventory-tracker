@@ -1179,6 +1179,101 @@ public class ItemHoldingTests
         });
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_template_locker_is_in_the_ship_its_geid_sits_above(bool claimedSince)
+    {
+        // The Asgard's locker names no ship (PersonalStorage_Template-001, 2026-11-21); it sits
+        // 348 above the Asgard's own geid. A newer Asgard called out later means this one was
+        // claimed: its lockers stay listed, as history.
+        const string locker = "947187047749";
+        const string asgard = "947187047401";
+        WithProvenanceDb(db =>
+        {
+            AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
+            using (var connection = db.Open())
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    INSERT INTO container_class(geid, class_name) VALUES($l, 'PersonalStorage_Template-001');
+                    INSERT INTO vehicle(geid, class_name, last_seen, retrieved_ts, retrieved_loc_id)
+                    VALUES($a, 'ANVL_Asgard', '2026-07-16T12:05:00+00:00', '2026-07-16T12:00:30+00:00', $p);
+                    """;
+                if (claimedSince)
+                {
+                    command.CommandText += """
+                        INSERT INTO vehicle(geid, class_name, last_seen, retrieved_ts, retrieved_loc_id)
+                        VALUES('948000000000', 'ANVL_Asgard', '2026-07-16T12:20:00+00:00', '2026-07-16T12:20:00+00:00', $p);
+                        """;
+                }
+                command.Parameters.AddWithValue("$l", locker);
+                command.Parameters.AddWithValue("$a", asgard);
+                command.Parameters.AddWithValue("$p", OtherPlace);
+                command.ExecuteNonQuery();
+            }
+
+            AddArrivalAt(db, 1, "2026-07-16T12:02:00+00:00", Magazine, 7, "Invalid", "", "Container", locker);
+
+            var resolver = HoldingResolver.Load(db, ProvenanceAsOf);
+            var row = Assert.Single(resolver.ResolveAll(), h => h.ItemClass == Magazine);
+
+            Assert.True(row.IsInShip);
+            Assert.Equal(asgard, row.Root?.Key);
+            Assert.Equal("ANVL_Asgard", resolver.ShipLabel(asgard));
+            Assert.Equal(DateTimeOffset.Parse("2026-07-16T12:00:30Z"), resolver.LastRetrieved(asgard)?.At);
+            Assert.Equal(claimedSince, resolver.IsShipReplaced(asgard));
+            Assert.Equal(DateTimeOffset.Parse("2026-07-16T12:05:00Z"), resolver.ShipLastSeen(asgard));
+        });
+    }
+
+    [Fact]
+    public void A_claimed_ships_lockers_stay_apart_from_the_new_ships()
+    {
+        // Two Asgards, the second called out after the first was claimed. Each locker sits 348
+        // above its own ship. What was in the old one is kept as history, under its own ship.
+        const string oldShip = "947187047401", oldLocker = "947187047749";
+        const string newShip = "948000000000", newLocker = "948000000348";
+        WithProvenanceDb(db =>
+        {
+            AddSession(db, ProvenanceLog, build: 100, firstTs: "2026-07-16T12:00:00+00:00", location: OtherPlace);
+            using (var connection = db.Open())
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = """
+                    INSERT INTO container_class(geid, class_name) VALUES($ol, 'PersonalStorage_Template-001');
+                    INSERT INTO container_class(geid, class_name) VALUES($nl, 'PersonalStorage_Template-001');
+                    INSERT INTO vehicle(geid, class_name, last_seen, retrieved_ts, retrieved_loc_id)
+                    VALUES($os, 'ANVL_Asgard', '2026-07-16T12:05:00+00:00', '2026-07-16T12:00:30+00:00', $p);
+                    INSERT INTO vehicle(geid, class_name, last_seen, retrieved_ts, retrieved_loc_id)
+                    VALUES($ns, 'ANVL_Asgard', '2026-07-16T12:20:00+00:00', '2026-07-16T12:10:00+00:00', $p);
+                    """;
+                command.Parameters.AddWithValue("$ol", oldLocker);
+                command.Parameters.AddWithValue("$nl", newLocker);
+                command.Parameters.AddWithValue("$os", oldShip);
+                command.Parameters.AddWithValue("$ns", newShip);
+                command.Parameters.AddWithValue("$p", OtherPlace);
+                command.ExecuteNonQuery();
+            }
+
+            AddArrivalAt(db, 1, "2026-07-16T12:02:00+00:00", Magazine, 7, "Invalid", "", "Container", oldLocker);
+            AddArrivalAt(db, 2, "2026-07-16T12:12:00+00:00", Magazine, 3, "Invalid", "", "Container", newLocker);
+
+            var resolver = HoldingResolver.Load(db, ProvenanceAsOf);
+            var rows = resolver.ResolveAll().Where(h => h.ItemClass == Magazine).ToList();
+
+            Assert.All(rows, h => Assert.True(h.IsInShip));
+            var old = Assert.Single(rows, h => h.Root?.Key == oldShip);
+            var current = Assert.Single(rows, h => h.Root?.Key == newShip);
+            Assert.Equal(7, old.Quantity);
+            Assert.Equal(3, current.Quantity);
+            Assert.True(resolver.IsShipReplaced(oldShip));
+            Assert.False(resolver.IsShipReplaced(newShip));
+            Assert.Contains("since replaced", old.Where);
+            Assert.DoesNotContain("since replaced", current.Where);
+        });
+    }
+
     // L05 iteration 05: group-backed output changes when withdrawal removes the only unit that
     // carried an indicator. Each true row is paired with its no-withdrawal control (R16).
 
