@@ -106,8 +106,12 @@
             .Select(h => h.Holding.Root!.Key)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Count();
-        _dropped = snapshot.Holdings.Where(h => h.Holding.IsDropped).Sum(h => h.Holding.Quantity);
-        _lost = snapshot.Holdings.Where(h => h.Holding.IsLostAtDeath).Sum(h => h.Holding.Quantity);
+
+        // Those pages leave a rifle's scope and magazine to the rifle's own page.
+        var resolver = snapshot.Resolver;
+        bool Listed(NamedHolding h) => resolver?.IsPart(h.Holding) != true;
+        _dropped = snapshot.Holdings.Where(h => h.Holding.IsDropped && Listed(h)).Sum(h => h.Holding.Quantity);
+        _lost = snapshot.Holdings.Where(h => h.Holding.IsLostAtDeath && Listed(h)).Sum(h => h.Holding.Quantity);
     }
 
     private void OpenPalette() => _paletteOpen = true;

@@ -109,6 +109,41 @@ public sealed class DeathTests : IDisposable
         Assert.DoesNotContain(resolver.ResolveAll(), h => h.ItemClass == "body_01_noMagicPocket");
     }
 
+    [Fact]
+    public void A_rifle_left_on_the_body_keeps_its_magazine_as_a_part_not_an_item_of_its_own()
+    {
+        // The rifle comes on with its magazine in one burst, and the corpse lists both, as a
+        // real corpse listing of 2026-11-21 does (its geids are reused here).
+        string Worn(string ts, string entity, string cls, string geid, string port) =>
+            $"<2026-11-21T{ts}Z> [Notice] <AttachmentReceived> Player[Pilot] Attachment[{entity}, {cls}, {geid}] " +
+            $"Status[persistent] Port[{port}] Elapsed[0.000018] [Team_CoreGameplayFeatures][Inventory]";
+
+        string[] log =
+        [
+            DeathLog[0],
+            Worn("18:56:10.621", "behr_rifle_ballistic_03_784862306928", "behr_rifle_ballistic_03", "784862306928", "wep_stocked_3"),
+            Worn("18:56:10.622", "behr_rifle_ballistic_03_mag_784862306929", "behr_rifle_ballistic_03_mag", "784862306929", "magazine_attach"),
+            CorpseLine("behr_rifle_ballistic_03_784862306928", "behr_rifle_ballistic_03", "wep_stocked_3"),
+            CorpseLine("behr_rifle_ballistic_03_mag_784862306929", "behr_rifle_ballistic_03_mag", "magazine_attach"),
+        ];
+        File.WriteAllText(Path.Combine(_dir, "Game.log"), string.Join("\n", log) + "\n");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, DateTimeOffset.Parse("2026-11-21T20:00:00Z"));
+        var rifle = resolver.Resolve("784862306928");
+        var magazine = resolver.Resolve("784862306929");
+        Assert.NotNull(rifle);
+        Assert.NotNull(magazine);
+
+        Assert.True(rifle.IsLostAtDeath);
+        Assert.False(resolver.IsPart(rifle));
+        Assert.True(resolver.HasParts(rifle));
+
+        Assert.True(magazine.IsLostAtDeath);
+        Assert.True(resolver.IsPart(magazine));
+        Assert.Equal("784862306928", magazine.Chain[0].Key);
+    }
+
     // ---- The ledger on its own ----
 
     private static readonly Holding Body = new(InventoryKind.Equipped, "");
