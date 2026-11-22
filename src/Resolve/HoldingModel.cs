@@ -93,6 +93,12 @@ public sealed record ItemHolding(
     bool IdentityAmbiguous,
     IReadOnlyList<string> Caveats)
 {
+    /// <summary>
+    /// What the item sits in directly. Unlike <see cref="Chain"/>, which walks through worn
+    /// apparel without a link, this tells an item in a backpack from the backpack itself.
+    /// </summary>
+    public Holding Holder { get; init; }
+
     /// <summary>The end of the chain — the station, or the container we lost track of.</summary>
     public HoldingLink? Root => Chain.Count > 0 ? Chain[^1] : null;
 
@@ -112,7 +118,8 @@ public sealed record ItemHolding(
 
     /// <summary>
     /// True when the item was on the player when they died and is still on the body, loose or
-    /// inside a backpack or armour. Lost unless the player goes back and loots it.
+    /// inside a backpack or armour. Not all of it is lost: the respawn gives the worn gear back
+    /// (see <see cref="HoldingResolver.IsLostAtDeath"/>).
     /// </summary>
     public bool IsLostAtDeath => Root is { Kind: InventoryKind.Corpse };
 

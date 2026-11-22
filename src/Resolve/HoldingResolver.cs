@@ -140,6 +140,32 @@ public sealed class HoldingResolver
     public bool IsPart(ItemHolding holding) =>
         holding.Chain.Take(holding.Chain.Count - 1).Any(link => link.Kind == InventoryKind.Container && HasParts(link.Key));
 
+    /// <summary>
+    /// Whether a death really cost the player this holding: it was stored inside something on
+    /// the body — a backpack, armour — and is not a part.
+    /// <para>
+    /// The game lists what hangs on the body when the player dies, and the respawn gives every
+    /// one of those back as a new entity, of the same class on the same port, two seconds
+    /// later: on 2026-11-21 the armour, backpack, rifles with their parts, the eight magazines
+    /// on the armour and the grenade all came back. What was stored inside them did not: a
+    /// multitool put in the backpack five minutes earlier never turned up again. So what sits
+    /// directly on the corpse — the listed gear, and what the ledger held on the body by count
+    /// — is not lost, and neither are the parts on it.
+    /// </para>
+    /// <para>
+    /// A death in a station leaves no body and writes no corpse listing: on 2026-11-22 the
+    /// respawn gave back the same entities, a helmet still in the backpack. Nothing is put on a
+    /// corpse then, so nothing is lost.
+    /// </para>
+    /// </summary>
+    /// <remarks>
+    /// The chain cannot tell: it walks through a backpack or armour without a link, so a rifle
+    /// in the backpack has the same one-link chain as the backpack. What the item sits in
+    /// directly does.
+    /// </remarks>
+    public bool IsLostAtDeath(ItemHolding holding) =>
+        holding.IsLostAtDeath && holding.Holder.Kind == InventoryKind.Container && !IsPart(holding);
+
     /// <summary>Whether this holding is an item that has parts hanging off it.</summary>
     public bool HasParts(ItemHolding holding) => holding.Geid is { } geid && HasParts(geid);
 
@@ -440,7 +466,10 @@ public sealed class HoldingResolver
         var chain = BuildChain(where, geid, since, caveats, ref score);
 
         return new ItemHolding(
-            geid, itemClass, quantity, chain, since, arrivedBy, score, ambiguous, caveats);
+            geid, itemClass, quantity, chain, since, arrivedBy, score, ambiguous, caveats)
+        {
+            Holder = where,
+        };
     }
 
     private static string UpdateCaveat(GameUpdate update, UpdateSurvival record, bool movedThePlayer) =>

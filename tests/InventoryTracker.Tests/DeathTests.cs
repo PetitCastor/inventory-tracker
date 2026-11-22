@@ -110,6 +110,19 @@ public sealed class DeathTests : IDisposable
     }
 
     [Fact]
+    public void Only_what_was_stored_in_the_backpack_is_lost_the_backpack_itself_comes_back()
+    {
+        File.WriteAllText(Path.Combine(_dir, "Game.log"), string.Join("\n", DeathLog) + "\n");
+        new LogIngestor(_db, _dir).IngestAll();
+
+        var resolver = HoldingResolver.Load(_db, DateTimeOffset.Parse("2026-11-21T20:00:00Z"));
+
+        Assert.True(resolver.IsLostAtDeath(resolver.Resolve("945948376212")!));
+        Assert.False(resolver.IsLostAtDeath(resolver.Resolve(BackpackGeid)!));
+        Assert.False(resolver.IsLostAtDeath(resolver.Resolve("946952444689")!));
+    }
+
+    [Fact]
     public void A_rifle_left_on_the_body_keeps_its_magazine_as_a_part_not_an_item_of_its_own()
     {
         // The rifle comes on with its magazine in one burst, and the corpse lists both, as a
@@ -142,6 +155,10 @@ public sealed class DeathTests : IDisposable
         Assert.True(magazine.IsLostAtDeath);
         Assert.True(resolver.IsPart(magazine));
         Assert.Equal("784862306928", magazine.Chain[0].Key);
+
+        // Worn when dying, so given back at the respawn: neither is lost.
+        Assert.False(resolver.IsLostAtDeath(rifle));
+        Assert.False(resolver.IsLostAtDeath(magazine));
     }
 
     // ---- The ledger on its own ----
