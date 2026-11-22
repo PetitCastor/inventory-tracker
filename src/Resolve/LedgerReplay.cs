@@ -105,6 +105,10 @@ public sealed class LedgerReplay
         /// <summary>Units bought at a shop kiosk, placed where the player stood.</summary>
         public int UnitsBought { get; internal set; }
 
+        /// <summary>Move-alls applied, and the units they carried: what the source was known to hold.</summary>
+        public int MoveAlls { get; internal set; }
+        public int UnitsMovedAll { get; internal set; }
+
         /// <summary>Moves the game said failed, never applied.</summary>
         public int FailedSkipped { get; internal set; }
 
@@ -566,7 +570,8 @@ public sealed class LedgerReplay
         if (move.Lost)
         {
             Stats.LostSkipped++;
-            CreditLostSource(move);
+            // A move-all names no class, so it proves nothing about what its source held.
+            if (move.MoveType != Ingest.LogIngestor.MoveAllMove) CreditLostSource(move);
             return;
         }
 
@@ -603,6 +608,12 @@ public sealed class LedgerReplay
 
         var source = new Holding(move.SourceKind, move.SourceKey);
 
+        if (move.MoveType == Ingest.LogIngestor.MoveAllMove)
+        {
+            MoveEverything(move, source, target);
+            return;
+        }
+
         if (move.ItemGeid is { } geid)
         {
             Stats.NamedMoves++;
@@ -617,6 +628,41 @@ public sealed class LedgerReplay
         }
 
         MoveAnonymous(move, source, target);
+    }
+
+    /// <summary>
+    /// A move-all: everything the ledger holds in the source goes to the target, named entities
+    /// and unnamed counts alike. The log names nothing, so this is the ledger's own belief
+    /// about the source moved wholesale. Each unit keeps its doubts and its origin; only
+    /// where it is, and since when, changes. Whatever is inside a moved container follows it,
+    /// as it does on any move.
+    /// </summary>
+    private void MoveEverything(MoveRecord move, Holding source, Holding target)
+    {
+        Stats.MoveAlls++;
+        if (!source.IsReal || source == target || !_contents.TryGetValue(source, out var byClass)) return;
+
+        foreach (var (itemClass, slot) in byClass.ToList())
+        {
+            foreach (var instance in slot.Named.ToList())
+            {
+                NoteCarry(instance.Geid, move.ArrivedBy);
+                PlaceInstance(
+                    instance.Geid, itemClass, target, move.Timestamp, move.ArrivedBy, move.Succeeded,
+                    instance.Inferred, instance.IdentityAmbiguous, origin: instance.Origin);
+                Stats.UnitsMovedAll++;
+            }
+
+            foreach (var group in slot.Groups)
+            {
+                AddAnonymous(
+                    target, itemClass, group.Quantity, move.Timestamp, move.ArrivedBy, move.Succeeded,
+                    group.Inferred, group.DuplicateRisk, group.Origin);
+                Stats.UnitsMovedAll += group.Quantity;
+            }
+
+            slot.Groups.Clear();
+        }
     }
 
     private void ApplyPurchase(MoveRecord move)

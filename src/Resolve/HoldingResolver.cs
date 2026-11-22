@@ -503,6 +503,15 @@ public sealed class HoldingResolver
                         $"{(_asOf - since).TotalDays:F0} days — it may be gone");
         }
 
+        // A move-all names no item: what it carried is what the tracker believed was in the
+        // source. Anything there it never knew of stays unseen, and a target too full to take
+        // everything keeps some back without the log saying which.
+        if (arrivedBy == Ingest.LogIngestor.MoveAllMove)
+        {
+            score *= 0.8;
+            caveats.Add("moved with a move-all, whose log line names no item — placed from what the tracker knew was in the source");
+        }
+
         if (arrivedBy == "Drop")
         {
             score *= 0.3;

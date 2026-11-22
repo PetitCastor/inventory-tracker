@@ -35,8 +35,9 @@ public static partial class InventoryEventParser
     /// <para>8 -> 9: the character creator opening before the first spawn marks a character reset.</para>
     /// <para>9 -> 10: what was on the player when they died is left on their corpse.</para>
     /// <para>10 -> 11: a purchase at a shop kiosk puts the item in the station the player is at.</para>
+    /// <para>11 -> 12: a move-all, whose line names no item, moves what the source was known to hold.</para>
     /// </summary>
-    public const int Version = 11;
+    public const int Version = 12;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -390,6 +391,15 @@ public static partial class InventoryEventParser
         var caller = m.Groups["caller"].Value;
         var requestNo = int.Parse(m.Groups["req"].Value);
         var source = InventoryRef.Parse(m.Groups["srcinv"].Value);
+
+        // A move with no class at all is the move-all button: everything in the source went
+        // to the target, and neither this line nor its Queued counterpart says what that was.
+        if (moveType == "Move" && IsBlank(itemClass))
+        {
+            var target = InventoryRef.Parse(m.Groups["tgtinv"].Value);
+            if (source.IsHolding && target.IsHolding && source.Raw != target.Raw)
+                return new MoveAllRequested(line.Timestamp, requestNo, source, target, caller);
+        }
 
         // A bracketed list is a multi-select drag, and this line is its only record: the
         // Queued counterpart degenerates to Source[NULL] / Item[NONE]. Type[Store] is
