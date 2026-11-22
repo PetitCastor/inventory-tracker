@@ -21,6 +21,11 @@ public class PlaceTextKeysTests
         "Nyx_SocialStation_001=People's Service Station Alpha",
         "Nyx_SocialStation_003=People's Service Station Theta",
         "Nyx_Keeger_Segment_Social_001,P=Keeger Social Station 001",
+        "ATC_Kaboos=QV Logistics Landing Services",
+        "Kaboos_AccessItem=QV Airlock Access Card",
+        "Kaboos_Starmap_Name=QV Logistics Station",
+        "Intersec_TSG_Assist_Solo_obj_marker=Tranquility",
+        "Intersec_TSG_location=QV Extraction Station",
     ]);
 
     [Theory]
@@ -54,8 +59,31 @@ public class PlaceTextKeysTests
         Assert.Equal(name, PlaceTextKeys.NameFrom(raw, Text));
     }
 
+    [Fact]
+    public void A_logistics_station_reads_from_its_star_map_name()
+    {
+        Assert.Equal("QV Logistics Station", PlaceTextKeys.NameFrom("Nyx_Kaboos", Text));
+    }
+
+    [Theory]
+    [InlineData("Nyx_TSG_QVExtractionStation_028")]
+    [InlineData("Nyx_TSG_QVExtractionStation_003")]
+    public void An_extraction_station_reads_from_the_missions_set_there(string raw)
+    {
+        Assert.Equal("QV Extraction Station", PlaceTextKeys.NameFrom(raw, Text));
+    }
+
+    [Theory]
+    [InlineData("Nyx_Kaboos")]
+    [InlineData("Nyx_TSG_QVExtractionStation_028")]
+    public void A_qv_station_without_its_entry_proposes_nothing(string raw)
+    {
+        Assert.Null(PlaceTextKeys.NameFrom(raw, GameLocalization.Parse(["Stanton3_Area18=Area18"])));
+    }
+
     [Theory]
     [InlineData("RR_JP_NyxCastra")]                           // no Nyx_Castra_JPStation: not guessed
+    [InlineData("Somewhere_Kaboos")]                          // not a system
     [InlineData("AsteroidClusterBase_Nyx_Social_Keeger_002")] // no _002 entry
     [InlineData("RR_HUR_LEO")]                                // no Stanton1_Transfer entry
     [InlineData("Nyx_Levski")]

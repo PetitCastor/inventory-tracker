@@ -12,6 +12,11 @@ namespace InventoryTracker.Naming;
 /// <item>"RR_JP_NyxPyro", the gateway in Nyx towards Pyro, is "Nyx_Pyro_JPStation".</item>
 /// <item>"AsteroidClusterBase_Nyx_Social_Keeger_001" is "Nyx_SocialStation_001" (People's
 /// Service Station Alpha) — confirmed by the logs for _003, which the game calls Theta.</item>
+/// <item>"Nyx_Kaboos" has no entry of its own; the game's star map calls it
+/// "Kaboos_Starmap_Name" (QV Logistics Station). Its inventory id is the same on every shard,
+/// so one name covers it.</item>
+/// <item>"Nyx_TSG_QVExtractionStation_028" is named only by the InterSec strike-group missions
+/// set there, "Intersec_TSG_location" (QV Extraction Station).</item>
 /// </list>
 /// Nothing here is a name: a pattern only says where to look, and a key that is not in the
 /// file proposes nothing.
@@ -26,6 +31,12 @@ public static partial class PlaceTextKeys
 
     [GeneratedRegex(@"^AsteroidClusterBase_(?<system>[A-Za-z]+)_Social_[A-Za-z]+_(?<n>[0-9]+)$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
     private static partial Regex SocialStation();
+
+    [GeneratedRegex(@"^(?<system>[A-Za-z]+)_Kaboos$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex LogisticsStation();
+
+    [GeneratedRegex(@"^(?<system>[A-Za-z]+)_TSG_QVExtractionStation_[0-9]+$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex ExtractionStation();
 
     /// <summary>Stanton's planets by the abbreviation station strings use, and their orbit.</summary>
     private static readonly Dictionary<string, int> StantonOrbits = new(StringComparer.OrdinalIgnoreCase)
@@ -65,6 +76,18 @@ public static partial class PlaceTextKeys
         if (social.Success)
         {
             return text.Get($"{social.Groups["system"].Value}_SocialStation_{social.Groups["n"].Value}");
+        }
+
+        var logistics = LogisticsStation().Match(raw);
+        if (logistics.Success && Systems.IsSystem(logistics.Groups["system"].Value))
+        {
+            return text.Get("Kaboos_Starmap_Name");
+        }
+
+        var extraction = ExtractionStation().Match(raw);
+        if (extraction.Success && Systems.IsSystem(extraction.Groups["system"].Value))
+        {
+            return text.Get("Intersec_TSG_location");
         }
 
         return null;
