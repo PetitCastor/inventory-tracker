@@ -945,6 +945,20 @@ public sealed class LedgerReplay
         var wanted = move.Units;
         var taken = 0;
 
+        // A listed move names a pile once, so its marked entry takes all the source holds of the
+        // class: the whole class goes, so no named unit becomes ambiguous. A box holding the
+        // target cannot go into it; it is set aside and put back.
+        // An earlier entry of the class moves its own units, and flags none for the same reason.
+        var inList = move.Action is Ingest.InventoryEventParser.ListedAction or Ingest.InventoryEventParser.ListedEarlierAction
+                     && source.IsReal && source != target;
+        var held = inList && move.Action == Ingest.InventoryEventParser.ListedAction ? SlotFor(source, move.ItemClass, create: false) : null;
+        var kept = held?.Named.Where(i => Contains(i.Geid, target)).ToList() ?? [];
+        if (held is not null)
+        {
+            held.Named.RemoveAll(kept.Contains);
+            wanted = Math.Max(wanted, held.Named.Count + held.LooseQuantity);
+        }
+
         Stats.ClassMoves++;
         Stats.ClassUnits += wanted;
 
@@ -963,7 +977,7 @@ public sealed class LedgerReplay
                 NoteCarry(pick.Geid, move.ArrivedBy);
                 PlaceInstance(
                     pick.Geid, move.ItemClass, target, move.Timestamp, move.ArrivedBy,
-                    move.Succeeded, inferred: false, ambiguous: candidates > 1 || pick.IdentityAmbiguous,
+                    move.Succeeded, inferred: false, ambiguous: (candidates > 1 && !inList) || pick.IdentityAmbiguous,
                     origin: pick.Origin);
                 taken++;
                 Stats.UnitsFromNamed++;
@@ -977,6 +991,8 @@ public sealed class LedgerReplay
                     target, move.ItemClass, 1, move.Timestamp, move.ArrivedBy, move.Succeeded, inferred: false,
                     origin: origin);
             }
+
+            from.Named.AddRange(kept);
         }
         else if (source.IsReal)
         {

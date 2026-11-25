@@ -36,8 +36,9 @@ public static partial class InventoryEventParser
     /// <para>9 -> 10: what was on the player when they died is left on their corpse.</para>
     /// <para>10 -> 11: a purchase at a shop kiosk puts the item in the station the player is at.</para>
     /// <para>11 -> 12: a move-all, whose line names no item, moves what the source was known to hold.</para>
+    /// <para>12 -> 13: a listed move carries its class's whole stack, not one unit per entry.</para>
     /// </summary>
-    public const int Version = 12;
+    public const int Version = 13;
 
     /// <summary>
     /// Move types that never change where an item is held: pure reads, and the
@@ -53,6 +54,20 @@ public static partial class InventoryEventParser
     /// was dropped, and the item stayed in its container forever.
     /// </summary>
     public const string CarryAction = "Carry";
+
+    /// <summary>
+    /// Marks the last entry of each class in a listed move between two grids. The list names a
+    /// pile once and never says how many units it holds, so the replay moves what the source
+    /// holds of that class.
+    /// </summary>
+    public const string ListedAction = "Listed";
+
+    /// <summary>
+    /// Marks the earlier entries of a class in the same listed move. They move their own units;
+    /// the mark only keeps them from flagging named units ambiguous, since the whole class leaves
+    /// with the last entry (unless a spawn names that one, which then moves alone).
+    /// </summary>
+    public const string ListedEarlierAction = "ListedEarlier";
 
     /// <summary>Callers that mean the item went onto the player's body rather than into a grid.</summary>
     private static bool IsAttachCaller(string? caller) =>
@@ -348,7 +363,7 @@ public static partial class InventoryEventParser
     }
 
     /// <summary>A station's inventory or a container: the two ends a move-all is seen between.</summary>
-    private static bool IsGrid(InventoryRef inventory) =>
+    internal static bool IsGrid(InventoryRef inventory) =>
         inventory.Kind is InventoryKind.Location or InventoryKind.Container;
 
     private static bool IsBlank(string value) =>

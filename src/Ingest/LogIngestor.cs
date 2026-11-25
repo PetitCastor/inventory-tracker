@@ -334,11 +334,17 @@ public sealed class LogIngestor(TrackerDb db, string logDir, DateTimeOffset? fro
             {
                 ObserveRequest(batch.RequestNo, state, lineOffset);
                 state.MoveByRequest.Remove(batch.RequestNo);
+                var betweenGrids = batch.MoveType == "Move" && batch.Source.Raw != batch.Target.Raw &&
+                                   InventoryEventParser.IsGrid(batch.Source) && InventoryEventParser.IsGrid(batch.Target);
                 for (var i = 0; i < batch.ItemClasses.Count; i++)
                 {
                     var one = new ItemMoved(
                         batch.Timestamp, batch.RequestNo, Player: "", PlayerId: "", batch.MoveType,
-                        batch.Source, batch.Target, batch.ItemClasses[i], ItemGeid: null, Amount: 1);
+                        batch.Source, batch.Target, batch.ItemClasses[i], ItemGeid: null, Amount: 1,
+                        Action: !betweenGrids ? null
+                            : batch.ItemClasses.Skip(i + 1).Contains(batch.ItemClasses[i])
+                                ? InventoryEventParser.ListedEarlierAction
+                                : InventoryEventParser.ListedAction);
 
                     var normalized = InventoryEventParser.Normalize(one, batch.Caller);
                     if (normalized is null) continue;

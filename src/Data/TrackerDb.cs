@@ -254,8 +254,8 @@ public sealed class TrackerDb
             tgt_kind    TEXT,
             tgt_key     TEXT,
             caller      TEXT,
-            -- The Queued line's action[], when it is anything but None. Only "Carry" is seen:
-            -- an item picked into the player's hand, which the ledger treats as on the player.
+            -- "Carry", from the Queued line's action[]: picked into the hand, so on the player.
+            -- "Listed"/"ListedEarlier", set at ingest: a class's last/earlier entries in a list.
             action      TEXT,
             result      TEXT,
             -- What a Buy cost, in aUEC, for the whole amount. NULL for every other move.
